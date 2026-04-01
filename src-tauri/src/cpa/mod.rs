@@ -450,7 +450,10 @@ fn write_runtime_config(ctx: &RuntimeContext) -> Result<(), String> {
         yaml_key("secret-key"),
         YamlValue::String(ctx.bootstrap.management_key.clone()),
     );
-    remote_management.insert(yaml_key("disable-control-panel"), YamlValue::Bool(true));
+    remote_management.insert(
+        yaml_key("disable-control-panel"),
+        YamlValue::Bool(browser_management_disabled()),
+    );
 
     let yaml = serde_yaml::to_string(&root)
         .map_err(|error| format!("failed to serialize runtime config: {error}"))?;
@@ -608,7 +611,7 @@ fn build_cpa_state(ctx: &RuntimeContext, inner: &RuntimeInner) -> CpaState {
         config_path: ctx.paths.config_path.display().to_string(),
         logs_dir: ctx.paths.logs_dir.display().to_string(),
         last_error: inner.last_error.clone(),
-        browser_management_disabled: true,
+        browser_management_disabled: browser_management_disabled(),
         runtime_mode_label: runtime_mode_label(&ctx.bootstrap).to_string(),
         bootstrap: ctx.bootstrap.clone(),
     }
@@ -771,6 +774,10 @@ fn load_existing_management_key(paths: &ResolvedPaths) -> Option<String> {
     } else {
         Some(key.to_string())
     }
+}
+
+fn browser_management_disabled() -> bool {
+    !cfg!(debug_assertions)
 }
 
 fn format_system_time(time: SystemTime) -> String {
