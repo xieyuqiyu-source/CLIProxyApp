@@ -4,6 +4,7 @@ import type { AppState, BootstrapSettings, CpaManagementInfo, CpaState, RuntimeP
 
 type LoginRole = 'admin' | 'user'
 type AdminTab = 'overview' | 'cpm'
+type UserTab = 'overview' | 'oauth' | 'providers' | 'quota' | 'stats'
 
 interface LoginSession {
   username: string
@@ -65,7 +66,9 @@ function App() {
   const [settings, setSettings] = useState<BootstrapSettings>(createEmptySettings)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [adminTab, setAdminTab] = useState<AdminTab>('overview')
+  const [userTab, setUserTab] = useState<UserTab>('overview')
 
   const statusTone = useMemo(() => {
     switch (cpaState?.status) {
@@ -126,11 +129,15 @@ function App() {
     return () => window.clearInterval(timer)
   }, [session])
 
-  const runAction = async (name: string, action: () => Promise<unknown>) => {
+  const runAction = async (name: string, action: () => Promise<unknown>, successMsg?: string) => {
     try {
       setPendingAction(name)
       await action()
       await refresh()
+      if (successMsg) {
+        setToastMessage(successMsg)
+        setTimeout(() => setToastMessage(null), 2000)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setLoadError(message)
@@ -320,7 +327,7 @@ function App() {
 
       {session.role === 'admin' ? (
         <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
-          <div role="tablist" className="tabs tabs-box bg-base-100 shadow-sm w-fit">
+          <div role="tablist" className="tabs tabs-lift">
             <button
               role="tab"
               className={`tab ${adminTab === 'overview' ? 'tab-active' : ''}`}
@@ -398,164 +405,139 @@ function App() {
           </div>
 
           {cpaState?.lastError ? (
-            <div className="alert alert-error">
+            <div className="alert alert-error mt-4">
               <span>最近一次运行错误：{cpaState.lastError}</span>
             </div>
           ) : null}
 
           {loadError ? (
-            <div className="alert alert-error">
+            <div className="alert alert-error mt-4">
               <span>界面错误：{loadError}</span>
             </div>
           ) : null}
 
           {adminTab === 'overview' ? (
-            <>
-              <div className="stats stats-vertical gap-4 bg-transparent shadow-none lg:stats-horizontal">
-                <div className="stat rounded-box bg-base-100 shadow-sm">
-                  <div className="stat-title">运行状态</div>
-                  <div className="stat-value text-2xl">
-                    {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
+            <div className="flex flex-col gap-6 mt-4">
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                <div className="card bg-base-100 shadow-sm border border-base-200">
+                  <div className="card-body p-6">
+                    <div className="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-base-content/60 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 18v3c0 .6.4 1 1 1h4v-3h3v-3h2l1.4-1.4a6.5 6.5 0 1 0-4-4Z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg>
+                    </div>
+                    <h2 className="card-title text-4xl font-black mt-2">0</h2>
+                    <div className="text-base font-medium mt-1">管理密钥</div>
+                    <div className="text-sm text-base-content/50">配置面板</div>
                   </div>
-                  <div className="stat-desc">PID {cpaState?.pid ?? '-'}</div>
                 </div>
-                <div className="stat rounded-box bg-base-100 shadow-sm">
-                  <div className="stat-title">当前端口</div>
-                  <div className="stat-value text-2xl">{cpaState?.apiPort ?? settings.apiPort ?? 8317}</div>
-                  <div className="stat-desc">{cpaState?.runtimeModeLabel ?? '开发模式'}</div>
+
+                <div className="card bg-base-100 shadow-sm border border-base-200">
+                  <div className="card-body p-6">
+                    <div className="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-base-content/60 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="10" x="3" y="11" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" x2="8" y1="16" y2="16"/><line x1="16" x2="16" y1="16" y2="16"/></svg>
+                    </div>
+                    <h2 className="card-title text-4xl font-black mt-2">0</h2>
+                    <div className="text-base font-medium mt-1">AI 提供商</div>
+                    <div className="text-sm text-base-content/50">G:0 C:0 Cl:0 O:0</div>
+                  </div>
                 </div>
-                <div className="stat rounded-box bg-base-100 shadow-sm">
-                  <div className="stat-title">桌面 CPM 入口</div>
-                  <div className="stat-value text-lg">内置控制台</div>
-                  <div className="stat-desc truncate">{cpmUrl}</div>
+
+                <div className="card bg-base-100 shadow-sm border border-base-200">
+                  <div className="card-body p-6">
+                    <div className="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-base-content/60 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m11.5 15.5 3-3"/><path d="m5.5 9.5 3-3"/><path d="m15.5 11.5 3-3"/><path d="m9.5 5.5 3-3"/><path d="M21.16 3.84a2 2 0 0 0-2.83 0l-5.3 5.3a2 2 0 0 0-.58 1.41V14a2 2 0 0 1-2 2H7a2 2 0 0 0-1.41.59l-5.3 5.3a2 2 0 1 0 2.83 2.82l5.3-5.3A2 2 0 0 0 9 17v-3.5a2 2 0 0 1 2-2h3.5a2 2 0 0 0 1.41-.59l5.3-5.3a2 2 0 0 0 0-2.82Z"/></svg>
+                    </div>
+                    <h2 className="card-title text-4xl font-black mt-2">16</h2>
+                    <div className="text-base font-medium mt-1">可用模型</div>
+                    <div className="text-sm text-base-content/50">所有提供商的模型总数</div>
+                  </div>
                 </div>
-                <div className="stat rounded-box bg-base-100 shadow-sm">
-                  <div className="stat-title">配置文件</div>
-                  <div className="stat-value text-lg">config.yaml</div>
-                  <div className="stat-desc truncate">{cpaState?.configPath ?? '-'}</div>
+
+                <div className="card bg-base-100 shadow-sm border border-base-200">
+                  <div className="card-body p-6">
+                    <div className="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-base-content/60 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" x2="8" y1="13" y2="13"/><line x1="16" x2="8" y1="17" y2="17"/><line x1="10" x2="8" y1="9" y2="9"/></svg>
+                    </div>
+                    <h2 className="card-title text-4xl font-black mt-2">2</h2>
+                    <div className="text-base font-medium mt-1">认证文件</div>
+                    <div className="text-sm text-base-content/50">OAuth 凭证</div>
+                  </div>
                 </div>
               </div>
 
-
-
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div className="card bg-base-100 shadow-sm">
-                  <div className="card-body gap-4">
-                    <div className="space-y-2">
-                      <h3 className="card-title text-base">运行路径</h3>
-                      <p className="text-sm text-base-content/60">
-                        这里是当前桌面宿主为 CPA 管理的配置目录、日志目录和运行文件位置。
-                      </p>
-                    </div>
-
-                    <div className="space-y-3 text-sm">
-                      <div>
-                        <div className="font-semibold">运行目录</div>
-                        <div className="font-mono text-xs text-base-content/70 break-all">
-                          {runtimePaths?.runtimeDir ?? '-'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="font-semibold">配置目录</div>
-                        <div className="font-mono text-xs text-base-content/70 break-all">
-                          {runtimePaths?.configDir ?? '-'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="font-semibold">日志目录</div>
-                        <div className="font-mono text-xs text-base-content/70 break-all">
-                          {runtimePaths?.logsDir ?? '-'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="font-semibold">标准输出日志</div>
-                        <div className="font-mono text-xs text-base-content/70 break-all">
-                          {runtimePaths?.stdoutLogPath ?? '-'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="font-semibold">错误日志</div>
-                        <div className="font-mono text-xs text-base-content/70 break-all">
-                          {runtimePaths?.stderrLogPath ?? '-'}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        className="btn btn-outline btn-sm"
-                        onClick={() => {
-                          void cpaRuntime.openConfigDir()
-                        }}
-                      >
-                        打开配置目录
-                      </button>
-                      <button
-                        className="btn btn-outline btn-sm"
-                        onClick={() => {
-                          void cpaRuntime.openLogsDir()
-                        }}
-                      >
-                        打开日志目录
-                      </button>
+              <div className="flex flex-col gap-4 lg:flex-row">
+                <div className="card bg-base-100 shadow-sm flex-1 border border-base-200">
+                  <div className="card-body p-5">
+                    <div className="text-sm font-medium text-base-content/70 mb-2">代理地址 (Proxy URL)</div>
+                    <div className="join w-full shadow-sm rounded-md">
+                      <input type="text" readOnly className="join-item input input-bordered w-full font-mono text-sm opacity-80" value={`http://127.0.0.1:${cpaState?.apiPort ?? settings.apiPort ?? 8317}/v1`} />
+                      <button className="join-item btn btn-outline font-normal" onClick={() => { void navigator.clipboard.writeText(`http://127.0.0.1:${cpaState?.apiPort ?? settings.apiPort ?? 8317}/v1`); setToastMessage('代理地址已复制'); setTimeout(() => setToastMessage(null), 2000) }}>复制</button>
                     </div>
                   </div>
                 </div>
+                <div className="card bg-base-100 shadow-sm flex-1 border border-base-200">
+                  <div className="card-body p-5">
+                    <div className="text-sm font-medium text-base-content/70 mb-2">外部 API KEY</div>
+                    <div className="join w-full shadow-sm rounded-md">
+                      <input type="text" readOnly className="join-item input input-bordered w-full font-mono text-sm opacity-60" value={managementInfo?.managementKey ?? '等待生成...'} />
+                      <button className="join-item btn btn-outline font-normal" disabled={!managementInfo?.managementKey} onClick={() => { void navigator.clipboard.writeText(managementInfo?.managementKey ?? ''); setToastMessage('API KEY 已复制'); setTimeout(() => setToastMessage(null), 2000) }}>复制</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-                <div className="card bg-base-100 shadow-sm">
-                  <div className="card-body gap-4">
-                    <div className="space-y-2">
+              <div className="card bg-base-100 shadow-sm border border-base-200">
+                <div className="card-body gap-4">
+                  <div className="space-y-2 flex justify-between items-center">
+                    <div>
                       <h3 className="card-title text-base">最近日志</h3>
                       <p className="text-sm text-base-content/60">
-                        展示当前 CPA 进程最近的标准输出和错误输出，方便快速排查。
+                        实时查看当前 CPA 守护进程的标准与错误输出
                       </p>
                     </div>
+                    <button
+                      className="btn btn-outline btn-sm font-normal"
+                      disabled={pendingAction !== null}
+                      onClick={() =>
+                        void runAction('refresh-logs', async () => {
+                          const logs = await cpaRuntime.getRecentLogs()
+                          setRecentLogs(logs || '当前还没有日志。')
+                        }, '日志刷新成功')
+                      }
+                    >
+                      {pendingAction === 'refresh-logs' && <span className="loading loading-spinner loading-xs"></span>}
+                      刷新日志
+                    </button>
+                  </div>
 
-                    <div className="mockup-code w-full h-[28rem] overflow-auto shadow-inner bg-base-300/50 text-base-content/80 text-xs sm:text-sm leading-relaxed">
-                      {(!recentLogs || recentLogs === '当前还没有日志。' || recentLogs === '等待运行日志...') ? (
-                        <pre data-prefix=">"><code>{recentLogs || '等待运行日志...'}</code></pre>
-                      ) : (
-                        recentLogs.split('\n').map((line, idx) => {
-                          let tagClass = 'whitespace-pre-wrap break-all '
-                          const lowerLine = line.toLowerCase()
-                          if (lowerLine.includes('error') || lowerLine.includes('fail') || lowerLine.includes('crit')) {
-                            tagClass += 'text-error font-bold'
-                          } else if (lowerLine.includes('warn')) {
-                            tagClass += 'text-warning font-semibold'
-                          } else if (lowerLine.includes('info') || lowerLine.includes('success')) {
-                            tagClass += 'text-info'
-                          } else {
-                            tagClass += 'opacity-80'
-                          }
-                          return (
-                            <pre key={idx} data-prefix={idx + 1} className={tagClass}>
-                              <code>{line || ' '}</code>
-                            </pre>
-                          )
-                        })
-                      )}
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        className="btn btn-outline btn-sm"
-                        disabled={pendingAction !== null}
-                        onClick={() =>
-                          void runAction('refresh-logs', async () => {
-                            const logs = await cpaRuntime.getRecentLogs()
-                            setRecentLogs(logs || '当前还没有日志。')
-                          })
+                  <div className="mockup-code w-full h-[28rem] overflow-auto shadow-inner bg-base-300/50 text-base-content/80 text-xs sm:text-sm leading-relaxed">
+                    {(!recentLogs || recentLogs === '当前还没有日志。' || recentLogs === '等待运行日志...') ? (
+                      <pre data-prefix=">"><code>{recentLogs || '等待运行日志...'}</code></pre>
+                    ) : (
+                      recentLogs.split('\n').map((line, idx) => {
+                        let tagClass = 'whitespace-pre-wrap break-all '
+                        const lowerLine = line.toLowerCase()
+                        if (lowerLine.includes('error') || lowerLine.includes('fail') || lowerLine.includes('crit')) {
+                          tagClass += 'text-error font-bold'
+                        } else if (lowerLine.includes('warn')) {
+                          tagClass += 'text-warning font-semibold'
+                        } else if (lowerLine.includes('info') || lowerLine.includes('success')) {
+                          tagClass += 'text-info'
+                        } else {
+                          tagClass += 'opacity-80'
                         }
-                      >
-                        刷新日志
-                      </button>
-                    </div>
+                        return (
+                          <pre key={idx} data-prefix={idx + 1} className={tagClass}>
+                            <code>{line || ' '}</code>
+                          </pre>
+                        )
+                      })
+                    )}
                   </div>
                 </div>
               </div>
-            </>
+            </div>
           ) : (
-            <>
+            <div className="mt-4">
               {cpaState?.status !== 'running' ? (
                 <div className="hero rounded-box bg-base-100 shadow-xl">
                   <div className="hero-content py-16 text-center">
@@ -581,64 +563,305 @@ function App() {
                       key={cpmUrl}
                       src={cpmUrl}
                       title="CPM 管理页面"
-                      className="h-[calc(100vh-11rem)] w-full rounded-box border border-base-300 bg-base-100"
+                      className="h-[calc(100vh-17rem)] w-full rounded-box border border-base-300 bg-base-100"
                     />
                   </div>
                 </div>
               )}
-            </>
+            </div>
           )}
         </main>
       ) : (
-        <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-8">
-          <div className="hero rounded-box bg-base-100 shadow-xl">
-            <div className="hero-content max-w-4xl flex-col items-start py-14">
-              <div className="badge badge-secondary badge-outline">CPAPP 业务入口</div>
-              <h2 className="text-4xl font-black">普通账号已进入 CPAPP 页面</h2>
-              <p className="max-w-2xl text-base-content/65">
-                这里是你后面要逐步开发的 `CPAPP` 正式业务界面。登录分流已经固定好，后续你只需要继续告诉我布局和页面，我会严格按 daisyUI 实现。
-              </p>
-              <div className="stats stats-vertical shadow md:stats-horizontal">
-                <div className="stat">
-                  <div className="stat-title">当前账号</div>
-                  <div className="stat-value text-secondary text-2xl">{session.username}</div>
-                  <div className="stat-desc">非管理员账号</div>
+        <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
+          <div role="tablist" className="tabs tabs-lift">
+            <button
+              role="tab"
+              className={`tab ${userTab === 'overview' ? 'tab-active' : ''}`}
+              onClick={() => setUserTab('overview')}
+            >
+              概览
+            </button>
+            <button
+              role="tab"
+              className={`tab ${userTab === 'oauth' ? 'tab-active' : ''}`}
+              onClick={() => setUserTab('oauth')}
+            >
+              OAuth 登录
+            </button>
+            <button
+              role="tab"
+              className={`tab ${userTab === 'providers' ? 'tab-active' : ''}`}
+              onClick={() => setUserTab('providers')}
+            >
+              AI 提供商
+            </button>
+            <button
+              role="tab"
+              className={`tab ${userTab === 'quota' ? 'tab-active' : ''}`}
+              onClick={() => setUserTab('quota')}
+            >
+              配额管理
+            </button>
+            <button
+              role="tab"
+              className={`tab ${userTab === 'stats' ? 'tab-active' : ''}`}
+              onClick={() => setUserTab('stats')}
+            >
+              使用统计
+            </button>
+          </div>
+
+          {/* Top Control Bar is shared across roles! */}
+          <div className="flex flex-col gap-4 bg-base-100 p-4 rounded-box shadow-sm mt-1">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="badge badge-primary badge-outline">
+                  {userTab === 'overview' ? '普通系统概览' : '用户模块'}
                 </div>
-                <div className="stat">
-                  <div className="stat-title">入口限制</div>
-                  <div className="stat-value text-primary text-2xl">已启用</div>
-                  <div className="stat-desc">管理员和普通用户已分流</div>
+                <div className={`badge badge-lg ${statusTone}`}>
+                  {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
                 </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="join shadow-sm lg:mr-2">
+                  <div className="join-item flex items-center bg-base-200 px-3 text-sm border border-base-300">端口</div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    className="join-item input input-bordered input-sm w-20 px-2 font-mono text-center"
+                    value={settings.apiPort}
+                    onChange={(event) => {
+                      setSettings((current) => ({
+                        ...current,
+                        apiPort: Number(event.target.value || 0)
+                      }))
+                    }}
+                  />
+                  <button className="join-item btn btn-primary btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void savePort()}>
+                    保存
+                  </button>
+                </div>
+
+                <div className="join shadow-sm lg:mr-2">
+                  <div className="join-item flex items-center bg-base-200 px-3 text-sm border border-base-300">密钥</div>
+                  <input
+                    type="text"
+                    readOnly
+                    className="join-item input input-bordered input-sm w-24 sm:w-32 px-2 font-mono text-xs opacity-60"
+                    value={managementInfo?.managementKey ?? '等待生成...'}
+                  />
+                  <button
+                    className="join-item btn btn-outline btn-sm font-normal"
+                    disabled={!managementInfo?.managementKey}
+                    onClick={() => { void navigator.clipboard.writeText(managementInfo?.managementKey ?? ''); setToastMessage('密钥已复制'); setTimeout(() => setToastMessage(null), 2000) }}
+                  >
+                    复制
+                  </button>
+                </div>
+
+                <div className="join shadow-sm">
+                  <button className="join-item btn btn-primary btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('start', () => cpaRuntime.start(), '启动指令已发送')}>启动</button>
+                  <button className="join-item btn btn-secondary btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('restart', () => cpaRuntime.restart(), '重启指令已发送')}>重启</button>
+                  <button className="join-item btn btn-warning btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('stop', () => cpaRuntime.stop(), '停止指令已发送')}>停止</button>
+                </div>
+
+                <button className="btn btn-outline btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('refresh', refresh, '状态刷新完毕')}>
+                  {pendingAction === 'refresh' && <span className="loading loading-spinner loading-xs"></span>}
+                  刷新状态
+                </button>
               </div>
             </div>
           </div>
 
-          <div className="grid gap-6 md:grid-cols-2">
-            <div className="card bg-base-100 shadow-xl">
-              <div className="card-body">
-                <h3 className="card-title">当前阶段</h3>
-                <ul className="steps steps-vertical">
-                  <li className="step step-primary">统一登录页</li>
-                  <li className="step step-primary">CPM / CPAPP 入口分流</li>
-                  <li className="step">你逐页指定布局</li>
-                  <li className="step">我按 daisyUI 实现正式页面</li>
-                </ul>
-              </div>
+          {cpaState?.lastError ? (
+            <div className="alert alert-error mt-4">
+              <span>最近一次运行错误：{cpaState.lastError}</span>
             </div>
+          ) : null}
 
-            <div className="card bg-base-100 shadow-xl">
-              <div className="card-body">
-                <h3 className="card-title">当前占位说明</h3>
-                <p className="text-base-content/65">
-                  这一页现在只是占位壳，不会显示 CPM 管理能力。你后面告诉我首页、导航、模块卡片、表单或业务流程，我直接在这个入口继续做。
-                </p>
-                <div className="card-actions justify-end">
-                  <button className="btn btn-secondary btn-disabled">等待下一步页面指令</button>
+          {loadError ? (
+            <div className="alert alert-error mt-4">
+              <span>界面错误：{loadError}</span>
+            </div>
+          ) : null}
+
+          {userTab === 'overview' && (
+            <div className="flex flex-col gap-6 mt-4">
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                <div className="card bg-base-100 shadow-sm border border-base-200">
+                  <div className="card-body p-6">
+                    <div className="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-base-content/60 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 18v3c0 .6.4 1 1 1h4v-3h3v-3h2l1.4-1.4a6.5 6.5 0 1 0-4-4Z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg>
+                    </div>
+                    <h2 className="card-title text-4xl font-black mt-2">0</h2>
+                    <div className="text-base font-medium mt-1">管理密钥</div>
+                    <div className="text-sm text-base-content/50">配置面板</div>
+                  </div>
+                </div>
+
+                <div className="card bg-base-100 shadow-sm border border-base-200">
+                  <div className="card-body p-6">
+                    <div className="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-base-content/60 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="10" x="3" y="11" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" x2="8" y1="16" y2="16"/><line x1="16" x2="16" y1="16" y2="16"/></svg>
+                    </div>
+                    <h2 className="card-title text-4xl font-black mt-2">0</h2>
+                    <div className="text-base font-medium mt-1">AI 提供商</div>
+                    <div className="text-sm text-base-content/50">G:0 C:0 Cl:0 O:0</div>
+                  </div>
+                </div>
+
+                <div className="card bg-base-100 shadow-sm border border-base-200">
+                  <div className="card-body p-6">
+                    <div className="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-base-content/60 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m11.5 15.5 3-3"/><path d="m5.5 9.5 3-3"/><path d="m15.5 11.5 3-3"/><path d="m9.5 5.5 3-3"/><path d="M21.16 3.84a2 2 0 0 0-2.83 0l-5.3 5.3a2 2 0 0 0-.58 1.41V14a2 2 0 0 1-2 2H7a2 2 0 0 0-1.41.59l-5.3 5.3a2 2 0 1 0 2.83 2.82l5.3-5.3A2 2 0 0 0 9 17v-3.5a2 2 0 0 1 2-2h3.5a2 2 0 0 0 1.41-.59l5.3-5.3a2 2 0 0 0 0-2.82Z"/></svg>
+                    </div>
+                    <h2 className="card-title text-4xl font-black mt-2">16</h2>
+                    <div className="text-base font-medium mt-1">可用模型</div>
+                    <div className="text-sm text-base-content/50">所有提供商的模型总数</div>
+                  </div>
+                </div>
+
+                <div className="card bg-base-100 shadow-sm border border-base-200">
+                  <div className="card-body p-6">
+                    <div className="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-base-content/60 mb-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" x2="8" y1="13" y2="13"/><line x1="16" x2="8" y1="17" y2="17"/><line x1="10" x2="8" y1="9" y2="9"/></svg>
+                    </div>
+                    <h2 className="card-title text-4xl font-black mt-2">2</h2>
+                    <div className="text-base font-medium mt-1">认证文件</div>
+                    <div className="text-sm text-base-content/50">OAuth 凭证</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-4 lg:flex-row">
+                <div className="card bg-base-100 shadow-sm flex-1 border border-base-200">
+                  <div className="card-body p-5">
+                    <div className="text-sm font-medium text-base-content/70 mb-2">代理地址 (Proxy URL)</div>
+                    <div className="join w-full shadow-sm rounded-md">
+                      <input type="text" readOnly className="join-item input input-bordered w-full font-mono text-sm opacity-80" value={`http://127.0.0.1:${cpaState?.apiPort ?? settings.apiPort ?? 8317}/v1`} />
+                      <button className="join-item btn btn-outline font-normal" onClick={() => { void navigator.clipboard.writeText(`http://127.0.0.1:${cpaState?.apiPort ?? settings.apiPort ?? 8317}/v1`); setToastMessage('代理地址已复制'); setTimeout(() => setToastMessage(null), 2000) }}>复制</button>
+                    </div>
+                  </div>
+                </div>
+                <div className="card bg-base-100 shadow-sm flex-1 border border-base-200">
+                  <div className="card-body p-5">
+                    <div className="text-sm font-medium text-base-content/70 mb-2">外部 API KEY</div>
+                    <div className="join w-full shadow-sm rounded-md">
+                      <input type="text" readOnly className="join-item input input-bordered w-full font-mono text-sm opacity-60" value={managementInfo?.managementKey ?? '等待生成...'} />
+                      <button className="join-item btn btn-outline font-normal" disabled={!managementInfo?.managementKey} onClick={() => { void navigator.clipboard.writeText(managementInfo?.managementKey ?? ''); setToastMessage('API KEY 已复制'); setTimeout(() => setToastMessage(null), 2000) }}>复制</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="card bg-base-100 shadow-sm border border-base-200">
+                <div className="card-body gap-4">
+                  <div className="space-y-2 flex justify-between items-center">
+                    <div>
+                      <h3 className="card-title text-base">最近日志</h3>
+                      <p className="text-sm text-base-content/60">
+                        实时查看当前 CPA 守护进程的标准与错误输出
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-outline btn-sm font-normal"
+                      disabled={pendingAction !== null}
+                      onClick={() =>
+                        void runAction('refresh-logs', async () => {
+                          const logs = await cpaRuntime.getRecentLogs()
+                          setRecentLogs(logs || '当前还没有日志。')
+                        }, '日志刷新成功')
+                      }
+                    >
+                      {pendingAction === 'refresh-logs' && <span className="loading loading-spinner loading-xs"></span>}
+                      刷新日志
+                    </button>
+                  </div>
+
+                  <div className="mockup-code w-full h-[28rem] overflow-auto shadow-inner bg-base-300/50 text-base-content/80 text-xs sm:text-sm leading-relaxed">
+                    {(!recentLogs || recentLogs === '当前还没有日志。' || recentLogs === '等待运行日志...') ? (
+                      <pre data-prefix=">"><code>{recentLogs || '等待运行日志...'}</code></pre>
+                    ) : (
+                      recentLogs.split('\n').map((line, idx) => {
+                        let tagClass = 'whitespace-pre-wrap break-all '
+                        const lowerLine = line.toLowerCase()
+                        if (lowerLine.includes('error') || lowerLine.includes('fail') || lowerLine.includes('crit')) {
+                          tagClass += 'text-error font-bold'
+                        } else if (lowerLine.includes('warn')) {
+                          tagClass += 'text-warning font-semibold'
+                        } else if (lowerLine.includes('info') || lowerLine.includes('success')) {
+                          tagClass += 'text-info'
+                        } else {
+                          tagClass += 'opacity-80'
+                        }
+                        return (
+                          <pre key={idx} data-prefix={idx + 1} className={tagClass}>
+                            <code>{line || ' '}</code>
+                          </pre>
+                        )
+                      })
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          )}
+
+          {userTab === 'oauth' && (
+            <div className="hero rounded-box bg-base-100 shadow-sm py-28 mt-1 border border-dashed border-base-300">
+              <div className="hero-content text-center">
+                <div className="max-w-md">
+                  <h2 className="text-3xl font-black opacity-40">OAuth 登录配置</h2>
+                  <p className="py-4 text-base-content/50">模块开发中：未来提供社交账号与企业 SSO 整合接入能力</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {userTab === 'providers' && (
+            <div className="hero rounded-box bg-base-100 shadow-sm py-28 mt-1 border border-dashed border-base-300">
+              <div className="hero-content text-center">
+                <div className="max-w-md">
+                  <h2 className="text-3xl font-black opacity-40">AI 提供商管理</h2>
+                  <p className="py-4 text-base-content/50">模块开发中：汇聚并配置多源或自建的模型端点</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {userTab === 'quota' && (
+            <div className="hero rounded-box bg-base-100 shadow-sm py-28 mt-1 border border-dashed border-base-300">
+              <div className="hero-content text-center">
+                <div className="max-w-md">
+                  <h2 className="text-3xl font-black opacity-40">配额管理</h2>
+                  <p className="py-4 text-base-content/50">模块开发中：精确分析成本、设置并发限制、管控与告警策略</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {userTab === 'stats' && (
+            <div className="hero rounded-box bg-base-100 shadow-sm py-28 mt-1 border border-dashed border-base-300">
+              <div className="hero-content text-center">
+                <div className="max-w-md">
+                  <h2 className="text-3xl font-black opacity-40">使用统计</h2>
+                  <p className="py-4 text-base-content/50">模块开发中：聚合呈现分时账单与实时调用流水图表</p>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
+      )}
+
+      {/* GLOBAL TOAST HANDLER */}
+      {toastMessage && (
+        <div className="toast toast-top toast-center z-[100]">
+          <div className="alert alert-success shadow-lg">
+            <span>{toastMessage}</span>
+          </div>
+        </div>
       )}
     </div>
   )
