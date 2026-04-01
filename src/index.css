@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @plugin "daisyui" {
-  themes: light --default, business --prefersdark;
+  themes: light --default, dark --prefersdark, synthwave, cyberpunk;
 }
 
 html,

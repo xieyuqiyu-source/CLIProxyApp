@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "prepare:sidecar": "node ./scripts/prepare-sidecar.mjs",
-    "tauri": "tauri"
+    "tauri": "./node_modules/.bin/tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

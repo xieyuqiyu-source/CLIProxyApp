@@ -10,6 +10,9 @@ interface LoginSession {
 }
 
 const SESSION_KEY = 'cpapp-login-session'
+const THEME_KEY = 'cpapp-theme'
+const THEMES = ['light', 'dark', 'synthwave', 'cyberpunk'] as const
+type Theme = typeof THEMES[number]
 
 const createEmptySettings = (): BootstrapSettings => ({
   apiPort: 8317,
@@ -27,6 +30,19 @@ const statusLabelMap: Record<string, string> = {
 }
 
 function App() {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const raw = window.localStorage.getItem(THEME_KEY)
+    if (THEMES.includes(raw as Theme)) {
+      return raw as Theme
+    }
+    return 'dark'
+  })
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    window.localStorage.setItem(THEME_KEY, theme)
+  }, [theme])
+
   const [session, setSession] = useState<LoginSession | null>(() => {
     const raw = window.sessionStorage.getItem(SESSION_KEY)
     if (!raw) return null
@@ -141,74 +157,105 @@ function App() {
   if (!session) {
     return (
       <div className="min-h-screen bg-base-200">
+        <div className="absolute top-4 right-4 z-[1]">
+          <div className="dropdown dropdown-end">
+            <div tabIndex={0} role="button" className="btn m-1">
+              主题 / Theme
+              <svg width="12px" height="12px" className="inline-block h-2 w-2 fill-current opacity-60" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048">
+                <path d="M1799 349l242 241-1017 1017L7 590l242-241 775 775 775-775z"></path>
+              </svg>
+            </div>
+            <ul tabIndex={0} className="dropdown-content menu bg-base-200 rounded-box z-[1] w-52 p-2 shadow">
+              {THEMES.map((t) => (
+                <li key={t}>
+                  <input
+                    type="radio"
+                    name="theme-dropdown"
+                    className="theme-controller btn btn-sm btn-block btn-ghost justify-start"
+                    aria-label={t}
+                    value={t}
+                    checked={theme === t}
+                    onChange={() => setTheme(t)}
+                  />
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
         <div className="hero min-h-screen">
-          <div className="hero-content w-full max-w-6xl flex-col gap-10 lg:flex-row lg:items-stretch">
-            <div className="max-w-xl">
-              <div className="badge badge-primary badge-outline mb-4">CLIProxyApp 登录入口</div>
-              <h1 className="text-5xl font-black leading-tight">统一登录后再分流到 CPM 或 CPAPP</h1>
-              <p className="py-6 text-base-content/70">
-                当前版本先把入口限制固定下来。`admin / admin` 进入 CPM 管理入口，其他任意非空账号进入 CPAPP
-                业务入口。后续页面开发将严格遵守 daisyUI。
+          <div className="hero-content flex-col lg:flex-row-reverse gap-10 lg:gap-20">
+            <div className="text-center lg:text-left max-w-lg">
+              <h1 className="text-5xl font-bold">CLIProxyApp</h1>
+              <p className="py-6">
+                统一入口已重构。管理员使用 admin 凭据进入 CPM，或使用任意其他账号进入专属的业务面板。完全按照 DaisyUI 原生规范实现。
               </p>
-              <div className="stats stats-vertical shadow lg:stats-horizontal">
-                <div className="stat">
-                  <div className="stat-title">管理员入口</div>
-                  <div className="stat-value text-primary">CPM</div>
-                  <div className="stat-desc">admin / admin</div>
+              <div className="stats shadow bg-base-100">
+                <div className="stat text-center">
+                  <div className="stat-title">管理员</div>
+                  <div className="stat-value text-primary">Admin</div>
+                  <div className="stat-desc">CPM 控制台</div>
                 </div>
-                <div className="stat">
-                  <div className="stat-title">普通入口</div>
-                  <div className="stat-value text-secondary">CPAPP</div>
-                  <div className="stat-desc">其他非空账号</div>
+                <div className="stat text-center">
+                  <div className="stat-title">普通用户</div>
+                  <div className="stat-value text-secondary">Guest</div>
+                  <div className="stat-desc">CPAPP 业务面</div>
                 </div>
               </div>
             </div>
 
-            <div className="card w-full max-w-md bg-base-100 shadow-2xl">
-              <div className="card-body gap-4">
-                <div>
-                  <h2 className="card-title text-2xl">登录</h2>
-                  <p className="text-sm text-base-content/60">
-                    先完成入口限制，后续再扩展正式账号体系。
-                  </p>
+            <div className="card bg-base-100 w-full max-w-sm shrink-0 shadow-2xl">
+              <div className="card-body">
+                <h2 className="card-title text-2xl mb-4">登录</h2>
+
+                <div className="form-control mb-2">
+                  <label className="input input-bordered flex items-center gap-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
+                      <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM12.735 14c.618 0 1.093-.561.872-1.139a6.002 6.002 0 0 0-11.215 0c-.22.578.254 1.139.872 1.139h9.47Z" />
+                    </svg>
+                    <input
+                      type="text"
+                      className="grow"
+                      placeholder="Username"
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') submitLogin()
+                      }}
+                    />
+                  </label>
                 </div>
 
-                <label className="form-control w-full">
-                  <div className="label">
-                    <span className="label-text">账号</span>
+                <div className="form-control mb-4">
+                  <label className="input input-bordered flex items-center gap-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
+                      <path fillRule="evenodd" d="M14 6a4 4 0 0 1-4.899 3.899l-1.955 1.955a.5.5 0 0 1-.353.146H5v1.5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-2.293a.5.5 0 0 1 .146-.353l3.955-3.955A4 4 0 1 1 14 6Zm-4-2a.75.75 0 0 0 0 1.5.5.5 0 0 1 .5.5.75.75 0 0 0 1.5 0 2 2 0 0 0-2-2Z" clipRule="evenodd" />
+                    </svg>
+                    <input
+                      type="password"
+                      className="grow"
+                      placeholder="Password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') submitLogin()
+                      }}
+                    />
+                  </label>
+                </div>
+
+                {loginError && (
+                  <div className="alert alert-error mb-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    <span>{loginError}</span>
                   </div>
-                  <input
-                    className="input input-bordered w-full"
-                    placeholder="请输入账号"
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') submitLogin()
-                    }}
-                  />
-                </label>
+                )}
 
-                <label className="form-control w-full">
-                  <div className="label">
-                    <span className="label-text">密码</span>
-                  </div>
-                  <input
-                    type="password"
-                    className="input input-bordered w-full"
-                    placeholder="请输入密码"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') submitLogin()
-                    }}
-                  />
-                </label>
-
-                {loginError ? <div className="alert alert-error py-3 text-sm">{loginError}</div> : null}
-
-                <button className="btn btn-primary mt-2" onClick={submitLogin}>
-                  登录并进入
-                </button>
+                <div className="form-control mt-2">
+                  <button className="btn btn-primary btn-block" onClick={submitLogin}>
+                    登录
+                  </button>
+                </div>
               </div>
             </div>
           </div>
