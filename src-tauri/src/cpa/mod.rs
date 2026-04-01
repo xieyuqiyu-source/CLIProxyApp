@@ -812,7 +812,7 @@ fn load_existing_management_key(paths: &ResolvedPaths) -> Option<String> {
 }
 
 fn browser_management_disabled() -> bool {
-    !cfg!(debug_assertions)
+    true
 }
 
 fn format_system_time(time: SystemTime) -> String {

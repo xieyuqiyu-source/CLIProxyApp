@@ -82,8 +82,15 @@ function App() {
   }, [cpaState?.status])
 
   const cpmUrl = useMemo(() => {
-    return `http://127.0.0.1:${cpaState?.apiPort ?? settings.apiPort ?? 8317}/management.html`
-  }, [cpaState?.apiPort, settings.apiPort])
+    const apiBase = `http://127.0.0.1:${cpaState?.apiPort ?? settings.apiPort ?? 8317}`
+    const managementKey = managementInfo?.managementKey ?? ''
+    const query = new URLSearchParams({
+      apiBase,
+      managementKey,
+      target: '/cpm/index.html#/'
+    })
+    return `/cpm-bridge.html?${query.toString()}`
+  }, [cpaState?.apiPort, managementInfo?.managementKey, settings.apiPort])
 
   const refresh = async () => {
     try {
@@ -404,8 +411,8 @@ function App() {
                   <div className="stat-desc">{cpaState?.runtimeModeLabel ?? '开发模式'}</div>
                 </div>
                 <div className="stat rounded-box bg-base-100 shadow-sm">
-                  <div className="stat-title">浏览器入口</div>
-                  <div className="stat-value text-lg">management.html</div>
+                  <div className="stat-title">桌面 CPM 入口</div>
+                  <div className="stat-value text-lg">内置控制台</div>
                   <div className="stat-desc truncate">{cpmUrl}</div>
                 </div>
                 <div className="stat rounded-box bg-base-100 shadow-sm">
@@ -604,17 +611,6 @@ function App() {
                       >
                         立即启动 CPA
                       </button>
-                    </div>
-                  </div>
-                </div>
-              ) : cpaState.browserManagementDisabled ? (
-                <div className="hero rounded-box bg-base-100 shadow-xl">
-                  <div className="hero-content py-16 text-center">
-                    <div className="max-w-2xl">
-                      <h2 className="text-3xl font-black">当前模式已关闭浏览器管理入口</h2>
-                      <p className="py-4 text-base-content/65">
-                        这个入口只在本地开发阶段可直接加载原始 CPM 页面。当前运行模式下浏览器入口被关闭了。
-                      </p>
                     </div>
                   </div>
                 </div>

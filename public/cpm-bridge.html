@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CLIProxyApp CPM Bridge</title>
+  </head>
+  <body>
+    <script>
+      ;(() => {
+        const params = new URLSearchParams(window.location.search)
+        const apiBase = params.get('apiBase') || ''
+        const managementKey = params.get('managementKey') || ''
+        const target = params.get('target') || '/cpm/index.html#/'
+
+        if (!apiBase || !managementKey) {
+          document.body.textContent = 'Missing CPM bridge credentials.'
+          return
+        }
+
+        const ENC_PREFIX = 'enc::v1::'
+        const SECRET_SALT = 'cli-proxy-api-webui::secure-storage'
+
+        const encodeText = (text) => new TextEncoder().encode(text)
+        const xorBytes = (data, keyBytes) => {
+          const result = new Uint8Array(data.length)
+          for (let i = 0; i < data.length; i += 1) {
+            result[i] = data[i] ^ keyBytes[i % keyBytes.length]
+          }
+          return result
+        }
+
+        const toBase64 = (bytes) => {
+          let binary = ''
+          for (let i = 0; i < bytes.length; i += 1) {
+            binary += String.fromCharCode(bytes[i])
+          }
+          return btoa(binary)
+        }
+
+        const obfuscateData = (value) => {
+          if (!value) return value
+          const host = window.location.host
+          const ua = navigator.userAgent
+          const keyBytes = encodeText(`${SECRET_SALT}|${host}|${ua}`)
+          const encrypted = xorBytes(encodeText(value), keyBytes)
+          return `${ENC_PREFIX}${toBase64(encrypted)}`
+        }
+
+        const persistedState = {
+          state: {
+            apiBase,
+            managementKey,
+            rememberPassword: true,
+            serverVersion: null,
+            serverBuildDate: null
+          },
+          version: 0
+        }
+
+        localStorage.setItem('cli-proxy-auth', obfuscateData(JSON.stringify(persistedState)))
+        localStorage.setItem('apiBase', obfuscateData(JSON.stringify(apiBase)))
+        localStorage.setItem('apiUrl', obfuscateData(JSON.stringify(apiBase)))
+        localStorage.setItem('managementKey', obfuscateData(JSON.stringify(managementKey)))
+        localStorage.setItem('isLoggedIn', 'true')
+
+        window.location.replace(target)
+      })()
+    </script>
+  </body>
+</html>
