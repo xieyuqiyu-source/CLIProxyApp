@@ -4,19 +4,25 @@ import { cpaRuntime } from './lib/cpa/runtime'
 import type { AppState, BootstrapSettings, CpaState, RuntimePaths } from './lib/cpa/types'
 
 const createEmptySettings = (): BootstrapSettings => ({
-  host: '127.0.0.1',
   apiPort: 8317,
-  managementKey: '',
   autoStart: true,
   binaryMode: 'development',
   explicitBinaryPath: null
 })
 
+const statusLabelMap: Record<string, string> = {
+  stopped: '已停止',
+  starting: '启动中',
+  running: '运行中',
+  stopping: '停止中',
+  error: '异常'
+}
+
 function App() {
   const [appState, setAppState] = useState<AppState | null>(null)
   const [runtimePaths, setRuntimePaths] = useState<RuntimePaths | null>(null)
   const [cpaState, setCpaState] = useState<CpaState | null>(null)
-  const [logs, setLogs] = useState('Waiting for runtime logs...')
+  const [logs, setLogs] = useState('等待运行日志...')
   const [settings, setSettings] = useState<BootstrapSettings>(createEmptySettings)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -48,7 +54,7 @@ function App() {
       setRuntimePaths(nextRuntimePaths)
       setCpaState(nextCpaState)
       setSettings(nextCpaState.bootstrap)
-      setLogs(nextLogs || 'No runtime logs yet.')
+      setLogs(nextLogs || '当前还没有日志。')
       setLoadError(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -58,11 +64,9 @@ function App() {
 
   useEffect(() => {
     void refresh()
-
     const timer = window.setInterval(() => {
       void refresh()
     }, 3000)
-
     return () => window.clearInterval(timer)
   }, [])
 
@@ -88,33 +92,34 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <p className="brand-label">Desktop Host</p>
+        <p className="brand-label">桌面宿主</p>
         <h1 className="brand-title">CLIProxyApp</h1>
         <p className="brand-copy">
-          Local desktop shell for running CLIProxyApi as a managed background service with its own
-          management surface.
+          这是 `CLIProxyApi` 的桌面控制台。管理能力后续只通过 App 内部代理访问，不再依赖浏览器打开本地管理页。
         </p>
 
         <div className="status-card">
-          <span className={`status-chip ${statusClass}`}>{cpaState?.status ?? 'loading'}</span>
+          <span className={`status-chip ${statusClass}`}>
+            {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知状态'}
+          </span>
           <ul className="meta-list">
             <li>
-              <span className="meta-label">App</span>
+              <span className="meta-label">应用</span>
               <span className="meta-value">
                 {appState?.appName ?? 'CLIProxyApp'} {appState?.appVersion ?? ''}
               </span>
             </li>
             <li>
-              <span className="meta-label">Platform</span>
-              <span className="meta-value">{appState?.platform ?? 'Unknown'}</span>
+              <span className="meta-label">平台</span>
+              <span className="meta-value">{appState?.platform ?? '未知'}</span>
             </li>
             <li>
-              <span className="meta-label">PID</span>
-              <span className="meta-value">{cpaState?.pid ?? 'Not running'}</span>
+              <span className="meta-label">进程 PID</span>
+              <span className="meta-value">{cpaState?.pid ?? '未运行'}</span>
             </li>
             <li>
-              <span className="meta-label">Started At</span>
-              <span className="meta-value">{cpaState?.startedAt ?? 'Not started'}</span>
+              <span className="meta-label">启动时间</span>
+              <span className="meta-value">{cpaState?.startedAt ?? '尚未启动'}</span>
             </li>
           </ul>
         </div>
@@ -123,12 +128,10 @@ function App() {
       <main className="main-content">
         <section className="hero-panel">
           <div className="panel">
-            <p className="eyebrow">Phase 1</p>
-            <h2 className="hero-title">CPA Runtime Control</h2>
+            <p className="eyebrow">第一阶段</p>
+            <h2 className="hero-title">CPA 运行控制</h2>
             <p className="hero-copy">
-              This screen owns the desktop side of the contract: resolve runtime paths, store
-              bootstrap settings, launch CLIProxyApi, and surface the management connection details
-              the rest of CPAPP will use.
+              当前页面负责桌面侧的基础能力：运行目录、启动参数、进程生命周期、日志查看，以及后续 App 内部管理代理要依赖的运行上下文。
             </p>
 
             <div className="actions">
@@ -137,72 +140,66 @@ function App() {
                 disabled={pendingAction !== null}
                 onClick={() => void runAction('start', () => cpaRuntime.start())}
               >
-                Start CPA
+                启动 CPA
               </button>
               <button
                 className="btn btn-secondary"
                 disabled={pendingAction !== null}
                 onClick={() => void runAction('stop', () => cpaRuntime.stop())}
               >
-                Stop
+                停止
               </button>
               <button
                 className="btn btn-secondary"
                 disabled={pendingAction !== null}
                 onClick={() => void runAction('restart', () => cpaRuntime.restart())}
               >
-                Restart
+                重启
               </button>
               <button
                 className="btn btn-ghost"
                 disabled={pendingAction !== null}
                 onClick={() => void runAction('refresh', refresh)}
               >
-                Refresh
+                刷新
               </button>
             </div>
 
             {cpaState?.lastError ? (
-              <div className="error-banner">Last runtime error: {cpaState.lastError}</div>
+              <div className="error-banner">最近一次运行错误：{cpaState.lastError}</div>
             ) : null}
 
-            {loadError ? <div className="error-banner">UI error: {loadError}</div> : null}
+            {loadError ? <div className="error-banner">界面错误：{loadError}</div> : null}
           </div>
 
           <div className="panel stats-grid">
             <div className="stat-card">
               <p className="stat-value">{cpaState?.apiPort ?? 8317}</p>
-              <p className="stat-label">Managed API port</p>
+              <p className="stat-label">代理服务端口</p>
             </div>
             <div className="stat-card">
-              <p className="stat-value">{cpaState?.managementKeyConfigured ? 'Ready' : 'Missing'}</p>
-              <p className="stat-label">Management key</p>
+              <p className="stat-value">{cpaState?.runtimeModeLabel ?? '未就绪'}</p>
+              <p className="stat-label">运行模式</p>
             </div>
             <div className="stat-card">
-              <p className="stat-value">{settings.binaryMode}</p>
-              <p className="stat-label">Runtime mode</p>
+              <p className="stat-value">{runtimePaths ? '已准备' : '处理中'}</p>
+              <p className="stat-label">运行目录</p>
             </div>
             <div className="stat-card">
-              <p className="stat-value">{runtimePaths ? 'Prepared' : 'Pending'}</p>
-              <p className="stat-label">Runtime paths</p>
+              <p className="stat-value">
+                {cpaState?.browserManagementDisabled ? '已禁用' : '仍开放'}
+              </p>
+              <p className="stat-label">浏览器管理入口</p>
             </div>
           </div>
         </section>
 
         <section className="section-grid">
           <div className="panel">
-            <h3 className="panel-title">Bootstrap Settings</h3>
+            <h3 className="panel-title">运行设置</h3>
             <div className="field-grid">
               <label>
-                <span>Host</span>
-                <input
-                  value={settings.host}
-                  onChange={(event) => setSettings({ ...settings, host: event.target.value })}
-                />
-              </label>
-
-              <label>
-                <span>API Port</span>
+                <span>代理服务端口</span>
                 <input
                   type="number"
                   value={settings.apiPort}
@@ -213,17 +210,7 @@ function App() {
               </label>
 
               <label>
-                <span>Management Key</span>
-                <input
-                  value={settings.managementKey}
-                  onChange={(event) =>
-                    setSettings({ ...settings, managementKey: event.target.value })
-                  }
-                />
-              </label>
-
-              <label>
-                <span>Explicit Binary Path</span>
+                <span>显式二进制路径</span>
                 <input
                   value={settings.explicitBinaryPath ?? ''}
                   onChange={(event) =>
@@ -243,7 +230,7 @@ function App() {
                     setSettings({ ...settings, autoStart: event.target.checked })
                   }
                 />
-                <span>Enable app-level auto start flag</span>
+                <span>应用启动后自动拉起 CPA</span>
               </label>
             </div>
 
@@ -253,53 +240,47 @@ function App() {
                 disabled={pendingAction !== null}
                 onClick={() => void saveSettings()}
               >
-                Save bootstrap
+                保存设置
               </button>
               <button
                 className="btn btn-ghost"
                 disabled={pendingAction !== null}
                 onClick={() => void runAction('config-dir', () => cpaRuntime.openConfigDir())}
               >
-                Open config dir
+                打开配置目录
               </button>
               <button
                 className="btn btn-ghost"
                 disabled={pendingAction !== null}
                 onClick={() => void runAction('logs-dir', () => cpaRuntime.openLogsDir())}
               >
-                Open logs dir
+                打开日志目录
               </button>
             </div>
 
             <div className="status-note">
-              Phase 1 uses development mode by default. If no explicit binary is set, the desktop
-              host will try to run the sibling workspace repository at `../CLIProxyApi` with `go run
-              ./cmd/server`.
+              当前默认策略是：禁用浏览器管理页、管理密钥仅保存在桌面宿主内部，后续所有管理操作统一通过 App 内部代理走 Tauri 命令。
             </div>
           </div>
 
           <div className="panel">
-            <h3 className="panel-title">Runtime Details</h3>
+            <h3 className="panel-title">运行详情</h3>
             <div className="detail-grid">
               <div className="detail-item">
-                <h4>Management Base URL</h4>
-                <p>{cpaState?.managementBaseUrl ?? 'Unavailable'}</p>
+                <h4>配置文件路径</h4>
+                <p>{runtimePaths?.configPath ?? '等待生成'}</p>
               </div>
               <div className="detail-item">
-                <h4>Binary Path</h4>
-                <p>{cpaState?.binaryPath ?? 'Development mode via go run'}</p>
+                <h4>日志目录</h4>
+                <p>{runtimePaths?.logsDir ?? '等待生成'}</p>
               </div>
               <div className="detail-item">
-                <h4>Config Path</h4>
-                <p>{runtimePaths?.configPath ?? 'Pending'}</p>
+                <h4>Bootstrap 文件</h4>
+                <p>{runtimePaths?.bootstrapPath ?? '等待生成'}</p>
               </div>
               <div className="detail-item">
-                <h4>Logs Directory</h4>
-                <p>{runtimePaths?.logsDir ?? 'Pending'}</p>
-              </div>
-              <div className="detail-item">
-                <h4>Bootstrap File</h4>
-                <p>{runtimePaths?.bootstrapPath ?? 'Pending'}</p>
+                <h4>运行二进制</h4>
+                <p>{cpaState?.binaryPath ?? '开发模式回退到工作区 CLIProxyApi'}</p>
               </div>
             </div>
           </div>
@@ -309,9 +290,9 @@ function App() {
           <div className="log-header">
             <div>
               <h3 className="panel-title" style={{ marginBottom: 0 }}>
-                Recent Runtime Logs
+                最近日志
               </h3>
-              <p>Combined tail of CPA stdout and stderr.</p>
+              <p>这里显示 CPA 标准输出与错误输出的最新内容。</p>
             </div>
             <button
               className="btn btn-secondary"
@@ -322,7 +303,7 @@ function App() {
                 })
               }
             >
-              Reload logs
+              重新载入
             </button>
           </div>
           <pre className="log-output">{logs}</pre>

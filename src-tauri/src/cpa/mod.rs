@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Number, Value as YamlValue};
 use std::{
     fs::{self, File, OpenOptions},
@@ -14,8 +15,10 @@ use tauri::{AppHandle, Manager};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapSettings {
-    pub host: String,
     pub api_port: u16,
+    #[serde(skip_serializing, default = "default_host")]
+    pub host: String,
+    #[serde(skip_serializing, default = "default_management_key")]
     pub management_key: String,
     pub auto_start: bool,
     pub binary_mode: String,
@@ -25,7 +28,7 @@ pub struct BootstrapSettings {
 impl Default for BootstrapSettings {
     fn default() -> Self {
         Self {
-            host: "127.0.0.1".to_string(),
+            host: default_host(),
             api_port: 8317,
             management_key: default_management_key(),
             auto_start: true,
@@ -62,15 +65,23 @@ pub struct CpaState {
     pub status: String,
     pub pid: Option<u32>,
     pub started_at: Option<String>,
-    pub host: String,
     pub api_port: u16,
-    pub management_base_url: String,
-    pub management_key_configured: bool,
     pub binary_path: Option<String>,
     pub config_path: String,
     pub logs_dir: String,
     pub last_error: Option<String>,
+    pub browser_management_disabled: bool,
+    pub runtime_mode_label: String,
     pub bootstrap: BootstrapSettings,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagementProxyRequest {
+    pub method: String,
+    pub path: String,
+    pub query: Option<Vec<(String, String)>>,
+    pub body: Option<JsonValue>,
 }
 
 #[derive(Debug)]
@@ -244,20 +255,22 @@ pub fn save_bootstrap_settings(
     state: &tauri::State<'_, CpaRuntimeState>,
     settings: BootstrapSettings,
 ) -> Result<CpaState, String> {
+    let paths = resolve_paths(app)?;
+    ensure_directories(&paths)?;
+
     let mut normalized = settings;
     normalized.host = normalize_host(&normalized.host);
     if normalized.api_port == 0 {
         normalized.api_port = 8317;
     }
     if normalized.management_key.trim().is_empty() {
-        normalized.management_key = default_management_key();
+        normalized.management_key =
+            load_existing_management_key(&paths).unwrap_or_else(default_management_key);
     }
     if normalized.binary_mode.trim().is_empty() {
         normalized.binary_mode = "development".to_string();
     }
 
-    let paths = resolve_paths(app)?;
-    ensure_directories(&paths)?;
     let content = serde_json::to_string_pretty(&normalized)
         .map_err(|error| format!("failed to serialize bootstrap settings: {error}"))?;
     fs::write(&paths.bootstrap_path, content)
@@ -285,6 +298,62 @@ pub fn open_cpa_config_dir(app: &AppHandle) -> Result<(), String> {
 pub fn open_cpa_log_dir(app: &AppHandle) -> Result<(), String> {
     let ctx = load_runtime_context(app)?;
     open_path(&ctx.paths.logs_dir)
+}
+
+pub fn proxy_management_request(
+    app: &AppHandle,
+    request: ManagementProxyRequest,
+) -> Result<JsonValue, String> {
+    let ctx = load_runtime_context(app)?;
+
+    let method = request
+        .method
+        .parse::<reqwest::Method>()
+        .map_err(|error| format!("invalid method: {error}"))?;
+
+    let path = request.path.trim_start_matches('/');
+    let url = format!(
+        "http://{}:{}/v0/management/{}",
+        ctx.bootstrap.host, ctx.bootstrap.api_port, path
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("failed to create management client: {error}"))?;
+
+    let mut builder = client
+        .request(method, &url)
+        .bearer_auth(&ctx.bootstrap.management_key);
+
+    if let Some(query) = request.query {
+        builder = builder.query(&query);
+    }
+
+    if let Some(body) = request.body {
+        builder = builder.json(&body);
+    }
+
+    let response = builder
+        .send()
+        .map_err(|error| format!("management request failed: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("failed to read management response: {error}"))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "management request failed with {}: {}",
+            status, text
+        ));
+    }
+
+    if text.trim().is_empty() {
+        return Ok(JsonValue::Null);
+    }
+
+    Ok(serde_json::from_str::<JsonValue>(&text).unwrap_or(JsonValue::String(text)))
 }
 
 fn load_runtime_context(app: &AppHandle) -> Result<RuntimeContext, String> {
@@ -381,7 +450,7 @@ fn write_runtime_config(ctx: &RuntimeContext) -> Result<(), String> {
         yaml_key("secret-key"),
         YamlValue::String(ctx.bootstrap.management_key.clone()),
     );
-    remote_management.insert(yaml_key("disable-control-panel"), YamlValue::Bool(false));
+    remote_management.insert(yaml_key("disable-control-panel"), YamlValue::Bool(true));
 
     let yaml = serde_yaml::to_string(&root)
         .map_err(|error| format!("failed to serialize runtime config: {error}"))?;
@@ -534,17 +603,13 @@ fn build_cpa_state(ctx: &RuntimeContext, inner: &RuntimeInner) -> CpaState {
         status,
         pid,
         started_at: inner.started_at.map(format_system_time),
-        host: ctx.bootstrap.host.clone(),
         api_port: ctx.bootstrap.api_port,
-        management_base_url: format!(
-            "http://{}:{}/v0/management",
-            ctx.bootstrap.host, ctx.bootstrap.api_port
-        ),
-        management_key_configured: !ctx.bootstrap.management_key.trim().is_empty(),
         binary_path: resolve_runtime_binary_path(&ctx.bootstrap),
         config_path: ctx.paths.config_path.display().to_string(),
         logs_dir: ctx.paths.logs_dir.display().to_string(),
         last_error: inner.last_error.clone(),
+        browser_management_disabled: true,
+        runtime_mode_label: runtime_mode_label(&ctx.bootstrap).to_string(),
         bootstrap: ctx.bootstrap.clone(),
     }
 }
@@ -670,12 +735,41 @@ fn default_management_key() -> String {
     format!("cpapp-{}", seed)
 }
 
+fn default_host() -> String {
+    "127.0.0.1".to_string()
+}
+
 fn normalize_host(host: &str) -> String {
     let trimmed = host.trim();
     if trimmed.is_empty() {
         "127.0.0.1".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+fn runtime_mode_label(settings: &BootstrapSettings) -> &'static str {
+    if settings
+        .explicit_binary_path
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        "显式二进制"
+    } else if resolve_bundled_sidecar_path().is_some() {
+        "内置 Sidecar"
+    } else {
+        "开发模式"
+    }
+}
+
+fn load_existing_management_key(paths: &ResolvedPaths) -> Option<String> {
+    let content = fs::read_to_string(&paths.bootstrap_path).ok()?;
+    let settings = serde_json::from_str::<BootstrapSettings>(&content).ok()?;
+    let key = settings.management_key.trim();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
     }
 }
 

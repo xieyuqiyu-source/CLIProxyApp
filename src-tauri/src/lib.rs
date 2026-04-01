@@ -22,12 +22,12 @@ pub fn run() {
             start_cpa,
             stop_cpa,
             restart_cpa,
-            get_cpa_connection_info,
             get_cpa_runtime_paths,
             get_cpa_recent_logs,
             save_bootstrap_settings,
             open_cpa_config_dir,
-            open_cpa_log_dir
+            open_cpa_log_dir,
+            proxy_management_request
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -71,14 +71,6 @@ fn restart_cpa(
 }
 
 #[tauri::command]
-fn get_cpa_connection_info(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, CpaRuntimeState>,
-) -> Result<cpa::CpaState, String> {
-    cpa::get_cpa_state(&app, &state)
-}
-
-#[tauri::command]
 fn get_cpa_runtime_paths(app: tauri::AppHandle) -> Result<cpa::RuntimePaths, String> {
     cpa::get_runtime_paths(&app)
 }
@@ -105,4 +97,12 @@ fn open_cpa_config_dir(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn open_cpa_log_dir(app: tauri::AppHandle) -> Result<(), String> {
     cpa::open_cpa_log_dir(&app)
+}
+
+#[tauri::command]
+fn proxy_management_request(
+    app: tauri::AppHandle,
+    request: cpa::ManagementProxyRequest,
+) -> Result<serde_json::Value, String> {
+    cpa::proxy_management_request(&app, request)
 }

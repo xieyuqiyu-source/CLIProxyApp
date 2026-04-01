@@ -1,9 +1,7 @@
 export type CpaStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
 
 export interface BootstrapSettings {
-  host: string
   apiPort: number
-  managementKey: string
   autoStart: boolean
   binaryMode: string
   explicitBinaryPath: string | null
@@ -24,14 +22,13 @@ export interface CpaState {
   status: CpaStatus
   pid: number | null
   startedAt: string | null
-  host: string
   apiPort: number
-  managementBaseUrl: string
-  managementKeyConfigured: boolean
   binaryPath: string | null
   configPath: string
   logsDir: string
   lastError: string | null
+  browserManagementDisabled: boolean
+  runtimeModeLabel: string
   bootstrap: BootstrapSettings
 }
 

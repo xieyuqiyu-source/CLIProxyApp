@@ -7,11 +7,12 @@
 Phase 1 is focused on the desktop runtime wrapper:
 
 - Tauri desktop host
-- React runtime dashboard
+- React runtime dashboard with Chinese UI
 - CPA bootstrap settings
 - CPA process start, stop, and restart
 - Runtime paths and logs inspection
 - Bundled CPA sidecar for packaged builds
+- Internal-only management access foundation through Tauri
 
 ## Workspace Layout
 
@@ -47,4 +48,5 @@ npm run tauri dev
 
 - Packaged builds now prefer a bundled `CLIProxyApi` sidecar.
 - In development mode, `CLIProxyApp` first tries the locally built sidecar and then falls back to the sibling repository at `../CLIProxyApi`.
+- Browser control panel access is disabled by default. Management access is intended to move behind Tauri commands instead of direct browser visits.
 - Later phases will expand the management pages and release pipeline.
