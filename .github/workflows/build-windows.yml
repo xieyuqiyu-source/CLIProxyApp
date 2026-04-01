@@ -28,6 +28,12 @@ jobs:
           repository: router-for-me/CLIProxyAPI
           path: CLIProxyApi
 
+      - name: Checkout CLIProxyManagement
+        uses: actions/checkout@v4
+        with:
+          repository: router-for-me/Cli-Proxy-API-Management-Center
+          path: CLIProxyManagement
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -48,6 +54,7 @@ jobs:
       - name: Build Windows bundle
         env:
           CLIPROXYAPI_DIR: ${{ github.workspace }}\CLIProxyApi
+          CLIPROXYMANAGEMENT_DIR: ${{ github.workspace }}\CLIProxyManagement
         run: npm run tauri build -- --bundles msi,nsis
 
       - name: Upload Windows artifacts
