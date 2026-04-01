@@ -1,6 +1,7 @@
 mod cpa;
 
 use cpa::CpaRuntimeState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,6 +16,14 @@ pub fn run() {
                 )?;
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                let state = window.state::<CpaRuntimeState>();
+                if let Err(error) = cpa::shutdown_cpa(&state) {
+                    eprintln!("failed to stop CPA on window destroy: {error}");
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_app_state,

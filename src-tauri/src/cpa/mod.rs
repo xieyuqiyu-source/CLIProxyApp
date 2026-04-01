@@ -237,6 +237,15 @@ pub fn restart_cpa(
     start_cpa(app, state)
 }
 
+pub fn shutdown_cpa(state: &tauri::State<'_, CpaRuntimeState>) -> Result<(), String> {
+    let mut inner = state
+        .inner
+        .lock()
+        .map_err(|_| "failed to lock runtime state".to_string())?;
+    stop_child(&mut inner)?;
+    Ok(())
+}
+
 pub fn get_cpa_recent_logs(app: &AppHandle, max_lines: Option<usize>) -> Result<String, String> {
     let ctx = load_runtime_context(app)?;
     let line_count = max_lines.unwrap_or(120).clamp(10, 1000);
