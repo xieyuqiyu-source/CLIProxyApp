@@ -1,5 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AppState, BootstrapSettings, CpaManagementInfo, CpaState, RuntimePaths } from './types'
+import type {
+  AppState,
+  BootstrapSettings,
+  CpaManagementInfo,
+  CpaState,
+  ExportAuthArchiveResult,
+  ImportAuthFilesResult,
+  ImportAuthInputFile,
+  RuntimePaths
+} from './types'
 
 export const cpaRuntime = {
   getAppState: () => invoke<AppState>('get_app_state'),
@@ -12,6 +21,14 @@ export const cpaRuntime = {
   saveBootstrapSettings: (settings: BootstrapSettings) =>
     invoke<CpaState>('save_bootstrap_settings', { settings }),
   getManagementInfo: () => invoke<CpaManagementInfo>('get_cpa_management_info'),
+  importAuthFiles: (files: ImportAuthInputFile[]) =>
+    invoke<ImportAuthFilesResult>('import_auth_files', { files }),
+  exportAuthFilesArchive: () =>
+    invoke<ExportAuthArchiveResult>('export_auth_files_archive'),
+  openExternalTarget: (target: string) =>
+    invoke('open_external_target', { target }),
+  importVertexCredential: (file: ImportAuthInputFile, location?: string) =>
+    invoke<unknown>('import_vertex_credential', { file, location }),
   proxyManagementRequest: (request: {
     method: string
     path: string

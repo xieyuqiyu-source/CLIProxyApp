@@ -22,7 +22,9 @@ serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 log = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 sysinfo = "0.37"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
+rfd = "0.15"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }

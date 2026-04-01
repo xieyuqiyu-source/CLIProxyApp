@@ -37,7 +37,11 @@ pub fn run() {
             get_cpa_management_info,
             open_cpa_config_dir,
             open_cpa_log_dir,
-            proxy_management_request
+            proxy_management_request,
+            import_auth_files,
+            export_auth_files_archive,
+            open_external_target,
+            import_vertex_credential
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -132,4 +136,33 @@ fn proxy_management_request(
     request: cpa::ManagementProxyRequest,
 ) -> Result<serde_json::Value, String> {
     cpa::proxy_management_request(&app, request)
+}
+
+#[tauri::command]
+fn import_auth_files(
+    app: tauri::AppHandle,
+    files: Vec<cpa::ImportAuthInputFile>,
+) -> Result<cpa::ImportAuthFilesResult, String> {
+    cpa::import_auth_files(&app, files)
+}
+
+#[tauri::command]
+fn export_auth_files_archive(
+    app: tauri::AppHandle,
+) -> Result<cpa::ExportAuthArchiveResult, String> {
+    cpa::export_auth_files_archive(&app)
+}
+
+#[tauri::command]
+fn open_external_target(target: String) -> Result<(), String> {
+    cpa::open_external_target(&target)
+}
+
+#[tauri::command]
+fn import_vertex_credential(
+    app: tauri::AppHandle,
+    file: cpa::ImportAuthInputFile,
+    location: Option<String>,
+) -> Result<serde_json::Value, String> {
+    cpa::import_vertex_credential(&app, file, location)
 }

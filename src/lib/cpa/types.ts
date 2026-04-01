@@ -42,3 +42,21 @@ export interface AppState {
 export interface CpaManagementInfo {
   managementKey: string
 }
+
+export interface ImportAuthInputFile {
+  name: string
+  bytes: number[]
+}
+
+export interface ImportAuthFilesResult {
+  importedCount: number
+  extractedCount: number
+  skipped: string[]
+  response: unknown
+}
+
+export interface ExportAuthArchiveResult {
+  fileName: string
+  fileCount: number
+  savedPath: string | null
+}

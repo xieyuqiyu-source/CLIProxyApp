@@ -1,9 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { cpaRuntime } from './lib/cpa/runtime'
-import type { AppState, BootstrapSettings, CpaManagementInfo, CpaState } from './lib/cpa/types'
+import { OAuthPanel } from './features/oauth/OAuthPanel'
+import { QuotaPanel } from './features/quota/QuotaPanel'
+import type {
+  AppState,
+  BootstrapSettings,
+  CpaManagementInfo,
+  CpaState,
+  ImportAuthFilesResult
+} from './lib/cpa/types'
 
 type LoginRole = 'admin' | 'user'
-type AdminTab = 'overview' | 'cpm'
+type AdminTab = 'overview' | 'oauth' | 'quota' | 'cpm'
 type UserTab = 'overview' | 'oauth' | 'providers' | 'quota' | 'stats'
 
 interface LoginSession {
@@ -68,6 +76,8 @@ function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [adminTab, setAdminTab] = useState<AdminTab>('overview')
   const [userTab, setUserTab] = useState<UserTab>('overview')
+  const importInputRef = useRef<HTMLInputElement | null>(null)
+  const cpmFrameRef = useRef<HTMLIFrameElement | null>(null)
 
   const statusTone = useMemo(() => {
     switch (cpaState?.status) {
@@ -187,6 +197,144 @@ function App() {
     setLoginError(null)
   }
 
+  const showToast = (message: string) => {
+    setToastMessage(message)
+    window.setTimeout(() => setToastMessage(null), 2500)
+  }
+
+  const summarizeImportResult = (result: ImportAuthFilesResult) => {
+    if (result.skipped.length > 0) {
+      return `已导入 ${result.importedCount} 个认证文件，跳过 ${result.skipped.length} 个无效项目`
+    }
+    return `已导入 ${result.importedCount} 个认证文件`
+  }
+
+  const getExternalHref = (href: string, baseUrl: string) => {
+    try {
+      const url = new URL(href, baseUrl)
+      if (!['http:', 'https:', 'mailto:'].includes(url.protocol)) {
+        return null
+      }
+      return url.toString()
+    } catch {
+      return null
+    }
+  }
+
+  const openExternalHref = async (href: string) => {
+    await cpaRuntime.openExternalTarget(href)
+  }
+
+  const installExternalLinkHandler = (doc: Document | null, baseUrl: string) => {
+    if (!doc) {
+      return () => {}
+    }
+
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target
+      if (!(target instanceof Element)) {
+        return
+      }
+
+      const anchor = target.closest('a[href]')
+      if (!(anchor instanceof HTMLAnchorElement)) {
+        return
+      }
+
+      const href = anchor.getAttribute('href')
+      if (!href) {
+        return
+      }
+
+      const externalHref = getExternalHref(href, baseUrl)
+      if (!externalHref) {
+        return
+      }
+
+      event.preventDefault()
+      void openExternalHref(externalHref)
+    }
+
+    doc.addEventListener('click', handleClick, true)
+    return () => doc.removeEventListener('click', handleClick, true)
+  }
+
+  const handleImportSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = event.target.files
+    if (!selectedFiles || selectedFiles.length === 0) {
+      return
+    }
+
+    try {
+      setPendingAction('import-auth-files')
+      setLoadError(null)
+
+      const payload = await Promise.all(
+        Array.from(selectedFiles).map(async (file) => ({
+          name: file.name,
+          bytes: Array.from(new Uint8Array(await file.arrayBuffer()))
+        }))
+      )
+
+      const result = await cpaRuntime.importAuthFiles(payload)
+      await refresh()
+      showToast(summarizeImportResult(result))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLoadError(message)
+    } finally {
+      event.target.value = ''
+      setPendingAction(null)
+    }
+  }
+
+  const handleExportAuthFiles = async () => {
+    try {
+      setPendingAction('export-auth-files')
+      setLoadError(null)
+      const archive = await cpaRuntime.exportAuthFilesArchive()
+      if (!archive.savedPath) {
+        return
+      }
+      showToast(`已导出 ${archive.fileCount} 个认证文件`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLoadError(message)
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  useEffect(() => {
+    const cleanupMain = installExternalLinkHandler(document, window.location.href)
+    return cleanupMain
+  }, [])
+
+  useEffect(() => {
+    if (session?.role !== 'admin' || adminTab !== 'cpm') {
+      return
+    }
+
+    const iframe = cpmFrameRef.current
+    if (!iframe) {
+      return
+    }
+
+    let cleanupFrame = () => {}
+    const attachFrameHandler = () => {
+      cleanupFrame()
+      cleanupFrame = installExternalLinkHandler(iframe.contentDocument, iframe.src || window.location.href)
+    }
+
+    iframe.addEventListener('load', attachFrameHandler)
+    attachFrameHandler()
+
+    return () => {
+      iframe.removeEventListener('load', attachFrameHandler)
+      cleanupFrame()
+    }
+  }, [adminTab, cpmUrl, session?.role])
+
   if (!session) {
     return (
       <div className="min-h-screen bg-base-200">
@@ -299,6 +447,14 @@ function App() {
 
   return (
     <div className="min-h-screen bg-base-200">
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json,.zip,application/json,application/zip"
+        multiple
+        className="hidden"
+        onChange={(event) => void handleImportSelection(event)}
+      />
       <div className="navbar border-b border-base-300 bg-base-100 px-6 shadow-sm">
         <div className="flex-1">
           <div>
@@ -334,6 +490,20 @@ function App() {
             </button>
             <button
               role="tab"
+              className={`tab ${adminTab === 'oauth' ? 'tab-active' : ''}`}
+              onClick={() => setAdminTab('oauth')}
+            >
+              OAuth
+            </button>
+            <button
+              role="tab"
+              className={`tab ${adminTab === 'quota' ? 'tab-active' : ''}`}
+              onClick={() => setAdminTab('quota')}
+            >
+              配额
+            </button>
+            <button
+              role="tab"
               className={`tab ${adminTab === 'cpm' ? 'tab-active' : ''}`}
               onClick={() => setAdminTab('cpm')}
             >
@@ -345,7 +515,13 @@ function App() {
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="badge badge-primary badge-outline">
-                  {adminTab === 'overview' ? '桌面宿主概览' : '原始 CPM 管理页'}
+                  {adminTab === 'overview'
+                    ? '桌面宿主概览'
+                    : adminTab === 'oauth'
+                      ? 'OAuth 授权'
+                      : adminTab === 'quota'
+                        ? '配额管理'
+                        : '原始 CPM 管理页'}
                 </div>
                 <div className={`badge badge-lg ${statusTone}`}>
                   {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
@@ -395,6 +571,24 @@ function App() {
                   <button className="join-item btn btn-secondary btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('restart', () => cpaRuntime.restart())}>重启</button>
                   <button className="join-item btn btn-warning btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('stop', () => cpaRuntime.stop())}>停止</button>
                 </div>
+
+                <button
+                  className="btn btn-outline btn-sm font-normal"
+                  disabled={pendingAction !== null || cpaState?.status !== 'running'}
+                  onClick={() => importInputRef.current?.click()}
+                >
+                  {pendingAction === 'import-auth-files' && <span className="loading loading-spinner loading-xs"></span>}
+                  批量导入认证
+                </button>
+
+                <button
+                  className="btn btn-outline btn-sm font-normal"
+                  disabled={pendingAction !== null}
+                  onClick={() => void handleExportAuthFiles()}
+                >
+                  {pendingAction === 'export-auth-files' && <span className="loading loading-spinner loading-xs"></span>}
+                  批量导出认证
+                </button>
 
                 <button className="btn btn-outline btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('refresh', refresh)}>刷新状态</button>
               </div>
@@ -533,6 +727,19 @@ function App() {
                 </div>
               </div>
             </div>
+          ) : adminTab === 'oauth' ? (
+            <OAuthPanel
+              canManage={true}
+              cpaRunning={cpaState?.status === 'running'}
+              onNotify={showToast}
+              onError={setLoadError}
+            />
+          ) : adminTab === 'quota' ? (
+            <QuotaPanel
+              cpaRunning={cpaState?.status === 'running'}
+              onNotify={showToast}
+              onError={setLoadError}
+            />
           ) : (
             <div className="mt-4">
               {cpaState?.status !== 'running' ? (
@@ -557,6 +764,7 @@ function App() {
                 <div className="card bg-base-100 shadow-xl">
                   <div className="card-body p-2">
                     <iframe
+                      ref={cpmFrameRef}
                       key={cpmUrl}
                       src={cpmUrl}
                       title="CPM 管理页面"
@@ -807,14 +1015,12 @@ function App() {
           )}
 
           {userTab === 'oauth' && (
-            <div className="hero rounded-box bg-base-100 shadow-sm py-28 mt-1 border border-dashed border-base-300">
-              <div className="hero-content text-center">
-                <div className="max-w-md">
-                  <h2 className="text-3xl font-black opacity-40">OAuth 登录配置</h2>
-                  <p className="py-4 text-base-content/50">模块开发中：未来提供社交账号与企业 SSO 整合接入能力</p>
-                </div>
-              </div>
-            </div>
+            <OAuthPanel
+              canManage={false}
+              cpaRunning={cpaState?.status === 'running'}
+              onNotify={showToast}
+              onError={setLoadError}
+            />
           )}
 
           {userTab === 'providers' && (
@@ -829,14 +1035,11 @@ function App() {
           )}
 
           {userTab === 'quota' && (
-            <div className="hero rounded-box bg-base-100 shadow-sm py-28 mt-1 border border-dashed border-base-300">
-              <div className="hero-content text-center">
-                <div className="max-w-md">
-                  <h2 className="text-3xl font-black opacity-40">配额管理</h2>
-                  <p className="py-4 text-base-content/50">模块开发中：精确分析成本、设置并发限制、管控与告警策略</p>
-                </div>
-              </div>
-            </div>
+            <QuotaPanel
+              cpaRunning={cpaState?.status === 'running'}
+              onNotify={showToast}
+              onError={setLoadError}
+            />
           )}
 
           {userTab === 'stats' && (

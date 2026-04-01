@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use serde_yaml::{Mapping, Number, Value as YamlValue};
 use std::{
+    collections::HashSet,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Cursor, Read, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -90,6 +91,30 @@ pub struct ManagementProxyRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CpaManagementInfo {
     pub management_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportAuthInputFile {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportAuthFilesResult {
+    pub imported_count: usize,
+    pub extracted_count: usize,
+    pub skipped: Vec<String>,
+    pub response: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportAuthArchiveResult {
+    pub file_name: String,
+    pub file_count: usize,
+    pub saved_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -380,6 +405,409 @@ pub fn proxy_management_request(
     }
 
     Ok(serde_json::from_str::<JsonValue>(&text).unwrap_or(JsonValue::String(text)))
+}
+
+pub fn import_auth_files(
+    app: &AppHandle,
+    files: Vec<ImportAuthInputFile>,
+) -> Result<ImportAuthFilesResult, String> {
+    let ctx = load_runtime_context(app)?;
+    if !wait_for_port(
+        &ctx.bootstrap.host,
+        ctx.bootstrap.api_port,
+        Duration::from_millis(800),
+    ) {
+        return Err("CPA is not reachable. Start it before importing auth files.".to_string());
+    }
+
+    let mut extracted_files = Vec::new();
+    let mut skipped = Vec::new();
+    let mut used_names = HashSet::new();
+
+    for file in files {
+        let original_name = file.name.trim();
+        if original_name.is_empty() {
+            skipped.push("Skipped an unnamed file.".to_string());
+            continue;
+        }
+
+        let lower_name = original_name.to_ascii_lowercase();
+        if lower_name.ends_with(".json") {
+            let file_name = unique_auth_file_name(original_name, &mut used_names);
+            extracted_files.push((file_name, file.bytes));
+            continue;
+        }
+
+        if lower_name.ends_with(".zip") {
+            let nested_files =
+                extract_auth_files_from_zip(&file.bytes, original_name, &mut used_names)?;
+            if nested_files.is_empty() {
+                skipped.push(format!(
+                    "{original_name}: no .json auth files found in archive"
+                ));
+            } else {
+                extracted_files.extend(nested_files);
+            }
+            continue;
+        }
+
+        skipped.push(format!("{original_name}: unsupported file type"));
+    }
+
+    if extracted_files.is_empty() {
+        return Err(if skipped.is_empty() {
+            "No auth files were selected.".to_string()
+        } else {
+            format!("No importable auth files found. {}", skipped.join("; "))
+        });
+    }
+
+    let url = format!(
+        "http://{}:{}/v0/management/auth-files",
+        ctx.bootstrap.host, ctx.bootstrap.api_port
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("failed to create management client: {error}"))?;
+
+    let extracted_count = extracted_files.len();
+    let mut form = reqwest::blocking::multipart::Form::new();
+    for (index, (name, bytes)) in extracted_files.into_iter().enumerate() {
+        let part = reqwest::blocking::multipart::Part::bytes(bytes)
+            .file_name(name)
+            .mime_str("application/json")
+            .map_err(|error| format!("failed to create multipart part: {error}"))?;
+        form = form.part(format!("file{index}"), part);
+    }
+
+    let response = client
+        .post(url)
+        .bearer_auth(&ctx.bootstrap.management_key)
+        .multipart(form)
+        .send()
+        .map_err(|error| format!("failed to upload auth files: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("failed to read upload response: {error}"))?;
+
+    if !status.is_success() {
+        return Err(format!("auth file import failed with {status}: {text}"));
+    }
+
+    let response_json =
+        serde_json::from_str::<JsonValue>(&text).unwrap_or(JsonValue::String(text.clone()));
+    let imported_count = response_json
+        .get("uploaded")
+        .and_then(JsonValue::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(extracted_count);
+
+    Ok(ImportAuthFilesResult {
+        imported_count,
+        extracted_count,
+        skipped,
+        response: response_json,
+    })
+}
+
+pub fn export_auth_files_archive(app: &AppHandle) -> Result<ExportAuthArchiveResult, String> {
+    let ctx = load_runtime_context(app)?;
+    let auth_dir = resolve_auth_dir(&ctx.paths)?;
+    if !auth_dir.exists() {
+        return Err(format!(
+            "auth directory does not exist: {}",
+            auth_dir.display()
+        ));
+    }
+
+    let mut auth_files = Vec::new();
+    collect_auth_files(&auth_dir, &mut auth_files)?;
+    auth_files.sort();
+
+    if auth_files.is_empty() {
+        return Err(format!(
+            "no auth .json files found in {}",
+            auth_dir.display()
+        ));
+    }
+
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut archive = zip::ZipWriter::new(&mut cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(0o644);
+
+        for path in &auth_files {
+            let relative = path
+                .strip_prefix(&auth_dir)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let data = fs::read(path)
+                .map_err(|error| format!("failed to read auth file {}: {error}", path.display()))?;
+            archive
+                .start_file(relative, options)
+                .map_err(|error| format!("failed to add auth file to archive: {error}"))?;
+            archive
+                .write_all(&data)
+                .map_err(|error| format!("failed to write auth archive entry: {error}"))?;
+        }
+
+        archive
+            .finish()
+            .map_err(|error| format!("failed to finalize auth archive: {error}"))?;
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let file_name = format!("auth-files-{timestamp}.zip");
+    let Some(save_path) = rfd::FileDialog::new()
+        .add_filter("ZIP archive", &["zip"])
+        .set_file_name(&file_name)
+        .save_file()
+    else {
+        return Ok(ExportAuthArchiveResult {
+            file_name,
+            file_count: auth_files.len(),
+            saved_path: None,
+        });
+    };
+
+    fs::write(&save_path, cursor.into_inner()).map_err(|error| {
+        format!(
+            "failed to save auth archive {}: {error}",
+            save_path.display()
+        )
+    })?;
+
+    Ok(ExportAuthArchiveResult {
+        file_name,
+        file_count: auth_files.len(),
+        saved_path: Some(save_path.display().to_string()),
+    })
+}
+
+pub fn open_external_target(target: &str) -> Result<(), String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err("target is required".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(trimmed);
+        command
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(trimmed);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler");
+        command.arg(trimmed);
+        command
+    };
+
+    command
+        .spawn()
+        .map_err(|error| format!("failed to open external target {trimmed}: {error}"))?;
+    Ok(())
+}
+
+pub fn import_vertex_credential(
+    app: &AppHandle,
+    file: ImportAuthInputFile,
+    location: Option<String>,
+) -> Result<JsonValue, String> {
+    let ctx = load_runtime_context(app)?;
+    if !wait_for_port(
+        &ctx.bootstrap.host,
+        ctx.bootstrap.api_port,
+        Duration::from_millis(800),
+    ) {
+        return Err(
+            "CPA is not reachable. Start it before importing Vertex credentials.".to_string(),
+        );
+    }
+
+    let file_name = file.name.trim();
+    if file_name.is_empty() {
+        return Err("Vertex credential file is required.".to_string());
+    }
+
+    let url = format!(
+        "http://{}:{}/v0/management/vertex/import",
+        ctx.bootstrap.host, ctx.bootstrap.api_port
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("failed to create management client: {error}"))?;
+
+    let part = reqwest::blocking::multipart::Part::bytes(file.bytes)
+        .file_name(file_name.to_string())
+        .mime_str("application/json")
+        .map_err(|error| format!("failed to create vertex upload part: {error}"))?;
+
+    let mut form = reqwest::blocking::multipart::Form::new().part("file", part);
+    if let Some(location) = location
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        form = form.text("location", location);
+    }
+
+    let response = client
+        .post(url)
+        .bearer_auth(&ctx.bootstrap.management_key)
+        .multipart(form)
+        .send()
+        .map_err(|error| format!("failed to import Vertex credential: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("failed to read Vertex import response: {error}"))?;
+
+    if !status.is_success() {
+        return Err(format!("vertex import failed with {status}: {text}"));
+    }
+
+    Ok(serde_json::from_str::<JsonValue>(&text).unwrap_or(JsonValue::String(text)))
+}
+
+fn extract_auth_files_from_zip(
+    archive_bytes: &[u8],
+    archive_name: &str,
+    used_names: &mut HashSet<String>,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let cursor = Cursor::new(archive_bytes.to_vec());
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|error| format!("failed to open zip archive {archive_name}: {error}"))?;
+    let mut files = Vec::new();
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("failed to read zip entry from {archive_name}: {error}"))?;
+        if entry.is_dir() {
+            continue;
+        }
+
+        let entry_name = entry.name().replace('\\', "/");
+        if !entry_name.to_ascii_lowercase().ends_with(".json") {
+            continue;
+        }
+
+        let file_name = unique_auth_file_name(&entry_name, used_names);
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|error| {
+            format!("failed to extract {entry_name} from {archive_name}: {error}")
+        })?;
+        files.push((file_name, bytes));
+    }
+
+    Ok(files)
+}
+
+fn unique_auth_file_name(name: &str, used_names: &mut HashSet<String>) -> String {
+    let base_name = Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("auth.json");
+
+    let mut sanitized = base_name.replace(['/', '\\'], "_");
+    if !sanitized.to_ascii_lowercase().ends_with(".json") {
+        sanitized.push_str(".json");
+    }
+
+    if used_names.insert(sanitized.clone()) {
+        return sanitized;
+    }
+
+    let stem = sanitized
+        .strip_suffix(".json")
+        .unwrap_or(&sanitized)
+        .to_string();
+    let mut counter = 2usize;
+    loop {
+        let candidate = format!("{stem}-{counter}.json");
+        if used_names.insert(candidate.clone()) {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+fn resolve_auth_dir(paths: &ResolvedPaths) -> Result<PathBuf, String> {
+    let default_auth_dir = paths.config_dir.join("auths");
+    if !paths.config_path.exists() {
+        return Ok(default_auth_dir);
+    }
+
+    let content = fs::read_to_string(&paths.config_path)
+        .map_err(|error| format!("failed to read runtime config: {error}"))?;
+    let root =
+        serde_yaml::from_str::<YamlValue>(&content).unwrap_or(YamlValue::Mapping(Mapping::new()));
+
+    let Some(raw_path) = root
+        .as_mapping()
+        .and_then(|mapping| mapping.get(yaml_key("auth-dir")))
+        .and_then(YamlValue::as_str)
+    else {
+        return Ok(default_auth_dir);
+    };
+
+    let auth_dir = PathBuf::from(raw_path);
+    if auth_dir.is_absolute() {
+        Ok(auth_dir)
+    } else {
+        Ok(paths.config_dir.join(auth_dir))
+    }
+}
+
+fn collect_auth_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = fs::read_dir(dir)
+        .map_err(|error| format!("failed to read auth directory {}: {error}", dir.display()))?;
+
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("failed to inspect auth directory entry: {error}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+
+        if file_type.is_dir() {
+            collect_auth_files(&path, files)?;
+            continue;
+        }
+
+        if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("json"))
+        {
+            files.push(path);
+        }
+    }
+
+    Ok(())
 }
 
 fn load_runtime_context(app: &AppHandle) -> Result<RuntimeContext, String> {
@@ -705,10 +1133,7 @@ fn stop_child(inner: &mut RuntimeInner) -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_stale_cpa_processes(
-    paths: &ResolvedPaths,
-    keep_pid: Option<u32>,
-) -> Result<(), String> {
+fn cleanup_stale_cpa_processes(paths: &ResolvedPaths, keep_pid: Option<u32>) -> Result<(), String> {
     let config_path = fs::canonicalize(&paths.config_path).unwrap_or(paths.config_path.clone());
     let config_path_text = config_path.display().to_string();
 
@@ -746,7 +1171,9 @@ fn cleanup_stale_cpa_processes(
             continue;
         }
 
-        let terminated = process.kill_with(Signal::Kill).unwrap_or_else(|| process.kill());
+        let terminated = process
+            .kill_with(Signal::Kill)
+            .unwrap_or_else(|| process.kill());
         if !terminated {
             return Err(format!(
                 "failed to terminate stale CPA process {} ({})",
