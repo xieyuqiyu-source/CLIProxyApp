@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(__dirname, '..')
-const cpaRoot = resolve(projectRoot, '../CLIProxyApi')
+const cpaRoot = process.env.CLIPROXYAPI_DIR
+  ? resolve(process.env.CLIPROXYAPI_DIR)
+  : resolve(projectRoot, '../CLIProxyApi')
 const resourcesRoot = resolve(projectRoot, 'src-tauri/resources/sidecar')
 
 if (!existsSync(cpaRoot)) {
