@@ -208,8 +208,8 @@ function App() {
               <div className="card-body">
                 <h2 className="card-title text-2xl mb-4">登录</h2>
 
-                <div className="form-control mb-2">
-                  <label className="input input-bordered flex items-center gap-3">
+                <div className="form-control mb-4">
+                  <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
                       <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM12.735 14c.618 0 1.093-.561.872-1.139a6.002 6.002 0 0 0-11.215 0c-.22.578.254 1.139.872 1.139h9.47Z" />
                     </svg>
@@ -226,8 +226,8 @@ function App() {
                   </label>
                 </div>
 
-                <div className="form-control mb-4">
-                  <label className="input input-bordered flex items-center gap-3">
+                <div className="form-control mb-6">
+                  <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
                       <path fillRule="evenodd" d="M14 6a4 4 0 0 1-4.899 3.899l-1.955 1.955a.5.5 0 0 1-.353.146H5v1.5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-2.293a.5.5 0 0 1 .146-.353l3.955-3.955A4 4 0 1 1 14 6Zm-4-2a.75.75 0 0 0 0 1.5.5.5 0 0 1 .5.5.75.75 0 0 0 1.5 0 2 2 0 0 0-2-2Z" clipRule="evenodd" />
                     </svg>
@@ -245,14 +245,14 @@ function App() {
                 </div>
 
                 {loginError && (
-                  <div className="alert alert-error mb-2">
+                  <div className="alert alert-error mb-4">
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                     <span>{loginError}</span>
                   </div>
                 )}
 
                 <div className="form-control mt-2">
-                  <button className="btn btn-primary btn-block" onClick={submitLogin}>
+                  <button className="btn btn-primary w-full" onClick={submitLogin}>
                     登录
                   </button>
                 </div>
@@ -448,7 +448,7 @@ function App() {
           </div>
 
           <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-            <div className="card bg-base-100 shadow-xl">
+            <div className="card bg-base-100 shadow-xl min-w-0">
               <div className="card-body">
                 <h3 className="card-title">运行详情</h3>
                 <div className="overflow-x-auto">
@@ -480,10 +480,10 @@ function App() {
               </div>
             </div>
 
-            <div className="card bg-base-100 shadow-xl">
+            <div className="card bg-base-100 shadow-xl min-w-0">
               <div className="card-body">
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="card-title">最近日志</h3>
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <h3 className="card-title">最近运行日志</h3>
                   <button
                     className="btn btn-outline btn-sm"
                     disabled={pendingAction !== null}
@@ -493,13 +493,33 @@ function App() {
                       })
                     }
                   >
-                    重新载入
+                    刷新日志
                   </button>
                 </div>
-                <div className="mockup-code min-h-80 overflow-x-auto">
-                  <pre className="whitespace-pre-wrap break-all">
-                    <code>{logs}</code>
-                  </pre>
+                
+                <div className="mockup-code w-full h-96 overflow-auto shadow-inner bg-base-300/50 text-base-content/80 text-xs sm:text-sm leading-relaxed">
+                  {(!logs || logs === '等待运行日志...') ? (
+                    <pre data-prefix=">"><code>等待运行日志...</code></pre>
+                  ) : (
+                    logs.split('\n').map((line, idx) => {
+                      let tagClass = 'whitespace-pre-wrap break-all '
+                      const lowerLine = line.toLowerCase()
+                      if (lowerLine.includes('error') || lowerLine.includes('fail') || lowerLine.includes('crit')) {
+                        tagClass += 'text-error font-bold'
+                      } else if (lowerLine.includes('warn')) {
+                        tagClass += 'text-warning font-semibold'
+                      } else if (lowerLine.includes('info') || lowerLine.includes('success')) {
+                        tagClass += 'text-info'
+                      } else {
+                        tagClass += 'opacity-80'
+                      }
+                      return (
+                        <pre key={idx} data-prefix={idx + 1} className={tagClass}>
+                          <code>{line || ' '}</code>
+                        </pre>
+                      )
+                    })
+                  )}
                 </div>
               </div>
             </div>
