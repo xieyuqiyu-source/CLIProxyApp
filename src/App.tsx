@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { cpaRuntime } from './lib/cpa/runtime'
-import type { AppState, BootstrapSettings, CpaState } from './lib/cpa/types'
+import type { AppState, BootstrapSettings, CpaManagementInfo, CpaState, RuntimePaths } from './lib/cpa/types'
 
 type LoginRole = 'admin' | 'user'
+type AdminTab = 'overview' | 'cpm'
 
 interface LoginSession {
   username: string
@@ -58,9 +59,13 @@ function App() {
   const [loginError, setLoginError] = useState<string | null>(null)
   const [appState, setAppState] = useState<AppState | null>(null)
   const [cpaState, setCpaState] = useState<CpaState | null>(null)
+  const [managementInfo, setManagementInfo] = useState<CpaManagementInfo | null>(null)
+  const [runtimePaths, setRuntimePaths] = useState<RuntimePaths | null>(null)
+  const [recentLogs, setRecentLogs] = useState('等待运行日志...')
   const [settings, setSettings] = useState<BootstrapSettings>(createEmptySettings)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [adminTab, setAdminTab] = useState<AdminTab>('overview')
 
   const statusTone = useMemo(() => {
     switch (cpaState?.status) {
@@ -77,19 +82,24 @@ function App() {
   }, [cpaState?.status])
 
   const cpmUrl = useMemo(() => {
-    const port = cpaState?.apiPort ?? settings.apiPort ?? 8317
-    return `http://127.0.0.1:${port}/management.html`
+    return `http://127.0.0.1:${cpaState?.apiPort ?? settings.apiPort ?? 8317}/management.html`
   }, [cpaState?.apiPort, settings.apiPort])
 
   const refresh = async () => {
     try {
-      const [nextAppState, nextCpaState] = await Promise.all([
+      const [nextAppState, nextCpaState, nextManagementInfo, nextRuntimePaths, nextRecentLogs] = await Promise.all([
         cpaRuntime.getAppState(),
         cpaRuntime.getState(),
+        cpaRuntime.getManagementInfo(),
+        cpaRuntime.getRuntimePaths(),
+        cpaRuntime.getRecentLogs(),
       ])
 
       setAppState(nextAppState)
       setCpaState(nextCpaState)
+      setManagementInfo(nextManagementInfo)
+      setRuntimePaths(nextRuntimePaths)
+      setRecentLogs(nextRecentLogs || '当前还没有日志。')
       setSettings(nextCpaState.bootstrap)
       setLoadError(null)
     } catch (error) {
@@ -120,6 +130,25 @@ function App() {
     } finally {
       setPendingAction(null)
     }
+  }
+
+  const savePort = async () => {
+    const normalizedPort = Number(settings.apiPort)
+    if (!Number.isInteger(normalizedPort) || normalizedPort < 1 || normalizedPort > 65535) {
+      setLoadError('端口必须是 1 到 65535 之间的整数。')
+      return
+    }
+
+    await runAction('save-port', async () => {
+      await cpaRuntime.saveBootstrapSettings({
+        ...settings,
+        apiPort: normalizedPort
+      })
+
+      if (cpaState?.status === 'running') {
+        await cpaRuntime.restart()
+      }
+    })
   }
 
   const submitLogin = () => {
@@ -284,9 +313,28 @@ function App() {
 
       {session.role === 'admin' ? (
         <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
+          <div role="tablist" className="tabs tabs-box bg-base-100 shadow-sm w-fit">
+            <button
+              role="tab"
+              className={`tab ${adminTab === 'overview' ? 'tab-active' : ''}`}
+              onClick={() => setAdminTab('overview')}
+            >
+              概览
+            </button>
+            <button
+              role="tab"
+              className={`tab ${adminTab === 'cpm' ? 'tab-active' : ''}`}
+              onClick={() => setAdminTab('cpm')}
+            >
+              CPM
+            </button>
+          </div>
+
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="badge badge-primary badge-outline">原始 CPM 管理页</div>
+              <div className="badge badge-primary badge-outline">
+                {adminTab === 'overview' ? '桌面宿主概览' : '原始 CPM 管理页'}
+              </div>
               <div className={`badge badge-lg ${statusTone}`}>
                 {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
               </div>
@@ -307,6 +355,13 @@ function App() {
                 onClick={() => void runAction('restart', () => cpaRuntime.restart())}
               >
                 重启 CPA
+              </button>
+              <button
+                className="btn btn-warning btn-sm"
+                disabled={pendingAction !== null}
+                onClick={() => void runAction('stop', () => cpaRuntime.stop())}
+              >
+                停止 CPA
               </button>
               <button
                 className="btn btn-outline btn-sm"
@@ -333,47 +388,249 @@ function App() {
             </div>
           ) : null}
 
-          {cpaState?.status !== 'running' ? (
-            <div className="hero rounded-box bg-base-100 shadow-xl">
-              <div className="hero-content py-16 text-center">
-                <div className="max-w-2xl">
-                  <h2 className="text-3xl font-black">先启动 CPA，才能进入原始 CPM 管理页</h2>
-                  <p className="py-4 text-base-content/65">
-                    `admin / admin` 现在会直接进入原来的 CPM 页面。当前 `CPA` 还没有处于运行中，所以先启动服务，再加载
-                    `management.html`。
-                  </p>
-                  <button
-                    className="btn btn-primary"
-                    disabled={pendingAction !== null}
-                    onClick={() => void runAction('start', () => cpaRuntime.start())}
-                  >
-                    立即启动 CPA
-                  </button>
+          {adminTab === 'overview' ? (
+            <>
+              <div className="stats stats-vertical gap-4 bg-transparent shadow-none lg:stats-horizontal">
+                <div className="stat rounded-box bg-base-100 shadow-sm">
+                  <div className="stat-title">运行状态</div>
+                  <div className="stat-value text-2xl">
+                    {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
+                  </div>
+                  <div className="stat-desc">PID {cpaState?.pid ?? '-'}</div>
+                </div>
+                <div className="stat rounded-box bg-base-100 shadow-sm">
+                  <div className="stat-title">当前端口</div>
+                  <div className="stat-value text-2xl">{cpaState?.apiPort ?? settings.apiPort ?? 8317}</div>
+                  <div className="stat-desc">{cpaState?.runtimeModeLabel ?? '开发模式'}</div>
+                </div>
+                <div className="stat rounded-box bg-base-100 shadow-sm">
+                  <div className="stat-title">浏览器入口</div>
+                  <div className="stat-value text-lg">management.html</div>
+                  <div className="stat-desc truncate">{cpmUrl}</div>
+                </div>
+                <div className="stat rounded-box bg-base-100 shadow-sm">
+                  <div className="stat-title">配置文件</div>
+                  <div className="stat-value text-lg">config.yaml</div>
+                  <div className="stat-desc truncate">{cpaState?.configPath ?? '-'}</div>
                 </div>
               </div>
-            </div>
-          ) : cpaState.browserManagementDisabled ? (
-            <div className="hero rounded-box bg-base-100 shadow-xl">
-              <div className="hero-content py-16 text-center">
-                <div className="max-w-2xl">
-                  <h2 className="text-3xl font-black">当前模式已关闭浏览器管理入口</h2>
-                  <p className="py-4 text-base-content/65">
-                    这个入口只在本地开发阶段可直接加载原始 CPM 页面。当前运行模式下浏览器入口被关闭了。
-                  </p>
+
+              <div className="card bg-base-100 shadow-sm">
+                <div className="card-body gap-4 md:flex-row md:items-end md:justify-between">
+                  <div className="space-y-2">
+                    <h3 className="card-title text-base">本地监听端口</h3>
+                    <p className="text-sm text-base-content/60">
+                      这里改的是 CPA 本地服务端口。保存后如果服务正在运行，会自动重启并切到新端口。
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <label className="form-control w-40">
+                      <div className="label pb-1">
+                        <span className="label-text">CPA 端口</span>
+                      </div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        className="input input-bordered"
+                        value={settings.apiPort}
+                        onChange={(event) => {
+                          setSettings((current) => ({
+                            ...current,
+                            apiPort: Number(event.target.value || 0)
+                          }))
+                        }}
+                      />
+                    </label>
+
+                    <button
+                      className="btn btn-primary"
+                      disabled={pendingAction !== null}
+                      onClick={() => void savePort()}
+                    >
+                      保存端口
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
+
+              <div className="card bg-base-100 shadow-sm">
+                <div className="card-body gap-4">
+                  <div className="space-y-2">
+                    <h3 className="card-title text-base">管理密钥</h3>
+                    <p className="text-sm text-base-content/60">
+                      这里显示的是当前 CPM 登录要用的管理密钥。你可以复制后手动粘贴到原始 CPM 登录页。
+                    </p>
+                  </div>
+
+                  <label className="form-control">
+                    <textarea
+                      className="textarea textarea-bordered h-24 font-mono text-xs"
+                      readOnly
+                      value={managementInfo?.managementKey ?? ''}
+                    />
+                  </label>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="btn btn-outline btn-sm"
+                      disabled={!managementInfo?.managementKey}
+                      onClick={() => {
+                        void navigator.clipboard.writeText(managementInfo?.managementKey ?? '')
+                      }}
+                    >
+                      复制管理密钥
+                    </button>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      onClick={() => setAdminTab('cpm')}
+                    >
+                      进入 CPM
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="card bg-base-100 shadow-sm">
+                  <div className="card-body gap-4">
+                    <div className="space-y-2">
+                      <h3 className="card-title text-base">运行路径</h3>
+                      <p className="text-sm text-base-content/60">
+                        这里是当前桌面宿主为 CPA 管理的配置目录、日志目录和运行文件位置。
+                      </p>
+                    </div>
+
+                    <div className="space-y-3 text-sm">
+                      <div>
+                        <div className="font-semibold">运行目录</div>
+                        <div className="font-mono text-xs text-base-content/70 break-all">
+                          {runtimePaths?.runtimeDir ?? '-'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="font-semibold">配置目录</div>
+                        <div className="font-mono text-xs text-base-content/70 break-all">
+                          {runtimePaths?.configDir ?? '-'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="font-semibold">日志目录</div>
+                        <div className="font-mono text-xs text-base-content/70 break-all">
+                          {runtimePaths?.logsDir ?? '-'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="font-semibold">标准输出日志</div>
+                        <div className="font-mono text-xs text-base-content/70 break-all">
+                          {runtimePaths?.stdoutLogPath ?? '-'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="font-semibold">错误日志</div>
+                        <div className="font-mono text-xs text-base-content/70 break-all">
+                          {runtimePaths?.stderrLogPath ?? '-'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="btn btn-outline btn-sm"
+                        onClick={() => {
+                          void cpaRuntime.openConfigDir()
+                        }}
+                      >
+                        打开配置目录
+                      </button>
+                      <button
+                        className="btn btn-outline btn-sm"
+                        onClick={() => {
+                          void cpaRuntime.openLogsDir()
+                        }}
+                      >
+                        打开日志目录
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card bg-base-100 shadow-sm">
+                  <div className="card-body gap-4">
+                    <div className="space-y-2">
+                      <h3 className="card-title text-base">最近日志</h3>
+                      <p className="text-sm text-base-content/60">
+                        展示当前 CPA 进程最近的标准输出和错误输出，方便快速排查。
+                      </p>
+                    </div>
+
+                    <pre className="max-h-[28rem] overflow-auto rounded-box bg-base-200 p-4 text-xs leading-6 text-base-content/80 whitespace-pre-wrap break-all">
+                      {recentLogs}
+                    </pre>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="btn btn-outline btn-sm"
+                        disabled={pendingAction !== null}
+                        onClick={() =>
+                          void runAction('refresh-logs', async () => {
+                            const logs = await cpaRuntime.getRecentLogs()
+                            setRecentLogs(logs || '当前还没有日志。')
+                          })
+                        }
+                      >
+                        刷新日志
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>
           ) : (
-            <div className="card bg-base-100 shadow-xl">
-              <div className="card-body p-2">
-                <iframe
-                  key={cpmUrl}
-                  src={cpmUrl}
-                  title="CPM 管理页面"
-                  className="h-[calc(100vh-11rem)] w-full rounded-box border border-base-300 bg-base-100"
-                />
-              </div>
-            </div>
+            <>
+              {cpaState?.status !== 'running' ? (
+                <div className="hero rounded-box bg-base-100 shadow-xl">
+                  <div className="hero-content py-16 text-center">
+                    <div className="max-w-2xl">
+                      <h2 className="text-3xl font-black">先启动 CPA，才能进入原始 CPM 管理页</h2>
+                      <p className="py-4 text-base-content/65">
+                        当前 `CPA` 还没有处于运行中，所以先启动服务，再加载 `management.html`。
+                      </p>
+                      <button
+                        className="btn btn-primary"
+                        disabled={pendingAction !== null}
+                        onClick={() => void runAction('start', () => cpaRuntime.start())}
+                      >
+                        立即启动 CPA
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : cpaState.browserManagementDisabled ? (
+                <div className="hero rounded-box bg-base-100 shadow-xl">
+                  <div className="hero-content py-16 text-center">
+                    <div className="max-w-2xl">
+                      <h2 className="text-3xl font-black">当前模式已关闭浏览器管理入口</h2>
+                      <p className="py-4 text-base-content/65">
+                        这个入口只在本地开发阶段可直接加载原始 CPM 页面。当前运行模式下浏览器入口被关闭了。
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="card bg-base-100 shadow-xl">
+                  <div className="card-body p-2">
+                    <iframe
+                      key={cpmUrl}
+                      src={cpmUrl}
+                      title="CPM 管理页面"
+                      className="h-[calc(100vh-11rem)] w-full rounded-box border border-base-300 bg-base-100"
+                    />
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </main>
       ) : (

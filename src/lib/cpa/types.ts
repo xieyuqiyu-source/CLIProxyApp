@@ -10,6 +10,7 @@ export interface BootstrapSettings {
 export interface RuntimePaths {
   appDataDir: string
   runtimeDir: string
+  staticDir: string
   configDir: string
   logsDir: string
   bootstrapPath: string
@@ -36,4 +37,8 @@ export interface AppState {
   appName: string
   appVersion: string
   platform: string
+}
+
+export interface CpaManagementInfo {
+  managementKey: string
 }

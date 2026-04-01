@@ -25,6 +25,7 @@ pub fn run() {
             get_cpa_runtime_paths,
             get_cpa_recent_logs,
             save_bootstrap_settings,
+            get_cpa_management_info,
             open_cpa_config_dir,
             open_cpa_log_dir,
             proxy_management_request
@@ -87,6 +88,11 @@ fn save_bootstrap_settings(
     settings: cpa::BootstrapSettings,
 ) -> Result<cpa::CpaState, String> {
     cpa::save_bootstrap_settings(&app, &state, settings)
+}
+
+#[tauri::command]
+fn get_cpa_management_info(app: tauri::AppHandle) -> Result<cpa::CpaManagementInfo, String> {
+    cpa::get_cpa_management_info(&app)
 }
 
 #[tauri::command]

@@ -16,9 +16,9 @@ use tauri::{AppHandle, Manager};
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapSettings {
     pub api_port: u16,
-    #[serde(skip_serializing, default = "default_host")]
+    #[serde(default = "default_host")]
     pub host: String,
-    #[serde(skip_serializing, default = "default_management_key")]
+    #[serde(default = "default_management_key")]
     pub management_key: String,
     pub auto_start: bool,
     pub binary_mode: String,
@@ -43,6 +43,7 @@ impl Default for BootstrapSettings {
 pub struct RuntimePaths {
     pub app_data_dir: String,
     pub runtime_dir: String,
+    pub static_dir: String,
     pub config_dir: String,
     pub logs_dir: String,
     pub bootstrap_path: String,
@@ -84,6 +85,12 @@ pub struct ManagementProxyRequest {
     pub body: Option<JsonValue>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CpaManagementInfo {
+    pub management_key: String,
+}
+
 #[derive(Debug)]
 struct RuntimeContext {
     paths: ResolvedPaths,
@@ -94,6 +101,7 @@ struct RuntimeContext {
 struct ResolvedPaths {
     app_data_dir: PathBuf,
     runtime_dir: PathBuf,
+    static_dir: PathBuf,
     config_dir: PathBuf,
     logs_dir: PathBuf,
     bootstrap_path: PathBuf,
@@ -290,6 +298,13 @@ pub fn save_bootstrap_settings(
     Ok(build_cpa_state(&ctx, &inner))
 }
 
+pub fn get_cpa_management_info(app: &AppHandle) -> Result<CpaManagementInfo, String> {
+    let ctx = load_runtime_context(app)?;
+    Ok(CpaManagementInfo {
+        management_key: ctx.bootstrap.management_key,
+    })
+}
+
 pub fn open_cpa_config_dir(app: &AppHandle) -> Result<(), String> {
     let ctx = load_runtime_context(app)?;
     open_path(&ctx.paths.config_dir)
@@ -369,12 +384,14 @@ fn resolve_paths(app: &AppHandle) -> Result<ResolvedPaths, String> {
         .app_data_dir()
         .map_err(|error| format!("failed to resolve app data dir: {error}"))?;
     let runtime_dir = app_data_dir.join("runtime");
+    let static_dir = runtime_dir.join("static");
     let config_dir = runtime_dir.join("config");
     let logs_dir = runtime_dir.join("logs");
 
     Ok(ResolvedPaths {
         app_data_dir,
         runtime_dir: runtime_dir.clone(),
+        static_dir: static_dir.clone(),
         config_dir: config_dir.clone(),
         logs_dir: logs_dir.clone(),
         bootstrap_path: config_dir.join("bootstrap.json"),
@@ -385,7 +402,12 @@ fn resolve_paths(app: &AppHandle) -> Result<ResolvedPaths, String> {
 }
 
 fn ensure_directories(paths: &ResolvedPaths) -> Result<(), String> {
-    for path in [&paths.runtime_dir, &paths.config_dir, &paths.logs_dir] {
+    for path in [
+        &paths.runtime_dir,
+        &paths.static_dir,
+        &paths.config_dir,
+        &paths.logs_dir,
+    ] {
         fs::create_dir_all(path).map_err(|error| {
             format!(
                 "failed to create runtime directory {}: {error}",
@@ -402,9 +424,23 @@ fn load_or_create_bootstrap(paths: &ResolvedPaths) -> Result<BootstrapSettings, 
             .map_err(|error| format!("failed to read bootstrap settings: {error}"))?;
         let mut settings = serde_json::from_str::<BootstrapSettings>(&content)
             .map_err(|error| format!("failed to parse bootstrap settings: {error}"))?;
+        let mut needs_persist = false;
         settings.host = normalize_host(&settings.host);
+        if !content.contains("\"host\"") {
+            needs_persist = true;
+        }
         if settings.management_key.trim().is_empty() {
             settings.management_key = default_management_key();
+            needs_persist = true;
+        }
+        if !content.contains("\"managementKey\"") {
+            needs_persist = true;
+        }
+        if needs_persist {
+            let next_content = serde_json::to_string_pretty(&settings)
+                .map_err(|error| format!("failed to serialize bootstrap settings: {error}"))?;
+            fs::write(&paths.bootstrap_path, next_content)
+                .map_err(|error| format!("failed to update bootstrap settings: {error}"))?;
         }
         return Ok(settings);
     }
@@ -478,6 +514,7 @@ fn build_cpa_command(ctx: &RuntimeContext) -> Result<Command, String> {
         if !binary_path.trim().is_empty() {
             let mut command = Command::new(binary_path);
             command.arg("-config").arg(&ctx.paths.config_path);
+            command.env("MANAGEMENT_STATIC_PATH", &ctx.paths.static_dir);
             return Ok(command);
         }
     }
@@ -485,6 +522,7 @@ fn build_cpa_command(ctx: &RuntimeContext) -> Result<Command, String> {
     if let Some(sidecar_path) = resolve_bundled_sidecar_path() {
         let mut command = Command::new(sidecar_path);
         command.arg("-config").arg(&ctx.paths.config_path);
+        command.env("MANAGEMENT_STATIC_PATH", &ctx.paths.static_dir);
         return Ok(command);
     }
 
@@ -495,6 +533,7 @@ fn build_cpa_command(ctx: &RuntimeContext) -> Result<Command, String> {
     command.arg("./cmd/server");
     command.arg("-config");
     command.arg(&ctx.paths.config_path);
+    command.env("MANAGEMENT_STATIC_PATH", &ctx.paths.static_dir);
     Ok(command)
 }
 
@@ -731,11 +770,7 @@ fn reset_log_files(paths: &ResolvedPaths) -> Result<(), String> {
 }
 
 fn default_management_key() -> String {
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    format!("cpapp-{}", seed)
+    "api-xuanshukejiapi".to_string()
 }
 
 fn default_host() -> String {
@@ -794,6 +829,7 @@ fn to_runtime_paths(paths: &ResolvedPaths) -> RuntimePaths {
     RuntimePaths {
         app_data_dir: paths.app_data_dir.display().to_string(),
         runtime_dir: paths.runtime_dir.display().to_string(),
+        static_dir: paths.static_dir.display().to_string(),
         config_dir: paths.config_dir.display().to_string(),
         logs_dir: paths.logs_dir.display().to_string(),
         bootstrap_path: paths.bootstrap_path.display().to_string(),

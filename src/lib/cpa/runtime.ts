@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AppState, BootstrapSettings, CpaState, RuntimePaths } from './types'
+import type { AppState, BootstrapSettings, CpaManagementInfo, CpaState, RuntimePaths } from './types'
 
 export const cpaRuntime = {
   getAppState: () => invoke<AppState>('get_app_state'),
@@ -11,6 +11,7 @@ export const cpaRuntime = {
   getRecentLogs: (maxLines = 120) => invoke<string>('get_cpa_recent_logs', { maxLines }),
   saveBootstrapSettings: (settings: BootstrapSettings) =>
     invoke<CpaState>('save_bootstrap_settings', { settings }),
+  getManagementInfo: () => invoke<CpaManagementInfo>('get_cpa_management_info'),
   proxyManagementRequest: (request: {
     method: string
     path: string
