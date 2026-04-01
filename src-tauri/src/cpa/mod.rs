@@ -10,6 +10,7 @@ use std::{
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use sysinfo::{Signal, System};
 use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,6 +171,7 @@ pub fn start_cpa(
         return Ok(build_cpa_state(&ctx, &inner));
     }
 
+    cleanup_stale_cpa_processes(&ctx.paths, None)?;
     write_runtime_config(&ctx)?;
     reset_log_files(&ctx.paths)?;
 
@@ -700,6 +702,59 @@ fn stop_child(inner: &mut RuntimeInner) -> Result<(), String> {
         let _ = child.wait();
     }
     inner.started_at = None;
+    Ok(())
+}
+
+fn cleanup_stale_cpa_processes(
+    paths: &ResolvedPaths,
+    keep_pid: Option<u32>,
+) -> Result<(), String> {
+    let config_path = fs::canonicalize(&paths.config_path).unwrap_or(paths.config_path.clone());
+    let config_path_text = config_path.display().to_string();
+
+    let mut system = System::new_all();
+    system.refresh_all();
+
+    for (pid, process) in system.processes() {
+        let pid_u32 = pid.as_u32();
+        if keep_pid.is_some_and(|value| value == pid_u32) {
+            continue;
+        }
+
+        let cmdline = process
+            .cmd()
+            .iter()
+            .map(|part| part.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if !cmdline.contains(&config_path_text) {
+            continue;
+        }
+
+        let executable = process
+            .exe()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let looks_like_cpa = executable.contains("cliproxyapi")
+            || cmdline.contains("cliproxyapi")
+            || cmdline.contains("cmd/server")
+            || cmdline.contains("go run");
+
+        if !looks_like_cpa {
+            continue;
+        }
+
+        let terminated = process.kill_with(Signal::Kill).unwrap_or_else(|| process.kill());
+        if !terminated {
+            return Err(format!(
+                "failed to terminate stale CPA process {} ({})",
+                pid_u32, cmdline
+            ));
+        }
+    }
+
     Ok(())
 }
 

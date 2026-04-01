@@ -5,7 +5,7 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(CpaRuntimeState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -39,8 +39,20 @@ pub fn run() {
             open_cpa_log_dir,
             proxy_management_request
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+        ) {
+            let state = handle.state::<CpaRuntimeState>();
+            if let Err(error) = cpa::shutdown_cpa(&state) {
+                eprintln!("failed to stop CPA on app exit: {error}");
+            }
+        }
+    });
 }
 
 #[tauri::command]
