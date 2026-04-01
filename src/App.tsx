@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { cpaRuntime } from './lib/cpa/runtime'
-import type { AppState, BootstrapSettings, CpaManagementInfo, CpaState, RuntimePaths } from './lib/cpa/types'
+import type { AppState, BootstrapSettings, CpaManagementInfo, CpaState } from './lib/cpa/types'
 
 type LoginRole = 'admin' | 'user'
 type AdminTab = 'overview' | 'cpm'
@@ -61,7 +61,6 @@ function App() {
   const [appState, setAppState] = useState<AppState | null>(null)
   const [cpaState, setCpaState] = useState<CpaState | null>(null)
   const [managementInfo, setManagementInfo] = useState<CpaManagementInfo | null>(null)
-  const [runtimePaths, setRuntimePaths] = useState<RuntimePaths | null>(null)
   const [recentLogs, setRecentLogs] = useState('等待运行日志...')
   const [settings, setSettings] = useState<BootstrapSettings>(createEmptySettings)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
@@ -97,18 +96,16 @@ function App() {
 
   const refresh = async () => {
     try {
-      const [nextAppState, nextCpaState, nextManagementInfo, nextRuntimePaths, nextRecentLogs] = await Promise.all([
+      const [nextAppState, nextCpaState, nextManagementInfo, nextRecentLogs] = await Promise.all([
         cpaRuntime.getAppState(),
         cpaRuntime.getState(),
         cpaRuntime.getManagementInfo(),
-        cpaRuntime.getRuntimePaths(),
         cpaRuntime.getRecentLogs(),
       ])
 
       setAppState(nextAppState)
       setCpaState(nextCpaState)
       setManagementInfo(nextManagementInfo)
-      setRuntimePaths(nextRuntimePaths)
       setRecentLogs(nextRecentLogs || '当前还没有日志。')
       setSettings(nextCpaState.bootstrap)
       setLoadError(null)
