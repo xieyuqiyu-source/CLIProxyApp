@@ -11,6 +11,7 @@ Phase 1 is focused on the desktop runtime wrapper:
 - CPA bootstrap settings
 - CPA process start, stop, and restart
 - Runtime paths and logs inspection
+- Bundled CPA sidecar for packaged builds
 
 ## Workspace Layout
 
@@ -38,11 +39,12 @@ Run:
 
 ```bash
 npm install
+npm run prepare:sidecar
 npm run tauri dev
 ```
 
 ## Notes
 
-- The current implementation targets workspace development mode first.
-- In development mode, `CLIProxyApp` will try to run the sibling repository at `../CLIProxyApi`.
-- Later phases will add packaged sidecar support and richer management pages.
+- Packaged builds now prefer a bundled `CLIProxyApi` sidecar.
+- In development mode, `CLIProxyApp` first tries the locally built sidecar and then falls back to the sibling repository at `../CLIProxyApi`.
+- Later phases will expand the management pages and release pipeline.

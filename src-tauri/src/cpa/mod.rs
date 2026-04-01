@@ -410,6 +410,12 @@ fn build_cpa_command(ctx: &RuntimeContext) -> Result<Command, String> {
         }
     }
 
+    if let Some(sidecar_path) = resolve_bundled_sidecar_path() {
+        let mut command = Command::new(sidecar_path);
+        command.arg("-config").arg(&ctx.paths.config_path);
+        return Ok(command);
+    }
+
     let workspace_api_dir = workspace_api_dir()?;
     let mut command = Command::new("go");
     command.current_dir(workspace_api_dir);
@@ -438,6 +444,83 @@ fn workspace_api_dir() -> Result<PathBuf, String> {
     Ok(api_dir)
 }
 
+fn resolve_runtime_binary_path(settings: &BootstrapSettings) -> Option<String> {
+    if let Some(path) = settings
+        .explicit_binary_path
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Some(path);
+    }
+
+    resolve_bundled_sidecar_path().map(|path| path.display().to_string())
+}
+
+fn resolve_bundled_sidecar_path() -> Option<PathBuf> {
+    let dev_sidecar = dev_sidecar_path();
+    if dev_sidecar.exists() {
+        return Some(dev_sidecar);
+    }
+
+    let exe_path = std::env::current_exe().ok()?;
+    let resource_dir = if cfg!(target_os = "macos") {
+        exe_path
+            .parent()
+            .and_then(Path::parent)
+            .map(|contents| contents.join("Resources"))
+    } else {
+        exe_path.parent().map(|dir| dir.to_path_buf())
+    }?;
+
+    let bundled_sidecar = resource_dir
+        .join("sidecar")
+        .join(sidecar_folder_name())
+        .join(sidecar_binary_name());
+    if bundled_sidecar.exists() {
+        return Some(bundled_sidecar);
+    }
+
+    let nested_resource_sidecar = resource_dir
+        .join("resources")
+        .join("sidecar")
+        .join(sidecar_folder_name())
+        .join(sidecar_binary_name());
+
+    if nested_resource_sidecar.exists() {
+        Some(nested_resource_sidecar)
+    } else {
+        None
+    }
+}
+
+fn dev_sidecar_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("sidecar")
+        .join(sidecar_folder_name())
+        .join(sidecar_binary_name())
+}
+
+fn sidecar_folder_name() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin-aarch64",
+        ("macos", "x86_64") => "darwin-x86_64",
+        ("windows", "x86_64") => "windows-x86_64",
+        ("windows", "aarch64") => "windows-aarch64",
+        ("linux", "x86_64") => "linux-x86_64",
+        ("linux", "aarch64") => "linux-aarch64",
+        _ => "unknown",
+    }
+}
+
+fn sidecar_binary_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "cliproxyapi.exe"
+    } else {
+        "cliproxyapi"
+    }
+}
+
 fn build_cpa_state(ctx: &RuntimeContext, inner: &RuntimeInner) -> CpaState {
     let pid = inner.child.as_ref().map(|child| child.id());
     let status = match (inner.child.is_some(), inner.last_error.is_some()) {
@@ -458,11 +541,7 @@ fn build_cpa_state(ctx: &RuntimeContext, inner: &RuntimeInner) -> CpaState {
             ctx.bootstrap.host, ctx.bootstrap.api_port
         ),
         management_key_configured: !ctx.bootstrap.management_key.trim().is_empty(),
-        binary_path: ctx
-            .bootstrap
-            .explicit_binary_path
-            .clone()
-            .filter(|value| !value.trim().is_empty()),
+        binary_path: resolve_runtime_binary_path(&ctx.bootstrap),
         config_path: ctx.paths.config_path.display().to_string(),
         logs_dir: ctx.paths.logs_dir.display().to_string(),
         last_error: inner.last_error.clone(),
