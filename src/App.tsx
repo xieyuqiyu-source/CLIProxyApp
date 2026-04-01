@@ -337,49 +337,63 @@ function App() {
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="badge badge-primary badge-outline">
-                {adminTab === 'overview' ? '桌面宿主概览' : '原始 CPM 管理页'}
+          <div className="flex flex-col gap-4 bg-base-100 p-4 rounded-box shadow-sm mt-1">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="badge badge-primary badge-outline">
+                  {adminTab === 'overview' ? '桌面宿主概览' : '原始 CPM 管理页'}
+                </div>
+                <div className={`badge badge-lg ${statusTone}`}>
+                  {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
+                </div>
               </div>
-              <div className={`badge badge-lg ${statusTone}`}>
-                {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
-              </div>
-              <div className="text-sm text-base-content/60">端口 {cpaState?.apiPort ?? settings.apiPort ?? 8317}</div>
-            </div>
 
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="btn btn-primary btn-sm"
-                disabled={pendingAction !== null}
-                onClick={() => void runAction('start', () => cpaRuntime.start())}
-              >
-                启动 CPA
-              </button>
-              <button
-                className="btn btn-secondary btn-sm"
-                disabled={pendingAction !== null}
-                onClick={() => void runAction('restart', () => cpaRuntime.restart())}
-              >
-                重启 CPA
-              </button>
-              <button
-                className="btn btn-warning btn-sm"
-                disabled={pendingAction !== null}
-                onClick={() => void runAction('stop', () => cpaRuntime.stop())}
-              >
-                停止 CPA
-              </button>
-              <button
-                className="btn btn-outline btn-sm"
-                disabled={pendingAction !== null}
-                onClick={() => void runAction('refresh', refresh)}
-              >
-                刷新状态
-              </button>
-              <a className="btn btn-outline btn-sm" href={cpmUrl} target="_blank" rel="noreferrer">
-                新窗口打开 CPM
-              </a>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="join shadow-sm lg:mr-2">
+                  <div className="join-item flex items-center bg-base-200 px-3 text-sm border border-base-300">端口</div>
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    className="join-item input input-bordered input-sm w-20 px-2 font-mono text-center"
+                    value={settings.apiPort}
+                    onChange={(event) => {
+                      setSettings((current) => ({
+                        ...current,
+                        apiPort: Number(event.target.value || 0)
+                      }))
+                    }}
+                  />
+                  <button className="join-item btn btn-primary btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void savePort()}>
+                    保存
+                  </button>
+                </div>
+
+                <div className="join shadow-sm lg:mr-2">
+                  <div className="join-item flex items-center bg-base-200 px-3 text-sm border border-base-300">密钥</div>
+                  <input
+                    type="text"
+                    readOnly
+                    className="join-item input input-bordered input-sm w-24 sm:w-32 px-2 font-mono text-xs opacity-60"
+                    value={managementInfo?.managementKey ?? '等待生成...'}
+                  />
+                  <button
+                    className="join-item btn btn-outline btn-sm font-normal"
+                    disabled={!managementInfo?.managementKey}
+                    onClick={() => void navigator.clipboard.writeText(managementInfo?.managementKey ?? '')}
+                  >
+                    复制
+                  </button>
+                </div>
+
+                <div className="join shadow-sm">
+                  <button className="join-item btn btn-primary btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('start', () => cpaRuntime.start())}>启动</button>
+                  <button className="join-item btn btn-secondary btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('restart', () => cpaRuntime.restart())}>重启</button>
+                  <button className="join-item btn btn-warning btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('stop', () => cpaRuntime.stop())}>停止</button>
+                </div>
+
+                <button className="btn btn-outline btn-sm font-normal" disabled={pendingAction !== null} onClick={() => void runAction('refresh', refresh)}>刷新状态</button>
+              </div>
             </div>
           </div>
 
@@ -422,82 +436,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="card bg-base-100 shadow-sm">
-                <div className="card-body gap-4 md:flex-row md:items-end md:justify-between">
-                  <div className="space-y-2">
-                    <h3 className="card-title text-base">本地监听端口</h3>
-                    <p className="text-sm text-base-content/60">
-                      这里改的是 CPA 本地服务端口。保存后如果服务正在运行，会自动重启并切到新端口。
-                    </p>
-                  </div>
 
-                  <div className="flex flex-wrap items-end gap-3">
-                    <label className="form-control w-40">
-                      <div className="label pb-1">
-                        <span className="label-text">CPA 端口</span>
-                      </div>
-                      <input
-                        type="number"
-                        min={1}
-                        max={65535}
-                        className="input input-bordered"
-                        value={settings.apiPort}
-                        onChange={(event) => {
-                          setSettings((current) => ({
-                            ...current,
-                            apiPort: Number(event.target.value || 0)
-                          }))
-                        }}
-                      />
-                    </label>
-
-                    <button
-                      className="btn btn-primary"
-                      disabled={pendingAction !== null}
-                      onClick={() => void savePort()}
-                    >
-                      保存端口
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="card bg-base-100 shadow-sm">
-                <div className="card-body gap-4">
-                  <div className="space-y-2">
-                    <h3 className="card-title text-base">管理密钥</h3>
-                    <p className="text-sm text-base-content/60">
-                      这里显示的是当前 CPM 登录要用的管理密钥。你可以复制后手动粘贴到原始 CPM 登录页。
-                    </p>
-                  </div>
-
-                  <label className="form-control">
-                    <textarea
-                      className="textarea textarea-bordered h-24 font-mono text-xs"
-                      readOnly
-                      value={managementInfo?.managementKey ?? ''}
-                    />
-                  </label>
-
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      className="btn btn-outline btn-sm"
-                      disabled={!managementInfo?.managementKey}
-                      onClick={() => {
-                        void navigator.clipboard.writeText(managementInfo?.managementKey ?? '')
-                      }}
-                    >
-                      复制管理密钥
-                    </button>
-                    <button
-                      className="btn btn-outline btn-sm"
-                      onClick={() => setAdminTab('cpm')}
-                    >
-                      进入 CPM
-                    </button>
-                  </div>
-                </div>
-              </div>
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <div className="card bg-base-100 shadow-sm">
@@ -572,9 +511,30 @@ function App() {
                       </p>
                     </div>
 
-                    <pre className="max-h-[28rem] overflow-auto rounded-box bg-base-200 p-4 text-xs leading-6 text-base-content/80 whitespace-pre-wrap break-all">
-                      {recentLogs}
-                    </pre>
+                    <div className="mockup-code w-full h-[28rem] overflow-auto shadow-inner bg-base-300/50 text-base-content/80 text-xs sm:text-sm leading-relaxed">
+                      {(!recentLogs || recentLogs === '当前还没有日志。' || recentLogs === '等待运行日志...') ? (
+                        <pre data-prefix=">"><code>{recentLogs || '等待运行日志...'}</code></pre>
+                      ) : (
+                        recentLogs.split('\n').map((line, idx) => {
+                          let tagClass = 'whitespace-pre-wrap break-all '
+                          const lowerLine = line.toLowerCase()
+                          if (lowerLine.includes('error') || lowerLine.includes('fail') || lowerLine.includes('crit')) {
+                            tagClass += 'text-error font-bold'
+                          } else if (lowerLine.includes('warn')) {
+                            tagClass += 'text-warning font-semibold'
+                          } else if (lowerLine.includes('info') || lowerLine.includes('success')) {
+                            tagClass += 'text-info'
+                          } else {
+                            tagClass += 'opacity-80'
+                          }
+                          return (
+                            <pre key={idx} data-prefix={idx + 1} className={tagClass}>
+                              <code>{line || ' '}</code>
+                            </pre>
+                          )
+                        })
+                      )}
+                    </div>
 
                     <div className="flex flex-wrap gap-2">
                       <button
