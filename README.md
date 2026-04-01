@@ -1,14 +1,18 @@
 # CLIProxyApp
 
-`CLIProxyApp` 是独立的客户端开发仓库，用于承载你自己的 CLIProxy 客户端实现。
+`CLIProxyApp` is a desktop application built with `Tauri 2 + React + TypeScript`. It hosts `CLIProxyApi` locally and provides an independent desktop management experience.
 
-## 仓库定位
+## Current Scope
 
-- 这是实际开发和提交代码的仓库
-- 官方项目更新不在本仓库内维护
-- 本地默认配合同级目录中的 `CLIProxyApi` 与 `CLIProxyManagement` 使用
+Phase 1 is focused on the desktop runtime wrapper:
 
-## 本地工作区关系
+- Tauri desktop host
+- React runtime dashboard
+- CPA bootstrap settings
+- CPA process start, stop, and restart
+- Runtime paths and logs inspection
+
+## Workspace Layout
 
 ```text
 CLIProxy/
@@ -17,23 +21,28 @@ CLIProxy/
 └── CLIProxyApp/
 ```
 
-## 相关项目
+## Key Docs
 
-- 官方文档：<https://help.router-for.me/>
-- 服务端：`../CLIProxyApi`
-- 管理界面：`../CLIProxyManagement`
+- [docs/cpa-runtime-wrapper.md](docs/cpa-runtime-wrapper.md)
+- [docs/cpapp-architecture.md](docs/cpapp-architecture.md)
 
-## 当前状态
+## Development
 
-当前仓库已完成初始化，后续可在此基础上继续搭建：
+Requirements:
 
-- Web 客户端
-- Electron 客户端
-- Tauri 客户端
-- Hybrid 客户端
+- Node.js
+- Rust
+- Go
 
-## 下一步建议
+Run:
 
-- 初始化项目技术栈
-- 设计客户端目录结构
-- 补充运行说明、接口约定与开发计划
+```bash
+npm install
+npm run tauri dev
+```
+
+## Notes
+
+- The current implementation targets workspace development mode first.
+- In development mode, `CLIProxyApp` will try to run the sibling repository at `../CLIProxyApi`.
+- Later phases will add packaged sidecar support and richer management pages.
