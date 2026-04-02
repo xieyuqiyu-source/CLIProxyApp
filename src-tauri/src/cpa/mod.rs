@@ -16,6 +16,7 @@ use sysinfo::{Signal, System};
 use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
+const CLOUD_BASE_URL: &str = "http://103.205.254.30:28899/api/v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,6 +135,39 @@ pub struct OpenClawSetupResult {
     pub provider_id: String,
     pub model_count: usize,
     pub alias: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudProxyRequest {
+    pub method: String,
+    pub path: String,
+    pub body: Option<JsonValue>,
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudUploadRequest {
+    pub path: String,
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+    pub mime_type: Option<String>,
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudDownloadRequest {
+    pub path: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudDownloadResult {
+    pub file_name: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -424,6 +458,114 @@ pub fn proxy_management_request(
     }
 
     Ok(serde_json::from_str::<JsonValue>(&text).unwrap_or(JsonValue::String(text)))
+}
+
+pub fn proxy_cloud_request(request: CloudProxyRequest) -> Result<JsonValue, String> {
+    let method = request
+        .method
+        .parse::<reqwest::Method>()
+        .map_err(|error| format!("invalid cloud request method: {error}"))?;
+    let url = cloud_url(&request.path);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("failed to create cloud client: {error}"))?;
+
+    let mut builder = client.request(method, url);
+    if let Some(token) = request
+        .token
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        builder = builder.bearer_auth(token);
+    }
+
+    if let Some(body) = request.body {
+        builder = builder.json(&body);
+    }
+
+    let response = builder
+        .send()
+        .map_err(|error| format!("cloud request failed: {error}"))?;
+    parse_cloud_json_response(response)
+}
+
+pub fn proxy_cloud_upload(request: CloudUploadRequest) -> Result<JsonValue, String> {
+    let url = cloud_url(&request.path);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("failed to create cloud upload client: {error}"))?;
+
+    let mime_type = request
+        .mime_type
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("application/octet-stream");
+
+    let part = reqwest::blocking::multipart::Part::bytes(request.bytes)
+        .file_name(request.file_name)
+        .mime_str(mime_type)
+        .map_err(|error| format!("failed to build upload part: {error}"))?;
+    let form = reqwest::blocking::multipart::Form::new().part("file", part);
+
+    let response = client
+        .post(url)
+        .bearer_auth(request.token)
+        .multipart(form)
+        .send()
+        .map_err(|error| format!("cloud upload failed: {error}"))?;
+    parse_cloud_json_response(response)
+}
+
+pub fn proxy_cloud_download(request: CloudDownloadRequest) -> Result<CloudDownloadResult, String> {
+    let url = cloud_url(&request.path);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("failed to create cloud download client: {error}"))?;
+
+    let response = client
+        .get(url)
+        .bearer_auth(request.token)
+        .send()
+        .map_err(|error| format!("cloud download failed: {error}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response
+            .text()
+            .map_err(|error| format!("failed to read cloud error response: {error}"))?;
+        let message = serde_json::from_str::<JsonValue>(&text)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("error")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or(text);
+        return Err(if message.trim().is_empty() {
+            format!("cloud download failed with {status}")
+        } else {
+            message
+        });
+    }
+
+    let file_name = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_content_disposition_filename)
+        .unwrap_or_else(|| "auth.json".to_string());
+    let bytes = response
+        .bytes()
+        .map_err(|error| format!("failed to read cloud download bytes: {error}"))?
+        .to_vec();
+
+    Ok(CloudDownloadResult { file_name, bytes })
 }
 
 pub fn import_auth_files(
@@ -1152,6 +1294,65 @@ fn ensure_json_object(value: &mut JsonValue) -> &mut JsonMap<String, JsonValue> 
         *value = JsonValue::Object(JsonMap::new());
     }
     value.as_object_mut().expect("object ensured above")
+}
+
+fn cloud_url(path: &str) -> String {
+    let normalized_path = path.trim().trim_start_matches('/');
+    format!("{}/{}", CLOUD_BASE_URL.trim_end_matches('/'), normalized_path)
+}
+
+fn parse_cloud_json_response(response: reqwest::blocking::Response) -> Result<JsonValue, String> {
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("failed to read cloud response: {error}"))?;
+
+    if !status.is_success() {
+        let message = serde_json::from_str::<JsonValue>(&text)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("error")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| {
+                if text.trim().is_empty() {
+                    format!("{status}")
+                } else {
+                    text.clone()
+                }
+            });
+        return Err(message);
+    }
+
+    if text.trim().is_empty() {
+        return Ok(JsonValue::Null);
+    }
+
+    serde_json::from_str::<JsonValue>(&text)
+        .map_err(|error| format!("failed to parse cloud json response: {error}"))
+}
+
+fn parse_content_disposition_filename(value: &str) -> Option<String> {
+    value.split(';').find_map(|segment| {
+        let trimmed = segment.trim();
+        let file_name = trimmed
+            .strip_prefix("filename=")
+            .or_else(|| trimmed.strip_prefix("filename*="))?;
+        let cleaned = file_name
+            .trim()
+            .trim_matches('"')
+            .strip_prefix("UTF-8''")
+            .unwrap_or(file_name)
+            .trim_matches('"')
+            .to_string();
+        if cleaned.is_empty() {
+            None
+        } else {
+            Some(cleaned)
+        }
+    })
 }
 
 fn ensure_json_object_entry<'a>(

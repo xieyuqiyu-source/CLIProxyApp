@@ -44,7 +44,10 @@ pub fn run() {
             pick_local_auth_files,
             open_external_target,
             import_vertex_credential,
-            setup_openclaw_provider
+            setup_openclaw_provider,
+            proxy_cloud_request,
+            proxy_cloud_upload,
+            proxy_cloud_download
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -189,4 +192,31 @@ async fn setup_openclaw_provider(
     tauri::async_runtime::spawn_blocking(move || cpa::setup_openclaw_provider(&app))
         .await
         .map_err(|error| format!("failed to join OpenClaw setup task: {error}"))?
+}
+
+#[tauri::command]
+async fn proxy_cloud_request(
+    request: cpa::CloudProxyRequest,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::proxy_cloud_request(request))
+        .await
+        .map_err(|error| format!("failed to join cloud proxy task: {error}"))?
+}
+
+#[tauri::command]
+async fn proxy_cloud_upload(
+    request: cpa::CloudUploadRequest,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::proxy_cloud_upload(request))
+        .await
+        .map_err(|error| format!("failed to join cloud upload task: {error}"))?
+}
+
+#[tauri::command]
+async fn proxy_cloud_download(
+    request: cpa::CloudDownloadRequest,
+) -> Result<cpa::CloudDownloadResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::proxy_cloud_download(request))
+        .await
+        .map_err(|error| format!("failed to join cloud download task: {error}"))?
 }

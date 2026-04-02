@@ -46,6 +46,23 @@ export const cpaRuntime = {
     query?: Array<[string, string]>
     body?: unknown
   }) => invoke<unknown>('proxy_management_request', { request }),
+  proxyCloudRequest: (request: {
+    method: string
+    path: string
+    body?: unknown
+    token?: string
+  }) => invoke<unknown>('proxy_cloud_request', { request }),
+  proxyCloudUpload: (request: {
+    path: string
+    fileName: string
+    bytes: number[]
+    mimeType?: string
+    token: string
+  }) => invoke<unknown>('proxy_cloud_upload', { request }),
+  proxyCloudDownload: (request: {
+    path: string
+    token: string
+  }) => invoke<{ fileName: string; bytes: number[] }>('proxy_cloud_download', { request }),
   openConfigDir: () => invoke('open_cpa_config_dir'),
   openLogsDir: () => invoke('open_cpa_log_dir')
 }
