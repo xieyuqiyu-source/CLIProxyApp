@@ -7,7 +7,7 @@ import type {
   SharedSyncPackage
 } from './types'
 
-const CLOUD_BASE_URL = 'http://127.0.0.1:8090/api/v1'
+const CLOUD_BASE_URL = 'http://103.205.254.30:28899/api/v1'
 const DEVICE_ID_KEY = 'cpapp-cloud-device-id'
 
 function normalizeAccountKey(account: string) {
