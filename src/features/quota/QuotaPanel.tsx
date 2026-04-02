@@ -1088,7 +1088,19 @@ export function QuotaPanel({ cpaRunning, onNotify, onError }: QuotaPanelProps) {
       if (cancelled || nextFiles.length === 0) {
         return
       }
-      await refreshAll(nextFiles.filter((file) => !isRuntimeOnlyAuthFile(file)))
+
+      // 首次进入只加载认证文件，避免对全部 provider 并发打真实配额接口导致页面长时间卡顿。
+      setStates((current) => {
+        const nextStates = { ...current }
+        nextFiles
+          .filter((file) => !isRuntimeOnlyAuthFile(file))
+          .forEach((file) => {
+            if (!nextStates[file.name]) {
+              nextStates[file.name] = { status: 'idle' }
+            }
+          })
+        return nextStates
+      })
     })()
 
     return () => {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { cpaRuntime } from './lib/cpa/runtime'
 import { OAuthPanel } from './features/oauth/OAuthPanel'
 import { QuotaPanel } from './features/quota/QuotaPanel'
+import { AuthFilesPanel } from './features/auth-files/AuthFilesPanel'
 import type {
   AppState,
   BootstrapSettings,
@@ -11,8 +12,8 @@ import type {
 } from './lib/cpa/types'
 
 type LoginRole = 'admin' | 'user'
-type AdminTab = 'overview' | 'oauth' | 'quota' | 'cpm'
-type UserTab = 'overview' | 'oauth' | 'providers' | 'quota' | 'stats'
+type AdminTab = 'overview' | 'oauth' | 'auth-files' | 'quota' | 'cpm'
+type UserTab = 'overview' | 'oauth' | 'auth-files' | 'providers' | 'quota' | 'stats'
 
 interface LoginSession {
   username: string
@@ -455,26 +456,44 @@ function App() {
         className="hidden"
         onChange={(event) => void handleImportSelection(event)}
       />
-      <div className="navbar border-b border-base-300 bg-base-100 px-6 shadow-sm">
+      <div className="navbar border-b border-base-300 bg-base-100 px-6 shadow-sm h-16">
         <div className="flex-1">
-          <div>
-            <div className="text-xs uppercase tracking-[0.3em] text-primary">CLIProxyApp</div>
-            <div className="text-2xl font-black">
-              {session.role === 'admin' ? 'CPM 管理入口' : 'CPAPP 业务入口'}
-            </div>
+          <div className="text-2xl font-black tracking-tight">
+            {session.role === 'admin' ? 'CPM 管理入口' : 'CPAPP 业务入口'}
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="hidden text-right text-xs text-base-content/50 md:block">
-            <div>{appState?.appName ?? 'CLIProxyApp'}</div>
-            <div>{appState?.appVersion ?? '0.1.0'}</div>
+        <div className="flex-none flex items-center gap-4">
+          {/* CLI 版本指示标 */}
+          <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-base-content/60 bg-base-200 px-3 py-1.5 rounded-full border border-base-300 shadow-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>
+            cli v{appState?.appVersion ?? '0.1.0'}
           </div>
-          <div className="badge badge-outline badge-lg">
-            {session.role === 'admin' ? '管理员' : '普通用户'} / {session.username}
+
+          <div className="flex items-center gap-3 pl-2 sm:pl-4 sm:border-l border-base-300">
+            {/* 用户角色与用户名信息 */}
+            <div className="text-right hidden sm:block">
+              <div className="text-sm font-bold leading-none">{session.username}</div>
+              <div className="text-[11px] font-semibold text-base-content/50 mt-1.5 uppercase tracking-wide">
+                {session.role === 'admin' ? 'Administrator' : 'User'}
+              </div>
+            </div>
+            
+            {/* 用户头像占位 */}
+            <div className="avatar placeholder">
+              <div className="bg-neutral text-neutral-content rounded-full w-10">
+                <span className="text-lg">{session.username.slice(0, 1).toUpperCase()}</span>
+              </div>
+            </div>
+
+            {/* 退出按钮 */}
+            <button 
+              className="ml-2 text-base-content/60 hover:text-error transition-colors" 
+              onClick={logout} 
+              title="退出登录"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+            </button>
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={logout}>
-            退出登录
-          </button>
         </div>
       </div>
 
@@ -497,6 +516,13 @@ function App() {
             </button>
             <button
               role="tab"
+              className={`tab ${adminTab === 'auth-files' ? 'tab-active' : ''}`}
+              onClick={() => setAdminTab('auth-files')}
+            >
+              认证文件
+            </button>
+            <button
+              role="tab"
               className={`tab ${adminTab === 'quota' ? 'tab-active' : ''}`}
               onClick={() => setAdminTab('quota')}
             >
@@ -514,16 +540,18 @@ function App() {
           <div className="flex flex-col gap-4 bg-base-100 p-4 rounded-box shadow-sm mt-1">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="badge badge-primary badge-outline">
+                <div className="badge badge-primary badge-outline badge-lg px-4">
                   {adminTab === 'overview'
                     ? '桌面宿主概览'
                     : adminTab === 'oauth'
                       ? 'OAuth 授权'
+                      : adminTab === 'auth-files'
+                        ? '认证文件'
                       : adminTab === 'quota'
                         ? '配额管理'
                         : '原始 CPM 管理页'}
                 </div>
-                <div className={`badge badge-lg ${statusTone}`}>
+                <div className={`badge badge-lg px-4 ${statusTone}`}>
                   {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
                 </div>
               </div>
@@ -734,6 +762,16 @@ function App() {
               onNotify={showToast}
               onError={setLoadError}
             />
+          ) : adminTab === 'auth-files' ? (
+            <AuthFilesPanel
+              cpaRunning={cpaState?.status === 'running'}
+              pendingAction={pendingAction}
+              onNotify={showToast}
+              onError={setLoadError}
+              onImportClick={() => importInputRef.current?.click()}
+              onExportClick={() => void handleExportAuthFiles()}
+              onOpenConfigDir={() => void cpaRuntime.openConfigDir()}
+            />
           ) : adminTab === 'quota' ? (
             <QuotaPanel
               cpaRunning={cpaState?.status === 'running'}
@@ -795,6 +833,13 @@ function App() {
             </button>
             <button
               role="tab"
+              className={`tab ${userTab === 'auth-files' ? 'tab-active' : ''}`}
+              onClick={() => setUserTab('auth-files')}
+            >
+              认证文件
+            </button>
+            <button
+              role="tab"
               className={`tab ${userTab === 'providers' ? 'tab-active' : ''}`}
               onClick={() => setUserTab('providers')}
             >
@@ -820,10 +865,10 @@ function App() {
           <div className="flex flex-col gap-4 bg-base-100 p-4 rounded-box shadow-sm mt-1">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                <div className="badge badge-primary badge-outline">
+                <div className="badge badge-primary badge-outline badge-lg px-4">
                   {userTab === 'overview' ? '普通系统概览' : '用户模块'}
                 </div>
-                <div className={`badge badge-lg ${statusTone}`}>
+                <div className={`badge badge-lg px-4 ${statusTone}`}>
                   {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
                 </div>
               </div>
@@ -1032,6 +1077,18 @@ function App() {
                 </div>
               </div>
             </div>
+          )}
+
+          {userTab === 'auth-files' && (
+            <AuthFilesPanel
+              cpaRunning={cpaState?.status === 'running'}
+              pendingAction={pendingAction}
+              onNotify={showToast}
+              onError={setLoadError}
+              onImportClick={() => importInputRef.current?.click()}
+              onExportClick={() => void handleExportAuthFiles()}
+              onOpenConfigDir={() => void cpaRuntime.openConfigDir()}
+            />
           )}
 
           {userTab === 'quota' && (

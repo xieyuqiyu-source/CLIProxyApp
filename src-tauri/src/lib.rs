@@ -131,11 +131,13 @@ fn open_cpa_log_dir(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn proxy_management_request(
+async fn proxy_management_request(
     app: tauri::AppHandle,
     request: cpa::ManagementProxyRequest,
 ) -> Result<serde_json::Value, String> {
-    cpa::proxy_management_request(&app, request)
+    tauri::async_runtime::spawn_blocking(move || cpa::proxy_management_request(&app, request))
+        .await
+        .map_err(|error| format!("failed to join management proxy task: {error}"))?
 }
 
 #[tauri::command]
