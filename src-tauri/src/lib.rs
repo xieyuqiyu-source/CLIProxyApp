@@ -40,6 +40,7 @@ pub fn run() {
             proxy_management_request,
             import_auth_files,
             export_auth_files_archive,
+            get_local_auth_files,
             open_external_target,
             import_vertex_credential
         ])
@@ -153,6 +154,11 @@ fn export_auth_files_archive(
     app: tauri::AppHandle,
 ) -> Result<cpa::ExportAuthArchiveResult, String> {
     cpa::export_auth_files_archive(&app)
+}
+
+#[tauri::command]
+fn get_local_auth_files(app: tauri::AppHandle) -> Result<Vec<cpa::LocalAuthFile>, String> {
+    cpa::get_local_auth_files(&app)
 }
 
 #[tauri::command]

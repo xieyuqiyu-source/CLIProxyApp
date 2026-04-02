@@ -15,6 +15,13 @@ export const authFilesApi = {
       body: { name, disabled }
     }) as Promise<unknown>,
 
+  deleteFile: (name: string) =>
+    cpaRuntime.proxyManagementRequest({
+      method: 'DELETE',
+      path: 'auth-files',
+      query: [['name', name]]
+    }) as Promise<unknown>,
+
   getModelsForAuthFile: async (name: string): Promise<AuthFileModel[]> => {
     const response = (await cpaRuntime.proxyManagementRequest({
       method: 'GET',

@@ -3,6 +3,11 @@ import { cpaRuntime } from './lib/cpa/runtime'
 import { OAuthPanel } from './features/oauth/OAuthPanel'
 import { QuotaPanel } from './features/quota/QuotaPanel'
 import { AuthFilesPanel } from './features/auth-files/AuthFilesPanel'
+import { CloudAdminPanel } from './features/cloud-admin/CloudAdminPanel'
+import { authFilesApi } from './features/auth-files/api'
+import { cloudClient } from './lib/cloud/client'
+import { sharedImportRegistry } from './lib/cloud/sharedRegistry'
+import type { CloudFeatures, CloudPlan, CloudUser } from './lib/cloud/types'
 import type {
   AppState,
   BootstrapSettings,
@@ -11,13 +16,14 @@ import type {
   ImportAuthFilesResult
 } from './lib/cpa/types'
 
-type LoginRole = 'admin' | 'user'
-type AdminTab = 'overview' | 'oauth' | 'auth-files' | 'quota' | 'cpm'
+type AdminTab = 'overview' | 'oauth' | 'auth-files' | 'quota' | 'cloud-admin' | 'cpm'
 type UserTab = 'overview' | 'oauth' | 'auth-files' | 'providers' | 'quota' | 'stats'
 
 interface LoginSession {
-  username: string
-  role: LoginRole
+  token: string
+  user: CloudUser
+  plan: CloudPlan
+  features: CloudFeatures
 }
 
 const SESSION_KEY = 'cpapp-login-session'
@@ -41,6 +47,7 @@ const statusLabelMap: Record<string, string> = {
 }
 
 function App() {
+  const passwordDialogRef = useRef<HTMLDialogElement | null>(null)
   const [theme, setTheme] = useState<Theme>(() => {
     const raw = window.localStorage.getItem(THEME_KEY)
     if (THEMES.includes(raw as Theme)) {
@@ -64,8 +71,11 @@ function App() {
     }
   })
 
-  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [nextPassword, setNextPassword] = useState('')
+  const [registerMode, setRegisterMode] = useState(false)
   const [loginError, setLoginError] = useState<string | null>(null)
   const [appState, setAppState] = useState<AppState | null>(null)
   const [cpaState, setCpaState] = useState<CpaState | null>(null)
@@ -77,6 +87,7 @@ function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [adminTab, setAdminTab] = useState<AdminTab>('overview')
   const [userTab, setUserTab] = useState<UserTab>('overview')
+  const [normalizingFreeTier, setNormalizingFreeTier] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const cpmFrameRef = useRef<HTMLIFrameElement | null>(null)
 
@@ -104,6 +115,14 @@ function App() {
     })
     return `/cpm-bridge.html?${query.toString()}`
   }, [cpaState?.apiPort, managementInfo?.managementKey, settings.apiPort])
+
+  const userDisplayName = useMemo(() => {
+    if (!session?.user.email) {
+      return ''
+    }
+    const [name] = session.user.email.split('@')
+    return name || session.user.email
+  }, [session?.user.email])
 
   const refresh = async () => {
     try {
@@ -136,6 +155,112 @@ function App() {
 
     return () => window.clearInterval(timer)
   }, [session])
+
+  useEffect(() => {
+    if (!session) {
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const next = await cloudClient.me(session.token)
+        if (cancelled) {
+          return
+        }
+        const nextSession: LoginSession = {
+          token: session.token,
+          user: next.user,
+          plan: next.plan,
+          features: next.features
+        }
+        window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
+        setSession(nextSession)
+      } catch (error) {
+        console.error(error)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!session || cpaState?.status !== 'running' || session.features.max_enabled_auth_files !== 1) {
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      try {
+        setNormalizingFreeTier(true)
+        const response = await authFilesApi.list()
+        const files = Array.isArray(response.files) ? response.files : []
+        const enabledFiles = files.filter((file) => !`${file.disabled ?? ''}`.match(/^(true|1)$/i) && file.disabled !== true && file.disabled !== 1)
+
+        if (enabledFiles.length === 0) {
+          return
+        }
+
+        await Promise.all(enabledFiles.map((file) => authFilesApi.setStatus(file.name, true)))
+        if (!cancelled) {
+          showToast('免费版登录已自动禁用全部认证文件，请手动启用一个')
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : String(error)
+          setLoadError(message)
+        }
+      } finally {
+        if (!cancelled) {
+          setNormalizingFreeTier(false)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [session, cpaState?.status])
+
+  useEffect(() => {
+    if (!session || cpaState?.status !== 'running' || session.user.role === 'admin' || session.features.allow_shared_pool) {
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const trackedFiles = sharedImportRegistry.list()
+        if (trackedFiles.length === 0) {
+          return
+        }
+        const response = await authFilesApi.list()
+        const files = Array.isArray(response.files) ? response.files : []
+        const names = new Set(trackedFiles.map((item) => item.localFileName))
+        const activeSharedFiles = files.filter((file) => names.has(file.name) && file.disabled !== true && file.disabled !== 1 && !`${file.disabled ?? ''}`.match(/^(true|1)$/i))
+
+        if (activeSharedFiles.length === 0 || cancelled) {
+          return
+        }
+
+        await Promise.all(activeSharedFiles.map((file) => authFilesApi.setStatus(file.name, true)))
+        if (!cancelled) {
+          showToast('当前套餐不可使用共享认证池，已自动禁用本地共享认证文件')
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : String(error)
+          setLoadError(message)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [session, cpaState?.status])
 
   const runAction = async (name: string, action: () => Promise<unknown>, successMsg?: string) => {
     try {
@@ -173,29 +298,85 @@ function App() {
     })
   }
 
-  const submitLogin = () => {
-    if (!username.trim() || !password.trim()) {
+  const submitLogin = async () => {
+    if (!email.trim() || !password.trim()) {
       setLoginError('请输入账号和密码。')
       return
     }
 
-    const nextSession: LoginSession =
-      username === 'admin' && password === 'admin'
-        ? { username: 'admin', role: 'admin' }
-        : { username: username.trim(), role: 'user' }
+    try {
+      setPendingAction('login')
+      const response = await cloudClient.login(email.trim().toLowerCase(), password)
+      const nextSession: LoginSession = {
+        token: response.token,
+        user: response.user,
+        plan: response.plan,
+        features: response.features
+      }
+      window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
+      setSession(nextSession)
+      setPassword('')
+      setLoginError(null)
+      showToast(`登录成功：${response.plan.name}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLoginError(message)
+    } finally {
+      setPendingAction(null)
+    }
+  }
 
-    window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
-    setSession(nextSession)
-    setPassword('')
-    setLoginError(null)
+  const submitRegister = async () => {
+    if (!email.trim() || !password.trim()) {
+      setLoginError('请输入账号和密码。')
+      return
+    }
+
+    try {
+      setPendingAction('register')
+      await cloudClient.register(email.trim().toLowerCase(), password)
+      setRegisterMode(false)
+      setPassword('')
+      setLoginError(null)
+      showToast('注册成功，请使用新账号登录')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLoginError(message)
+    } finally {
+      setPendingAction(null)
+    }
   }
 
   const logout = () => {
     window.sessionStorage.removeItem(SESSION_KEY)
     setSession(null)
-    setUsername('')
+    setEmail('')
     setPassword('')
     setLoginError(null)
+  }
+
+  const submitChangePassword = async () => {
+    if (!session) {
+      return
+    }
+    if (!currentPassword.trim() || !nextPassword.trim()) {
+      setLoadError('请输入当前密码和新密码。')
+      return
+    }
+    try {
+      setPendingAction('change-password')
+      await cloudClient.changePassword(session.token, currentPassword, nextPassword)
+      setCurrentPassword('')
+      setNextPassword('')
+      setLoadError(null)
+      showToast('密码修改成功，请使用新密码继续登录')
+      passwordDialogRef.current?.close()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLoadError(message)
+    } finally {
+      setPendingAction(null)
+    }
   }
 
   const showToast = (message: string) => {
@@ -312,7 +493,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (session?.role !== 'admin' || adminTab !== 'cpm') {
+    if (session?.user.role !== 'admin' || adminTab !== 'cpm') {
       return
     }
 
@@ -334,7 +515,7 @@ function App() {
       iframe.removeEventListener('load', attachFrameHandler)
       cleanupFrame()
     }
-  }, [adminTab, cpmUrl, session?.role])
+  }, [adminTab, cpmUrl, session?.user.role])
 
   if (!session) {
     return (
@@ -370,7 +551,7 @@ function App() {
             <div className="text-center lg:text-left max-w-lg">
               <h1 className="text-5xl font-bold">CLIProxyApp</h1>
               <p className="py-6">
-                统一入口已重构。管理员使用 admin 凭据进入 CPM，或使用任意其他账号进入专属的业务面板。完全按照 DaisyUI 原生规范实现。
+                使用云端账号登录。管理员账号进入 CPM 管理入口，普通用户进入 CPAPP 业务面板，并按套餐自动执行本地能力限制。
               </p>
               <div className="stats shadow bg-base-100">
                 <div className="stat text-center">
@@ -388,7 +569,18 @@ function App() {
 
             <div className="card bg-base-100 w-full max-w-sm shrink-0 shadow-2xl">
               <div className="card-body">
-                <h2 className="card-title text-2xl mb-4">登录</h2>
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="card-title text-2xl">{registerMode ? '注册' : '登录'}</h2>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setRegisterMode((current) => !current)
+                      setLoginError(null)
+                    }}
+                  >
+                    {registerMode ? '已有账号' : '新用户注册'}
+                  </button>
+                </div>
 
                 <div className="form-control mb-4">
                   <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
@@ -398,11 +590,14 @@ function App() {
                     <input
                       type="text"
                       className="grow"
-                      placeholder="Username"
-                      value={username}
-                      onChange={(event) => setUsername(event.target.value)}
+                      placeholder="账号"
+                      autoCapitalize="none"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter') submitLogin()
+                        if (event.key === 'Enter') {
+                          void (registerMode ? submitRegister() : submitLogin())
+                        }
                       }}
                     />
                   </label>
@@ -420,7 +615,9 @@ function App() {
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter') submitLogin()
+                        if (event.key === 'Enter') {
+                          void (registerMode ? submitRegister() : submitLogin())
+                        }
                       }}
                     />
                   </label>
@@ -434,8 +631,13 @@ function App() {
                 )}
 
                 <div className="form-control mt-2">
-                  <button className="btn btn-primary w-full" onClick={submitLogin}>
-                    登录
+                  <button
+                    className="btn btn-primary w-full"
+                    disabled={pendingAction === 'login' || pendingAction === 'register'}
+                    onClick={() => void (registerMode ? submitRegister() : submitLogin())}
+                  >
+                    {pendingAction === 'login' || pendingAction === 'register' ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    {registerMode ? '创建账号' : '登录'}
                   </button>
                 </div>
               </div>
@@ -459,7 +661,7 @@ function App() {
       <div className="navbar border-b border-base-300 bg-base-100 px-6 shadow-sm h-16">
         <div className="flex-1">
           <div className="text-2xl font-black tracking-tight">
-            {session.role === 'admin' ? 'CPM 管理入口' : 'CPAPP 业务入口'}
+            {session.user.role === 'admin' ? 'CPM 管理入口' : 'CPAPP 业务入口'}
           </div>
         </div>
         <div className="flex-none flex items-center gap-4">
@@ -472,20 +674,27 @@ function App() {
           <div className="flex items-center gap-3 pl-2 sm:pl-4 sm:border-l border-base-300">
             {/* 用户角色与用户名信息 */}
             <div className="text-right hidden sm:block">
-              <div className="text-sm font-bold leading-none">{session.username}</div>
+              <div className="text-sm font-bold leading-none">{session.user.email}</div>
               <div className="text-[11px] font-semibold text-base-content/50 mt-1.5 uppercase tracking-wide">
-                {session.role === 'admin' ? 'Administrator' : 'User'}
+                {session.plan.planCode.toUpperCase()}
               </div>
             </div>
             
             {/* 用户头像占位 */}
             <div className="avatar placeholder">
               <div className="bg-neutral text-neutral-content rounded-full w-10">
-                <span className="text-lg">{session.username.slice(0, 1).toUpperCase()}</span>
+                <span className="text-lg">{userDisplayName.slice(0, 1).toUpperCase()}</span>
               </div>
             </div>
 
             {/* 退出按钮 */}
+            <button
+              className="ml-2 text-base-content/60 hover:text-primary transition-colors"
+              onClick={() => passwordDialogRef.current?.showModal()}
+              title="修改密码"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            </button>
             <button 
               className="ml-2 text-base-content/60 hover:text-error transition-colors" 
               onClick={logout} 
@@ -497,7 +706,7 @@ function App() {
         </div>
       </div>
 
-      {session.role === 'admin' ? (
+      {session.user.role === 'admin' ? (
         <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
           <div role="tablist" className="tabs tabs-lift">
             <button
@@ -530,6 +739,13 @@ function App() {
             </button>
             <button
               role="tab"
+              className={`tab ${adminTab === 'cloud-admin' ? 'tab-active' : ''}`}
+              onClick={() => setAdminTab('cloud-admin')}
+            >
+              云管理
+            </button>
+            <button
+              role="tab"
               className={`tab ${adminTab === 'cpm' ? 'tab-active' : ''}`}
               onClick={() => setAdminTab('cpm')}
             >
@@ -549,6 +765,8 @@ function App() {
                         ? '认证文件'
                       : adminTab === 'quota'
                         ? '配额管理'
+                        : adminTab === 'cloud-admin'
+                          ? '云用户与共享池'
                         : '原始 CPM 管理页'}
                 </div>
                 <div className={`badge badge-lg px-4 ${statusTone}`}>
@@ -634,6 +852,37 @@ function App() {
               <span>界面错误：{loadError}</span>
             </div>
           ) : null}
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="stats border border-base-300 bg-base-100 shadow-sm">
+              <div className="stat">
+                <div className="stat-title">账号</div>
+                <div className="stat-value text-lg">{session.user.email}</div>
+                <div className="stat-desc">{session.user.role}</div>
+              </div>
+            </div>
+            <div className="stats border border-base-300 bg-base-100 shadow-sm">
+              <div className="stat">
+                <div className="stat-title">套餐</div>
+                <div className="stat-value text-secondary text-lg">{session.plan.planCode}</div>
+                <div className="stat-desc">{session.plan.name}</div>
+              </div>
+            </div>
+            <div className="stats border border-base-300 bg-base-100 shadow-sm">
+              <div className="stat">
+                <div className="stat-title">自动切换</div>
+                <div className="stat-value text-lg">{session.features.allow_auto_rotation ? '开启' : '关闭'}</div>
+                <div className="stat-desc">个人云：{session.features.allow_personal_cloud_sync ? '可用' : '禁用'}</div>
+              </div>
+            </div>
+            <div className="stats border border-base-300 bg-base-100 shadow-sm">
+              <div className="stat">
+                <div className="stat-title">共享池</div>
+                <div className="stat-value text-lg">{session.features.allow_shared_pool ? '可用' : '不可用'}</div>
+                <div className="stat-desc">最大设备：{session.features.max_devices}</div>
+              </div>
+            </div>
+          </div>
 
           {adminTab === 'overview' ? (
             <div className="flex flex-col gap-6 mt-4">
@@ -766,6 +1015,12 @@ function App() {
             <AuthFilesPanel
               cpaRunning={cpaState?.status === 'running'}
               pendingAction={pendingAction}
+              planCode={session.plan.planCode}
+              cloudToken={session.token}
+              maxEnabledAuthFiles={session.features.max_enabled_auth_files}
+              allowAutoRotation={session.features.allow_auto_rotation}
+              allowPersonalCloudSync={session.features.allow_personal_cloud_sync}
+              allowSharedPool={session.features.allow_shared_pool}
               onNotify={showToast}
               onError={setLoadError}
               onImportClick={() => importInputRef.current?.click()}
@@ -775,6 +1030,12 @@ function App() {
           ) : adminTab === 'quota' ? (
             <QuotaPanel
               cpaRunning={cpaState?.status === 'running'}
+              onNotify={showToast}
+              onError={setLoadError}
+            />
+          ) : adminTab === 'cloud-admin' ? (
+            <CloudAdminPanel
+              token={session.token}
               onNotify={showToast}
               onError={setLoadError}
             />
@@ -939,6 +1200,42 @@ function App() {
 
           {userTab === 'overview' && (
             <div className="flex flex-col gap-6 mt-4">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="stats border border-base-300 bg-base-100 shadow-sm">
+                  <div className="stat">
+                    <div className="stat-title">账号</div>
+                    <div className="stat-value text-lg">{session.user.email}</div>
+                    <div className="stat-desc">设备：{cloudClient.getDeviceId(session.user.email).slice(0, 8)}</div>
+                  </div>
+                </div>
+
+                <div className="stats border border-base-300 bg-base-100 shadow-sm">
+                  <div className="stat">
+                    <div className="stat-title">套餐</div>
+                    <div className="stat-value text-primary">{session.plan.planCode}</div>
+                    <div className="stat-desc">{session.plan.name}</div>
+                  </div>
+                </div>
+
+                <div className="stats border border-base-300 bg-base-100 shadow-sm">
+                  <div className="stat">
+                    <div className="stat-title">最大启用认证</div>
+                    <div className="stat-value text-secondary">
+                      {session.features.max_enabled_auth_files >= 999 ? '∞' : session.features.max_enabled_auth_files}
+                    </div>
+                    <div className="stat-desc">免费版登录后默认禁用全部</div>
+                  </div>
+                </div>
+
+                <div className="stats border border-base-300 bg-base-100 shadow-sm">
+                  <div className="stat">
+                    <div className="stat-title">云能力</div>
+                    <div className="stat-value text-lg">{session.features.allow_personal_cloud_sync ? '个人云' : '本地'}</div>
+                    <div className="stat-desc">共享池：{session.features.allow_shared_pool ? '可用' : '不可用'}</div>
+                  </div>
+                </div>
+              </div>
+
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <div className="card bg-base-100 shadow-sm border border-base-200">
                   <div className="card-body p-6">
@@ -1083,6 +1380,12 @@ function App() {
             <AuthFilesPanel
               cpaRunning={cpaState?.status === 'running'}
               pendingAction={pendingAction}
+              planCode={session.plan.planCode}
+              cloudToken={session.token}
+              maxEnabledAuthFiles={session.features.max_enabled_auth_files}
+              allowAutoRotation={session.features.allow_auto_rotation}
+              allowPersonalCloudSync={session.features.allow_personal_cloud_sync}
+              allowSharedPool={session.features.allow_shared_pool}
               onNotify={showToast}
               onError={setLoadError}
               onImportClick={() => importInputRef.current?.click()}
@@ -1120,6 +1423,54 @@ function App() {
           </div>
         </div>
       )}
+
+      <dialog ref={passwordDialogRef} className="modal">
+        <div className="modal-box">
+          <h3 className="text-lg font-bold">修改密码</h3>
+          <p className="py-2 text-sm text-base-content/60">当前账号：{session?.user.email}</p>
+          <div className="space-y-4">
+            <label className="form-control">
+              <span className="label-text mb-2">当前密码</span>
+              <input
+                type="password"
+                className="input input-bordered"
+                value={currentPassword}
+                onChange={(event) => setCurrentPassword(event.target.value)}
+              />
+            </label>
+            <label className="form-control">
+              <span className="label-text mb-2">新密码</span>
+              <input
+                type="password"
+                className="input input-bordered"
+                value={nextPassword}
+                onChange={(event) => setNextPassword(event.target.value)}
+              />
+            </label>
+          </div>
+          <div className="modal-action">
+            <form method="dialog">
+              <button className="btn">取消</button>
+            </form>
+            <button
+              className="btn btn-primary"
+              disabled={pendingAction === 'change-password'}
+              onClick={() => void submitChangePassword()}
+            >
+              {pendingAction === 'change-password' ? <span className="loading loading-spinner loading-xs"></span> : null}
+              保存新密码
+            </button>
+          </div>
+        </div>
+      </dialog>
+
+      {normalizingFreeTier ? (
+        <div className="toast toast-bottom toast-end z-[90]">
+          <div className="alert">
+            <span>免费版登录限制同步中：正在禁用本地认证文件</span>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

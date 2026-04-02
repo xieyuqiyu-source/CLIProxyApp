@@ -7,6 +7,7 @@ import type {
   ExportAuthArchiveResult,
   ImportAuthFilesResult,
   ImportAuthInputFile,
+  LocalAuthFile,
   RuntimePaths
 } from './types'
 
@@ -25,6 +26,8 @@ export const cpaRuntime = {
     invoke<ImportAuthFilesResult>('import_auth_files', { files }),
   exportAuthFilesArchive: () =>
     invoke<ExportAuthArchiveResult>('export_auth_files_archive'),
+  getLocalAuthFiles: () =>
+    invoke<LocalAuthFile[]>('get_local_auth_files'),
   openExternalTarget: (target: string) =>
     invoke('open_external_target', { target }),
   importVertexCredential: (file: ImportAuthInputFile, location?: string) =>

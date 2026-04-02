@@ -102,6 +102,13 @@ pub struct ImportAuthInputFile {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalAuthFile {
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportAuthFilesResult {
     pub imported_count: usize,
     pub extracted_count: usize,
@@ -591,6 +598,32 @@ pub fn export_auth_files_archive(app: &AppHandle) -> Result<ExportAuthArchiveRes
         file_count: auth_files.len(),
         saved_path: Some(save_path.display().to_string()),
     })
+}
+
+pub fn get_local_auth_files(app: &AppHandle) -> Result<Vec<LocalAuthFile>, String> {
+    let ctx = load_runtime_context(app)?;
+    let auth_dir = resolve_auth_dir(&ctx.paths)?;
+    if !auth_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut auth_files = Vec::new();
+    collect_auth_files(&auth_dir, &mut auth_files)?;
+    auth_files.sort();
+
+    let mut result = Vec::with_capacity(auth_files.len());
+    for path in auth_files {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| format!("invalid auth file name: {}", path.display()))?
+            .to_string();
+        let bytes =
+            fs::read(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        result.push(LocalAuthFile { name, bytes });
+    }
+
+    Ok(result)
 }
 
 pub fn open_external_target(target: &str) -> Result<(), String> {

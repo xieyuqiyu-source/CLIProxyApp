@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { authFilesApi } from './api'
 import type { AuthFileItem, AuthFileModel, AuthProviderKey } from './types'
+import { cloudClient } from '../../lib/cloud/client'
+import { cpaRuntime } from '../../lib/cpa/runtime'
+import type { CloudAuthFile } from '../../lib/cloud/types'
+import { sharedImportRegistry } from '../../lib/cloud/sharedRegistry'
 
 const PROVIDER_ORDER: AuthProviderKey[] = [
   'claude',
@@ -23,6 +27,12 @@ const PROVIDER_LABELS: Record<AuthProviderKey, string> = {
 export interface AuthFilesPanelProps {
   cpaRunning: boolean
   pendingAction: string | null
+  planCode?: string
+  cloudToken?: string
+  maxEnabledAuthFiles?: number
+  allowAutoRotation?: boolean
+  allowPersonalCloudSync?: boolean
+  allowSharedPool?: boolean
   onNotify: (message: string) => void
   onError: (message: string | null) => void
   onImportClick: () => void
@@ -98,6 +108,12 @@ async function copyText(value: string, onNotify: (message: string) => void, onEr
 export function AuthFilesPanel({
   cpaRunning,
   pendingAction,
+  planCode,
+  cloudToken,
+  maxEnabledAuthFiles,
+  allowAutoRotation,
+  allowPersonalCloudSync,
+  allowSharedPool,
   onNotify,
   onError,
   onImportClick,
@@ -105,8 +121,16 @@ export function AuthFilesPanel({
   onOpenConfigDir
 }: AuthFilesPanelProps) {
   const [files, setFiles] = useState<AuthFileItem[]>([])
+  const [personalCloudFiles, setPersonalCloudFiles] = useState<CloudAuthFile[]>([])
+  const [sharedCloudFiles, setSharedCloudFiles] = useState<CloudAuthFile[]>([])
   const [loading, setLoading] = useState(false)
+  const [cloudLoading, setCloudLoading] = useState(false)
+  const [cloudUploading, setCloudUploading] = useState(false)
+  const [cloudDownloadingId, setCloudDownloadingId] = useState<number | null>(null)
+  const [cloudDeletingId, setCloudDeletingId] = useState<number | null>(null)
   const [togglingName, setTogglingName] = useState<string | null>(null)
+  const [deletingName, setDeletingName] = useState<string | null>(null)
+  const [confirmDeleteFile, setConfirmDeleteFile] = useState<AuthFileItem | null>(null)
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all')
   const [expandedNames, setExpandedNames] = useState<Record<string, boolean>>({})
   const [modelsState, setModelsState] = useState<
@@ -142,13 +166,55 @@ export function AuthFilesPanel({
     void loadFiles()
   }, [cpaRunning])
 
+  const loadCloudFiles = async (notify = false) => {
+    if (!cloudToken) {
+      setPersonalCloudFiles([])
+      setSharedCloudFiles([])
+      return
+    }
+
+    try {
+      setCloudLoading(true)
+      const tasks: Array<Promise<unknown>> = [cloudClient.listMyAuthFiles(cloudToken)]
+      if (allowSharedPool) {
+        tasks.push(cloudClient.listSharedAuthFiles(cloudToken))
+      }
+      const results = await Promise.all(tasks)
+      const personal = results[0] as { files: CloudAuthFile[] }
+      const shared = allowSharedPool ? (results[1] as { files: CloudAuthFile[] }) : { files: [] as CloudAuthFile[] }
+      setPersonalCloudFiles(Array.isArray(personal.files) ? personal.files : [])
+      setSharedCloudFiles(Array.isArray(shared.files) ? shared.files : [])
+      if (notify) {
+        onNotify('云端认证文件已刷新')
+      }
+    } catch (error) {
+      onError(getErrorMessage(error))
+    } finally {
+      setCloudLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadCloudFiles()
+  }, [cloudToken, allowSharedPool])
+
   const toggleFileStatus = async (file: AuthFileItem) => {
     const nextDisabled = !isDisabled(file)
     try {
       setTogglingName(file.name)
+      if (!nextDisabled && maxEnabledAuthFiles === 1) {
+        const enabledFiles = files.filter((current) => current.name !== file.name && !isDisabled(current))
+        if (enabledFiles.length > 0) {
+          await Promise.all(enabledFiles.map((current) => authFilesApi.setStatus(current.name, true)))
+        }
+      }
       await authFilesApi.setStatus(file.name, nextDisabled)
       await loadFiles()
-      onNotify(`${file.name} 已${nextDisabled ? '禁用' : '启用'}`)
+      if (!nextDisabled && maxEnabledAuthFiles === 1) {
+        onNotify(`${file.name} 已启用，其他认证文件已自动禁用`)
+      } else {
+        onNotify(`${file.name} 已${nextDisabled ? '禁用' : '启用'}`)
+      }
     } catch (error) {
       onError(getErrorMessage(error))
     } finally {
@@ -184,6 +250,96 @@ export function AuthFilesPanel({
         ...current,
         [file.name]: { status: 'error', models: [], error: getErrorMessage(error) }
       }))
+    }
+  }
+
+  const deleteLocalFile = async (file: AuthFileItem) => {
+    try {
+      setDeletingName(file.name)
+      await authFilesApi.deleteFile(file.name)
+      sharedImportRegistry.removeByLocalFileName(file.name)
+      await loadFiles()
+      onNotify(`已删除本地认证文件：${file.name}`)
+    } catch (error) {
+      onError(getErrorMessage(error))
+    } finally {
+      setDeletingName(null)
+      setConfirmDeleteFile(null)
+    }
+  }
+
+  const importCloudFileToLocal = async (kind: 'personal' | 'shared', file: CloudAuthFile) => {
+    if (!cloudToken) {
+      onError('当前未登录云端账号')
+      return
+    }
+    try {
+      setCloudDownloadingId(file.id)
+      const download =
+        kind === 'shared'
+          ? await cloudClient.downloadSharedAuthFile(cloudToken, file.id)
+          : await cloudClient.downloadMyAuthFile(cloudToken, file.id)
+      await cpaRuntime.importAuthFiles([
+        {
+          name: download.fileName,
+          bytes: download.bytes
+        }
+      ])
+      if (kind === 'shared') {
+        sharedImportRegistry.upsert({
+          cloudFileId: file.id,
+          localFileName: download.fileName,
+          downloadedAt: new Date().toISOString(),
+          planRequired: file.planRequired
+        })
+      }
+      await loadFiles()
+      onNotify(`已将 ${file.displayName || file.fileName} 下载并导入本地 CPA`)
+    } catch (error) {
+      onError(getErrorMessage(error))
+    } finally {
+      setCloudDownloadingId(null)
+    }
+  }
+
+  const uploadAllLocalFilesToCloud = async () => {
+    if (!cloudToken) {
+      return
+    }
+    try {
+      setCloudUploading(true)
+      const localFiles = await cpaRuntime.getLocalAuthFiles()
+      if (localFiles.length === 0) {
+        onError('当前本地没有可上传的认证文件。')
+        return
+      }
+      for (const file of localFiles) {
+        const blob = new Blob([new Uint8Array(file.bytes)], { type: 'application/json' })
+        const uploadFile = new File([blob], file.name, { type: 'application/json' })
+        await cloudClient.uploadMyAuthFile(cloudToken, uploadFile)
+      }
+      await loadCloudFiles()
+      onNotify(`已将本地 ${localFiles.length} 个认证文件上传到个人云端`)
+    } catch (error) {
+      onError(getErrorMessage(error))
+    } finally {
+      setCloudUploading(false)
+    }
+  }
+
+  const deletePersonalCloudFile = async (file: CloudAuthFile) => {
+    if (!cloudToken) {
+      return
+    }
+    try {
+      setCloudDeletingId(file.id)
+      await cloudClient.deleteMyAuthFile(cloudToken, file.id)
+      await loadCloudFiles()
+      onNotify(`已删除云端认证文件：${file.displayName || file.fileName}`)
+    } catch (error) {
+      onError(getErrorMessage(error))
+    } finally {
+      setCloudDeletingId(null)
     }
   }
 
@@ -233,6 +389,23 @@ export function AuthFilesPanel({
             <p className="max-w-3xl text-sm text-base-content/70">
               这里聚合显示 CPA 当前已加载的认证文件。自动切换能力由 CPA 底层负责，页面主要负责查看、导入、导出与诊断。
             </p>
+            <div className="flex flex-wrap gap-2 pt-1">
+              {planCode ? <span className="badge badge-secondary badge-outline">套餐：{planCode}</span> : null}
+              {typeof maxEnabledAuthFiles === 'number' ? (
+                <span className="badge badge-outline">
+                  最多启用 {maxEnabledAuthFiles >= 999 ? '无限' : maxEnabledAuthFiles} 个
+                </span>
+              ) : null}
+              <span className={`badge ${allowAutoRotation ? 'badge-success' : 'badge-ghost'}`}>
+                {allowAutoRotation ? '允许自动切换' : '禁止自动切换'}
+              </span>
+              <span className={`badge ${allowPersonalCloudSync ? 'badge-success' : 'badge-ghost'}`}>
+                {allowPersonalCloudSync ? '可同步个人云认证' : '不可同步个人云认证'}
+              </span>
+              <span className={`badge ${allowSharedPool ? 'badge-success' : 'badge-ghost'}`}>
+                {allowSharedPool ? '可使用共享认证池' : '不可使用共享认证池'}
+              </span>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <button className="btn btn-primary" disabled={!cpaRunning || pendingAction !== null} onClick={onImportClick}>
@@ -253,6 +426,128 @@ export function AuthFilesPanel({
           </div>
         </div>
       </div>
+
+      {cloudToken ? (
+        <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+          <div className="flex flex-col gap-4 border-b border-base-200 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h3 className="text-lg font-bold">云端认证文件</h3>
+              <p className="text-sm text-base-content/55">
+                个人云认证适用于 `vip1/vip2/admin`。共享认证池仅对 `vip2/admin` 开放，下载后可直接导入本地 CPA。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button className="btn btn-outline btn-sm" disabled={cloudLoading} onClick={() => void loadCloudFiles(true)}>
+                {cloudLoading ? <span className="loading loading-spinner loading-xs"></span> : null}
+                刷新云端
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={!allowPersonalCloudSync || cloudUploading}
+                onClick={() => void uploadAllLocalFilesToCloud()}
+              >
+                {cloudUploading ? <span className="loading loading-spinner loading-xs"></span> : null}
+                上传本地全部认证
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-6 p-6 xl:grid-cols-2">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold">个人云认证文件</h4>
+                  <p className="text-sm text-base-content/55">只属于当前账号，可下载到本地继续使用。</p>
+                </div>
+                <span className="badge badge-outline">{personalCloudFiles.length} 个</span>
+              </div>
+              {!allowPersonalCloudSync && planCode !== 'admin' ? (
+                <div className="alert">
+                  <span>当前套餐不支持个人云认证同步。</span>
+                </div>
+              ) : personalCloudFiles.length === 0 ? (
+                <div className="rounded-box border border-dashed border-base-300 px-4 py-8 text-sm text-base-content/55">
+                  个人云端还没有认证文件。
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {personalCloudFiles.map((file) => (
+                    <div key={file.id} className="rounded-box border border-base-300 bg-base-100 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="font-semibold">{file.displayName || file.fileName}</div>
+                          <div className="text-sm text-base-content/60">{file.provider} · {file.fileName}</div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            className="btn btn-outline btn-sm"
+                            disabled={!cpaRunning || cloudDownloadingId === file.id}
+                            onClick={() => void importCloudFileToLocal('personal', file)}
+                          >
+                            {cloudDownloadingId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
+                            下载到本地
+                          </button>
+                          <button
+                            className="btn btn-outline btn-error btn-sm"
+                            disabled={cloudDeletingId === file.id}
+                            onClick={() => void deletePersonalCloudFile(file)}
+                          >
+                            {cloudDeletingId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold">共享认证池</h4>
+                  <p className="text-sm text-base-content/55">`vip2/admin` 可见。下载后会导入本地认证目录。</p>
+                </div>
+                <span className="badge badge-outline">{sharedCloudFiles.length} 个</span>
+              </div>
+              {!allowSharedPool && planCode !== 'admin' ? (
+                <div className="alert">
+                  <span>当前套餐不支持共享认证池下载。</span>
+                </div>
+              ) : sharedCloudFiles.length === 0 ? (
+                <div className="rounded-box border border-dashed border-base-300 px-4 py-8 text-sm text-base-content/55">
+                  当前没有可下载的共享认证文件。
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {sharedCloudFiles.map((file) => (
+                    <div key={file.id} className="rounded-box border border-base-300 bg-base-100 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="font-semibold">{file.displayName || file.fileName}</div>
+                          <div className="text-sm text-base-content/60">
+                            {file.provider} · {file.fileName}
+                            {file.planRequired ? ` · ${file.planRequired}` : ''}
+                          </div>
+                        </div>
+                        <button
+                          className="btn btn-outline btn-sm"
+                          disabled={!cpaRunning || cloudDownloadingId === file.id}
+                          onClick={() => void importCloudFileToLocal('shared', file)}
+                        >
+                          {cloudDownloadingId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
+                          下载到本地
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       {!cpaRunning ? (
         <div className="hero rounded-box border border-dashed border-base-300 bg-base-100 py-20 shadow-sm">
@@ -300,7 +595,10 @@ export function AuthFilesPanel({
         <div className="flex flex-col gap-4 border-b border-base-200 px-6 py-5">
           <div>
             <h3 className="text-lg font-bold">按提供商筛选</h3>
-            <p className="text-sm text-base-content/55">切换上面的 provider，快速查看对应认证文件。默认显示全部。</p>
+            <p className="text-sm text-base-content/55">
+              切换上面的 provider，快速查看对应认证文件。默认显示全部。
+              {maxEnabledAuthFiles === 1 ? ' 当前账号启用新认证文件时，会自动禁用其他已启用文件。' : ''}
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -366,6 +664,14 @@ export function AuthFilesPanel({
                           <span className="loading loading-spinner loading-xs"></span>
                         ) : null}
                         {disabled ? '启用' : '禁用'}
+                      </button>
+                      <button
+                        className="btn btn-outline btn-error btn-sm"
+                        disabled={!cpaRunning || deletingName === file.name}
+                        onClick={() => setConfirmDeleteFile(file)}
+                      >
+                        {deletingName === file.name ? <span className="loading loading-spinner loading-xs"></span> : null}
+                        删除
                       </button>
                     </div>
                   </div>
@@ -436,6 +742,37 @@ export function AuthFilesPanel({
           </div>
         )}
       </section>
+
+      <dialog className={`modal ${confirmDeleteFile ? 'modal-open' : ''}`}>
+        <div className="modal-box">
+          <h3 className="text-lg font-bold">确认删除认证文件</h3>
+          <p className="py-3 text-sm text-base-content/70">
+            {confirmDeleteFile
+              ? `确定要删除本地认证文件 “${confirmDeleteFile.name}” 吗？此操作会直接从 CPA 本地认证目录移除。`
+              : ''}
+          </p>
+          <div className="modal-action">
+            <button className="btn" onClick={() => setConfirmDeleteFile(null)}>
+              取消
+            </button>
+            <button
+              className="btn btn-error"
+              disabled={!confirmDeleteFile || deletingName === confirmDeleteFile.name}
+              onClick={() => {
+                if (confirmDeleteFile) {
+                  void deleteLocalFile(confirmDeleteFile)
+                }
+              }}
+            >
+              {confirmDeleteFile && deletingName === confirmDeleteFile.name ? (
+                <span className="loading loading-spinner loading-xs"></span>
+              ) : null}
+              确认删除
+            </button>
+          </div>
+        </div>
+        <div className="modal-backdrop" onClick={() => setConfirmDeleteFile(null)} />
+      </dialog>
     </div>
   )
 }

@@ -48,6 +48,11 @@ export interface ImportAuthInputFile {
   bytes: number[]
 }
 
+export interface LocalAuthFile {
+  name: string
+  bytes: number[]
+}
+
 export interface ImportAuthFilesResult {
   importedCount: number
   extractedCount: number
