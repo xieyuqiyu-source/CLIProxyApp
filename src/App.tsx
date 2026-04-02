@@ -4,10 +4,12 @@ import { OAuthPanel } from './features/oauth/OAuthPanel'
 import { QuotaPanel } from './features/quota/QuotaPanel'
 import { AuthFilesPanel } from './features/auth-files/AuthFilesPanel'
 import { CloudAdminPanel } from './features/cloud-admin/CloudAdminPanel'
+import { UserWorkspace } from './features/user-workspace/UserWorkspace'
 import { authFilesApi } from './features/auth-files/api'
 import { cloudClient } from './lib/cloud/client'
 import { sharedImportRegistry } from './lib/cloud/sharedRegistry'
 import type { CloudFeatures, CloudPlan, CloudUser } from './lib/cloud/types'
+import { formatPlanLabel } from './lib/cloud/planLabels'
 import type {
   AppState,
   BootstrapSettings,
@@ -30,6 +32,34 @@ const SESSION_KEY = 'cpapp-login-session'
 const THEME_KEY = 'cpapp-theme'
 const THEMES = ['light', 'dark', 'synthwave', 'cyberpunk'] as const
 type Theme = typeof THEMES[number]
+
+function ThemeDropdown({ theme, onChange }: { theme: Theme; onChange: (theme: Theme) => void }) {
+  return (
+    <div className="dropdown dropdown-end">
+      <div tabIndex={0} role="button" className="btn btn-sm btn-ghost">
+        主题
+        <svg width="12px" height="12px" className="inline-block h-2 w-2 fill-current opacity-60" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048">
+          <path d="M1799 349l242 241-1017 1017L7 590l242-241 775 775 775-775z"></path>
+        </svg>
+      </div>
+      <ul tabIndex={0} className="dropdown-content menu bg-base-200 rounded-box z-[1] w-52 p-2 shadow">
+        {THEMES.map((t) => (
+          <li key={t}>
+            <input
+              type="radio"
+              name="theme-dropdown"
+              className="theme-controller btn btn-sm btn-block btn-ghost justify-start"
+              aria-label={t}
+              value={t}
+              checked={theme === t}
+              onChange={() => onChange(t)}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 const createEmptySettings = (): BootstrapSettings => ({
   apiPort: 8317,
@@ -116,6 +146,12 @@ function App() {
     return `/cpm-bridge.html?${query.toString()}`
   }, [cpaState?.apiPort, managementInfo?.managementKey, settings.apiPort])
 
+  const useNewUserWorkspace = true
+  const sessionPlanLabel = useMemo(
+    () => formatPlanLabel(session?.plan.planCode, session?.plan.name),
+    [session?.plan.name, session?.plan.planCode]
+  )
+
   const userDisplayName = useMemo(() => {
     if (!session?.user.email) {
       return ''
@@ -123,6 +159,22 @@ function App() {
     const [name] = session.user.email.split('@')
     return name || session.user.email
   }, [session?.user.email])
+
+  const refreshSessionFromCloud = async () => {
+    if (!session) {
+      return null
+    }
+    const next = await cloudClient.me(session.token)
+    const nextSession: LoginSession = {
+      token: session.token,
+      user: next.user,
+      plan: next.plan,
+      features: next.features
+    }
+    window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
+    setSession(nextSession)
+    return nextSession
+  }
 
   const refresh = async () => {
     try {
@@ -520,32 +572,6 @@ function App() {
   if (!session) {
     return (
       <div className="min-h-screen bg-base-200">
-        <div className="absolute top-4 right-4 z-[1]">
-          <div className="dropdown dropdown-end">
-            <div tabIndex={0} role="button" className="btn m-1">
-              主题 / Theme
-              <svg width="12px" height="12px" className="inline-block h-2 w-2 fill-current opacity-60" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048">
-                <path d="M1799 349l242 241-1017 1017L7 590l242-241 775 775 775-775z"></path>
-              </svg>
-            </div>
-            <ul tabIndex={0} className="dropdown-content menu bg-base-200 rounded-box z-[1] w-52 p-2 shadow">
-              {THEMES.map((t) => (
-                <li key={t}>
-                  <input
-                    type="radio"
-                    name="theme-dropdown"
-                    className="theme-controller btn btn-sm btn-block btn-ghost justify-start"
-                    aria-label={t}
-                    value={t}
-                    checked={theme === t}
-                    onChange={() => setTheme(t)}
-                  />
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-
         <div className="hero min-h-screen">
           <div className="hero-content flex-col lg:flex-row-reverse gap-10 lg:gap-20">
             <div className="text-center lg:text-left max-w-lg">
@@ -660,8 +686,11 @@ function App() {
       />
       <div className="navbar border-b border-base-300 bg-base-100 px-6 shadow-sm h-16">
         <div className="flex-1">
-          <div className="text-2xl font-black tracking-tight">
-            {session.user.role === 'admin' ? 'CPM 管理入口' : 'CPAPP 业务入口'}
+          <div className="flex items-center gap-3">
+            <div className="text-2xl font-black tracking-tight">
+              {session.user.role === 'admin' ? 'CPM 管理入口' : 'CPAPP 业务入口'}
+            </div>
+            <ThemeDropdown theme={theme} onChange={setTheme} />
           </div>
         </div>
         <div className="flex-none flex items-center gap-4">
@@ -672,11 +701,19 @@ function App() {
           </div>
 
           <div className="flex items-center gap-3 pl-2 sm:pl-4 sm:border-l border-base-300">
+            {session.user.role !== 'admin' ? (
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => showToast('开通会员入口即将接入')}
+              >
+                开通会员
+              </button>
+            ) : null}
             {/* 用户角色与用户名信息 */}
             <div className="text-right hidden sm:block">
               <div className="text-sm font-bold leading-none">{session.user.email}</div>
-              <div className="text-[11px] font-semibold text-base-content/50 mt-1.5 uppercase tracking-wide">
-                {session.plan.planCode.toUpperCase()}
+              <div className="text-[11px] font-medium text-base-content/55 mt-1.5 tracking-wide">
+                {sessionPlanLabel}
               </div>
             </div>
             
@@ -864,8 +901,8 @@ function App() {
             <div className="stats border border-base-300 bg-base-100 shadow-sm">
               <div className="stat">
                 <div className="stat-title">套餐</div>
-                <div className="stat-value text-secondary text-lg">{session.plan.planCode}</div>
-                <div className="stat-desc">{session.plan.name}</div>
+                <div className="stat-value text-secondary text-lg">{sessionPlanLabel}</div>
+                <div className="stat-desc">{session.plan.planCode}</div>
               </div>
             </div>
             <div className="stats border border-base-300 bg-base-100 shadow-sm">
@@ -1075,6 +1112,28 @@ function App() {
             </div>
           )}
         </main>
+      ) : useNewUserWorkspace ? (
+        <UserWorkspace
+          plan={session.plan}
+          features={session.features}
+          userKey={session.user.email}
+          cloudToken={session.token}
+          cpaState={cpaState}
+          settings={settings}
+          managementInfo={managementInfo}
+          loadError={loadError}
+          pendingAction={pendingAction}
+          normalizingFreeTier={normalizingFreeTier}
+          onRefreshSession={refreshSessionFromCloud}
+          onSettingsChange={(updater) => setSettings((current) => updater(current))}
+          onSavePort={savePort}
+          onStart={() => runAction('start', () => cpaRuntime.start(), '启动指令已发送')}
+          onRestart={() => runAction('restart', () => cpaRuntime.restart(), '重启指令已发送')}
+          onStop={() => runAction('stop', () => cpaRuntime.stop(), '停止指令已发送')}
+          onRefresh={() => runAction('refresh', refresh, '状态刷新完毕')}
+          onNotify={showToast}
+          onError={setLoadError}
+        />
       ) : (
         <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
           <div role="tablist" className="tabs tabs-lift">
@@ -1212,8 +1271,8 @@ function App() {
                 <div className="stats border border-base-300 bg-base-100 shadow-sm">
                   <div className="stat">
                     <div className="stat-title">套餐</div>
-                    <div className="stat-value text-primary">{session.plan.planCode}</div>
-                    <div className="stat-desc">{session.plan.name}</div>
+                    <div className="stat-value text-primary">{sessionPlanLabel}</div>
+                    <div className="stat-desc">{session.plan.planCode}</div>
                   </div>
                 </div>
 

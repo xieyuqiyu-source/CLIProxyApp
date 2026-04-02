@@ -3,7 +3,8 @@ import type {
   CloudAuthFile,
   CloudLoginResponse,
   CloudMeResponse,
-  CloudRegisterResponse
+  CloudRegisterResponse,
+  SharedSyncPackage
 } from './types'
 
 const CLOUD_BASE_URL = 'http://127.0.0.1:8090/api/v1'
@@ -154,6 +155,9 @@ export const cloudClient = {
 
   listSharedAuthFiles: (token: string) =>
     request<{ files: CloudAuthFile[] }>('/shared/auth-files', { method: 'GET' }, token),
+
+  getSharedSyncPackage: (token: string) =>
+    request<SharedSyncPackage>('/shared/auth-files/sync-package', { method: 'GET' }, token),
 
   downloadSharedAuthFile: (token: string, id: number) =>
     download(`/shared/auth-files/${id}/download`, token),

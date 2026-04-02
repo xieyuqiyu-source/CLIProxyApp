@@ -20,6 +20,9 @@ export interface CloudFeatures {
   allow_personal_cloud_sync: boolean
   allow_shared_pool: boolean
   max_devices: number
+  shared_pool_mode: 'none' | 'sample' | 'full'
+  shared_pool_max_files: number
+  shared_pool_refresh_minutes: number
 }
 
 export interface CloudDevice {
@@ -63,6 +66,13 @@ export interface CloudAuthFile {
   displayName: string
   createdAt: string
   updatedAt: string
+}
+
+export interface SharedSyncPackage {
+  mode: 'none' | 'sample' | 'full'
+  max_files: number
+  refresh_after_minutes: number
+  files: CloudAuthFile[]
 }
 
 export interface CloudRegisterResponse {

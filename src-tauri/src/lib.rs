@@ -41,8 +41,10 @@ pub fn run() {
             import_auth_files,
             export_auth_files_archive,
             get_local_auth_files,
+            pick_local_auth_files,
             open_external_target,
-            import_vertex_credential
+            import_vertex_credential,
+            setup_openclaw_provider
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -162,6 +164,11 @@ fn get_local_auth_files(app: tauri::AppHandle) -> Result<Vec<cpa::LocalAuthFile>
 }
 
 #[tauri::command]
+fn pick_local_auth_files(app: tauri::AppHandle) -> Result<Vec<cpa::LocalAuthFile>, String> {
+    cpa::pick_local_auth_files(&app)
+}
+
+#[tauri::command]
 fn open_external_target(target: String) -> Result<(), String> {
     cpa::open_external_target(&target)
 }
@@ -173,4 +180,13 @@ fn import_vertex_credential(
     location: Option<String>,
 ) -> Result<serde_json::Value, String> {
     cpa::import_vertex_credential(&app, file, location)
+}
+
+#[tauri::command]
+async fn setup_openclaw_provider(
+    app: tauri::AppHandle,
+) -> Result<cpa::OpenClawSetupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::setup_openclaw_provider(&app))
+        .await
+        .map_err(|error| format!("failed to join OpenClaw setup task: {error}"))?
 }

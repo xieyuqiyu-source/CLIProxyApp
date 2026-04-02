@@ -142,9 +142,20 @@ export interface OAuthPanelProps {
   cpaRunning: boolean
   onNotify: (message: string) => void
   onError: (message: string | null) => void
+  visibleProviders?: OAuthProvider[]
+  embeddedMode?: boolean
+  showExtendedTools?: boolean
 }
 
-export function OAuthPanel({ canManage, cpaRunning, onNotify, onError }: OAuthPanelProps) {
+export function OAuthPanel({
+  canManage,
+  cpaRunning,
+  onNotify,
+  onError,
+  visibleProviders,
+  embeddedMode = false,
+  showExtendedTools = true
+}: OAuthPanelProps) {
   const [states, setStates] = useState<Record<OAuthProvider, ProviderState>>({} as Record<OAuthProvider, ProviderState>)
   const [iflowCookie, setIflowCookie] = useState<{
     cookie: string
@@ -172,6 +183,14 @@ export function OAuthPanel({ canManage, cpaRunning, onNotify, onError }: OAuthPa
     () => (!cpaRunning ? '请先启动 CPA，再进行 OAuth 或凭证导入。' : null),
     [cpaRunning]
   )
+
+  const filteredProviders = useMemo(() => {
+    if (!visibleProviders || visibleProviders.length === 0) {
+      return PROVIDERS
+    }
+    const allowed = new Set(visibleProviders)
+    return PROVIDERS.filter((provider) => allowed.has(provider.id))
+  }, [visibleProviders])
 
   const updateProviderState = (provider: OAuthProvider, next: Partial<ProviderState>) => {
     setStates((current) => ({
@@ -385,17 +404,19 @@ export function OAuthPanel({ canManage, cpaRunning, onNotify, onError }: OAuthPa
 
   return (
     <div className="mt-4 flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-2xl font-black">OAuth 工作台</h2>
-          <p className="text-sm text-base-content/60">
-            复用 CPA 现有 OAuth 接口，但界面独立于 CPM。当前 {canManage ? 'admin' : '普通用户'} 可见。
-          </p>
+      {!embeddedMode ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-black">OAuth 工作台</h2>
+            <p className="text-sm text-base-content/60">
+              复用 CPA 现有 OAuth 接口，但界面独立于 CPM。当前 {canManage ? 'admin' : '普通用户'} 可见。
+            </p>
+          </div>
+          <div className={`badge badge-lg ${cpaRunning ? 'badge-success' : 'badge-warning'}`}>
+            {cpaRunning ? 'CPA 已就绪' : '等待启动 CPA'}
+          </div>
         </div>
-        <div className={`badge badge-lg ${cpaRunning ? 'badge-success' : 'badge-warning'}`}>
-          {cpaRunning ? 'CPA 已就绪' : '等待启动 CPA'}
-        </div>
-      </div>
+      ) : null}
 
       {!cpaRunning && (
         <div className="alert alert-warning">
@@ -403,12 +424,15 @@ export function OAuthPanel({ canManage, cpaRunning, onNotify, onError }: OAuthPa
         </div>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        {PROVIDERS.map((provider) => {
+      <div className={`grid gap-4 ${embeddedMode ? 'grid-cols-1' : 'xl:grid-cols-2'}`}>
+        {filteredProviders.map((provider) => {
           const state = states[provider.id] || {}
 
           return (
-            <div key={provider.id} className="card border border-base-300 bg-base-100 shadow-sm">
+            <div
+              key={provider.id}
+              className={embeddedMode ? 'rounded-box border border-base-300 bg-base-100 shadow-sm' : 'card border border-base-300 bg-base-100 shadow-sm'}
+            >
               <div className="card-body gap-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex items-center gap-4">
@@ -520,6 +544,7 @@ export function OAuthPanel({ canManage, cpaRunning, onNotify, onError }: OAuthPa
         })}
       </div>
 
+      {showExtendedTools ? (
       <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="card border border-base-300 bg-base-100 shadow-sm">
           <div className="card-body gap-4">
@@ -664,6 +689,7 @@ export function OAuthPanel({ canManage, cpaRunning, onNotify, onError }: OAuthPa
           </div>
         </div>
       </div>
+      ) : null}
     </div>
   )
 }

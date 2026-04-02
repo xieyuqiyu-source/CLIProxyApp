@@ -65,3 +65,10 @@ export interface ExportAuthArchiveResult {
   fileCount: number
   savedPath: string | null
 }
+
+export interface OpenClawSetupResult {
+  configPath: string
+  providerId: string
+  modelCount: number
+  alias: string
+}

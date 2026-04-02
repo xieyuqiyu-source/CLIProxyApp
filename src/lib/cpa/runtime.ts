@@ -8,8 +8,10 @@ import type {
   ImportAuthFilesResult,
   ImportAuthInputFile,
   LocalAuthFile,
+  OpenClawSetupResult,
   RuntimePaths
 } from './types'
+import { listen } from '@tauri-apps/api/event'
 
 export const cpaRuntime = {
   getAppState: () => invoke<AppState>('get_app_state'),
@@ -28,6 +30,12 @@ export const cpaRuntime = {
     invoke<ExportAuthArchiveResult>('export_auth_files_archive'),
   getLocalAuthFiles: () =>
     invoke<LocalAuthFile[]>('get_local_auth_files'),
+  setupOpenClawProvider: () =>
+    invoke<OpenClawSetupResult>('setup_openclaw_provider'),
+  onOpenClawSetupLog: (handler: (line: string) => void) =>
+    listen<string>('openclaw-setup-log', (event) => handler(event.payload)),
+  pickLocalAuthFiles: () =>
+    invoke<LocalAuthFile[]>('pick_local_auth_files'),
   openExternalTarget: (target: string) =>
     invoke('open_external_target', { target }),
   importVertexCredential: (file: ImportAuthInputFile, location?: string) =>

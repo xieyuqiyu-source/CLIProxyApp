@@ -38,5 +38,9 @@ export const sharedImportRegistry = {
   removeByLocalFileName(localFileName: string) {
     const next = readAll().filter((item) => item.localFileName !== localFileName)
     writeAll(next)
+  },
+
+  clear() {
+    writeAll([])
   }
 }

@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use serde_yaml::{Mapping, Number, Value as YamlValue};
 use std::{
     collections::HashSet,
+    env,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Cursor, Read, Write},
     net::{SocketAddr, TcpStream},
@@ -12,7 +13,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Signal, System};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
+
+const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,6 +125,15 @@ pub struct ExportAuthArchiveResult {
     pub file_name: String,
     pub file_count: usize,
     pub saved_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSetupResult {
+    pub config_path: String,
+    pub provider_id: String,
+    pub model_count: usize,
+    pub alias: String,
 }
 
 #[derive(Debug)]
@@ -626,6 +638,45 @@ pub fn get_local_auth_files(app: &AppHandle) -> Result<Vec<LocalAuthFile>, Strin
     Ok(result)
 }
 
+pub fn pick_local_auth_files(app: &AppHandle) -> Result<Vec<LocalAuthFile>, String> {
+    let ctx = load_runtime_context(app)?;
+    let auth_dir = resolve_auth_dir(&ctx.paths)?;
+
+    let files = rfd::FileDialog::new()
+        .set_directory(&auth_dir)
+        .add_filter("JSON", &["json"])
+        .pick_files();
+
+    let Some(files) = files else {
+        return Ok(Vec::new());
+    };
+
+    let mut result = Vec::new();
+    for path in files {
+        if !path.is_file() {
+            continue;
+        }
+        let is_json = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("json"));
+        if !is_json {
+            continue;
+        }
+
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| format!("invalid auth file name: {}", path.display()))?
+            .to_string();
+        let bytes =
+            fs::read(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        result.push(LocalAuthFile { name, bytes });
+    }
+
+    Ok(result)
+}
+
 pub fn open_external_target(target: &str) -> Result<(), String> {
     let trimmed = target.trim();
     if trimmed.is_empty() {
@@ -721,6 +772,61 @@ pub fn import_vertex_credential(
     Ok(serde_json::from_str::<JsonValue>(&text).unwrap_or(JsonValue::String(text)))
 }
 
+pub fn setup_openclaw_provider(app: &AppHandle) -> Result<OpenClawSetupResult, String> {
+    let ctx = load_runtime_context(app)?;
+    let mut logs = Vec::new();
+
+    log_openclaw(app, &mut logs, "开始接入 OpenClaw...");
+    let openclaw_cmd = resolve_openclaw_command();
+    log_openclaw(
+        app,
+        &mut logs,
+        &format!("检测 OpenClaw CLI: {}", openclaw_cmd.display()),
+    );
+
+    ensure_command_available(&openclaw_cmd, app, &mut logs)?;
+    let config_path = resolve_openclaw_config_path(&openclaw_cmd, app, &mut logs)?;
+
+    let api_host = if ctx.bootstrap.host == "0.0.0.0" {
+        "127.0.0.1".to_string()
+    } else {
+        ctx.bootstrap.host.clone()
+    };
+    let base_url = format!("http://{}:{}/v1", api_host, ctx.bootstrap.api_port);
+    log_openclaw(app, &mut logs, &format!("探测代理接口: {base_url}/models"));
+
+    let models = fetch_openclaw_models(&base_url, &ctx.bootstrap.management_key)?;
+    if models.is_empty() {
+        return Err("OpenClaw 接入失败：/v1/models 未返回任何模型".to_string());
+    }
+    log_openclaw(
+        app,
+        &mut logs,
+        &format!("已发现 {} 个模型，准备写入配置", models.len()),
+    );
+
+    let mut root = load_or_create_openclaw_config(&config_path, app, &mut logs)?;
+    apply_openclaw_provider_config(&mut root, &base_url, &ctx.bootstrap.management_key, &models);
+    write_openclaw_config(&config_path, &root, app, &mut logs)?;
+    validate_openclaw_config(&openclaw_cmd, app, &mut logs)?;
+
+    log_openclaw(
+        app,
+        &mut logs,
+        &format!(
+            "OpenClaw 接入完成。provider=cliproxy, alias=cliproxy, models={}",
+            models.len()
+        ),
+    );
+
+    Ok(OpenClawSetupResult {
+        config_path: config_path.display().to_string(),
+        provider_id: "cliproxy".to_string(),
+        model_count: models.len(),
+        alias: "cliproxy".to_string(),
+    })
+}
+
 fn extract_auth_files_from_zip(
     archive_bytes: &[u8],
     archive_name: &str,
@@ -784,6 +890,287 @@ fn unique_auth_file_name(name: &str, used_names: &mut HashSet<String>) -> String
         }
         counter += 1;
     }
+}
+
+fn resolve_openclaw_command() -> PathBuf {
+    if cfg!(target_os = "windows") {
+        PathBuf::from("openclaw.exe")
+    } else {
+        PathBuf::from("openclaw")
+    }
+}
+
+fn ensure_command_available(
+    command_path: &Path,
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    let output = Command::new(command_path)
+        .arg("--help")
+        .output()
+        .map_err(|error| format!("未检测到 OpenClaw CLI，请先安装 openclaw：{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "OpenClaw CLI 不可用: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    log_openclaw(app, logs, "OpenClaw CLI 检测通过");
+    Ok(())
+}
+
+fn resolve_openclaw_config_path(
+    command_path: &Path,
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<PathBuf, String> {
+    let output = Command::new(command_path)
+        .args(["config", "file"])
+        .output()
+        .map_err(|error| format!("执行 openclaw config file 失败: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "读取 OpenClaw 配置路径失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return Err("openclaw config file 未返回有效路径".to_string());
+    }
+    let resolved = expand_user_path(&raw)?;
+    log_openclaw(
+        app,
+        logs,
+        &format!("OpenClaw 配置文件: {}", resolved.display()),
+    );
+    Ok(resolved)
+}
+
+fn expand_user_path(raw: &str) -> Result<PathBuf, String> {
+    if let Some(rest) = raw.strip_prefix("~/") {
+        let home = user_home_dir()?;
+        return Ok(home.join(rest));
+    }
+    if let Some(rest) = raw.strip_prefix("~\\") {
+        let home = user_home_dir()?;
+        return Ok(home.join(rest.replace('\\', "/")));
+    }
+    Ok(PathBuf::from(raw))
+}
+
+fn user_home_dir() -> Result<PathBuf, String> {
+    if let Some(home) = env::var_os("HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    if let Some(home) = env::var_os("USERPROFILE") {
+        return Ok(PathBuf::from(home));
+    }
+    match (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
+        (Some(drive), Some(path)) => Ok(PathBuf::from(format!(
+            "{}{}",
+            PathBuf::from(drive).display(),
+            PathBuf::from(path).display()
+        ))),
+        _ => Err("无法解析用户主目录".to_string()),
+    }
+}
+
+fn fetch_openclaw_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("failed to create OpenClaw probe client: {error}"))?;
+    let response = client
+        .get(format!("{base_url}/models"))
+        .bearer_auth(api_key)
+        .send()
+        .map_err(|error| format!("探测 /v1/models 失败: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("读取 /v1/models 响应失败: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("探测 /v1/models 失败: {status} {text}"));
+    }
+    let root = serde_json::from_str::<JsonValue>(&text)
+        .map_err(|error| format!("解析 /v1/models 响应失败: {error}"))?;
+    let mut ids = Vec::new();
+    if let Some(data) = root.get("data").and_then(JsonValue::as_array) {
+        for item in data {
+            if let Some(id) = item.get("id").and_then(JsonValue::as_str) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+fn load_or_create_openclaw_config(
+    path: &Path,
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<JsonValue, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 OpenClaw 配置目录失败 {}: {error}", parent.display()))?;
+    }
+    if !path.exists() {
+        log_openclaw(app, logs, "OpenClaw 配置不存在，创建新配置文件");
+        return Ok(JsonValue::Object(JsonMap::new()));
+    }
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("读取 OpenClaw 配置失败 {}: {error}", path.display()))?;
+    let root = serde_json::from_str::<JsonValue>(&content)
+        .map_err(|error| format!("解析 OpenClaw 配置失败 {}: {error}", path.display()))?;
+    log_openclaw(app, logs, "已读取现有 OpenClaw 配置");
+    Ok(root)
+}
+
+fn apply_openclaw_provider_config(
+    root: &mut JsonValue,
+    base_url: &str,
+    api_key: &str,
+    models: &[String],
+) {
+    let root_obj = ensure_json_object(root);
+    let models_node = ensure_json_object_entry(root_obj, "models");
+    let providers_node = ensure_json_object_entry(models_node, "providers");
+    let cliproxy = ensure_json_object_entry(providers_node, "cliproxy");
+    cliproxy.insert("baseUrl".to_string(), JsonValue::String(base_url.to_string()));
+    cliproxy.insert("apiKey".to_string(), JsonValue::String(api_key.to_string()));
+    cliproxy.insert(
+        "api".to_string(),
+        JsonValue::String("openai-completions".to_string()),
+    );
+    cliproxy.insert(
+        "models".to_string(),
+        JsonValue::Array(models.iter().map(|id| build_openclaw_model_definition(id)).collect()),
+    );
+
+    let agents_node = ensure_json_object_entry(root_obj, "agents");
+    let defaults_node = ensure_json_object_entry(agents_node, "defaults");
+    let defaults_models_node = ensure_json_object_entry(defaults_node, "models");
+    for model_id in models {
+        let mut entry = JsonMap::new();
+        if model_id == "gpt-5.4" {
+            entry.insert("alias".to_string(), JsonValue::String("cliproxy".to_string()));
+        }
+        defaults_models_node.insert(
+            format!("cliproxy/{model_id}"),
+            JsonValue::Object(entry),
+        );
+    }
+}
+
+fn write_openclaw_config(
+    path: &Path,
+    root: &JsonValue,
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(root)
+        .map_err(|error| format!("序列化 OpenClaw 配置失败: {error}"))?;
+    fs::write(path, content)
+        .map_err(|error| format!("写入 OpenClaw 配置失败 {}: {error}", path.display()))?;
+    log_openclaw(app, logs, "已写入 OpenClaw 配置");
+    Ok(())
+}
+
+fn validate_openclaw_config(
+    command_path: &Path,
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
+    log_openclaw(app, logs, "执行 openclaw config validate ...");
+    let output = Command::new(command_path)
+        .args(["config", "validate"])
+        .output()
+        .map_err(|error| format!("执行 openclaw config validate 失败: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "OpenClaw 配置校验失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        log_openclaw(app, logs, &stdout);
+    }
+    log_openclaw(app, logs, "OpenClaw 配置校验通过");
+    Ok(())
+}
+
+fn build_openclaw_model_definition(id: &str) -> JsonValue {
+    let lower = id.to_ascii_lowercase();
+    let supports_image = ["vision", "image", "gemini", "gpt-4o", "gpt-5", "claude"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    let reasoning = ["reason", "thinking", "gpt-5", "o1", "o3", "o4"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+
+    let mut obj = JsonMap::new();
+    obj.insert("id".to_string(), JsonValue::String(id.to_string()));
+    obj.insert("name".to_string(), JsonValue::String(id.to_string()));
+    obj.insert(
+        "api".to_string(),
+        JsonValue::String("openai-completions".to_string()),
+    );
+    obj.insert("reasoning".to_string(), JsonValue::Bool(reasoning));
+    obj.insert(
+        "input".to_string(),
+        JsonValue::Array(
+            if supports_image {
+                vec![
+                    JsonValue::String("text".to_string()),
+                    JsonValue::String("image".to_string()),
+                ]
+            } else {
+                vec![JsonValue::String("text".to_string())]
+            },
+        ),
+    );
+    obj.insert(
+        "cost".to_string(),
+        serde_json::json!({
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+        }),
+    );
+    obj.insert("contextWindow".to_string(), JsonValue::from(266000));
+    obj.insert("maxTokens".to_string(), JsonValue::from(4096));
+    JsonValue::Object(obj)
+}
+
+fn ensure_json_object(value: &mut JsonValue) -> &mut JsonMap<String, JsonValue> {
+    if !value.is_object() {
+        *value = JsonValue::Object(JsonMap::new());
+    }
+    value.as_object_mut().expect("object ensured above")
+}
+
+fn ensure_json_object_entry<'a>(
+    parent: &'a mut JsonMap<String, JsonValue>,
+    key: &str,
+) -> &'a mut JsonMap<String, JsonValue> {
+    let value = parent
+        .entry(key.to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+    if !value.is_object() {
+        *value = JsonValue::Object(JsonMap::new());
+    }
+    value.as_object_mut().expect("object ensured above")
+}
+
+fn log_openclaw(app: &AppHandle, logs: &mut Vec<String>, message: &str) {
+    let line = message.to_string();
+    logs.push(line.clone());
+    let _ = app.emit(OPENCLAW_SETUP_LOG_EVENT, line);
 }
 
 fn resolve_auth_dir(paths: &ResolvedPaths) -> Result<PathBuf, String> {

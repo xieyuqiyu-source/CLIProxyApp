@@ -433,7 +433,7 @@ export function AuthFilesPanel({
             <div>
               <h3 className="text-lg font-bold">云端认证文件</h3>
               <p className="text-sm text-base-content/55">
-                个人云认证适用于 `vip1/vip2/admin`。共享认证池仅对 `vip2/admin` 开放，下载后可直接导入本地 CPA。
+                个人云认证适用于 `Pro / Pro Max / Admin`。共享认证池仅对 `Pro Max / Admin` 开放，下载后可直接导入本地 CPA。
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -507,7 +507,7 @@ export function AuthFilesPanel({
               <div className="flex items-center justify-between">
                 <div>
                   <h4 className="font-bold">共享认证池</h4>
-                  <p className="text-sm text-base-content/55">`vip2/admin` 可见。下载后会导入本地认证目录。</p>
+                  <p className="text-sm text-base-content/55">`Pro Max / Admin` 可见。下载后会导入本地认证目录。</p>
                 </div>
                 <span className="badge badge-outline">{sharedCloudFiles.length} 个</span>
               </div>

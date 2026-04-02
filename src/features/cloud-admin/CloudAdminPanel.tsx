@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useState } from 'react'
 import { cloudClient } from '../../lib/cloud/client'
 import type { CloudAdminUserSummary, CloudPlan } from '../../lib/cloud/types'
+import { cpaRuntime } from '../../lib/cpa/runtime'
 
 interface CloudAdminPanelProps {
   token: string
@@ -9,7 +10,6 @@ interface CloudAdminPanelProps {
 }
 
 export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelProps) {
-  const sharedUploadRef = useRef<HTMLInputElement | null>(null)
   const [users, setUsers] = useState<CloudAdminUserSummary[]>([])
   const [plans, setPlans] = useState<CloudPlan[]>([])
   const [loading, setLoading] = useState(false)
@@ -68,36 +68,36 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
     }
   }
 
-  const handleSharedUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = event.target.files
+  const uploadSharedFiles = async (selectedFiles: Array<{ name: string; bytes: number[] }>) => {
     if (!selectedFiles || selectedFiles.length === 0) {
       return
     }
     try {
       setUploading(true)
-      for (const file of Array.from(selectedFiles)) {
-        await cloudClient.adminUploadSharedAuthFile(token, file)
+      for (const file of selectedFiles) {
+        const blob = new Blob([new Uint8Array(file.bytes)], { type: 'application/json' })
+        const uploadFile = new File([blob], file.name, { type: 'application/json' })
+        await cloudClient.adminUploadSharedAuthFile(token, uploadFile)
       }
       onNotify(`已上传 ${selectedFiles.length} 个共享认证文件`)
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
     } finally {
-      event.target.value = ''
       setUploading(false)
+    }
+  }
+
+  const handleSharedUploadClick = async () => {
+    try {
+      const files = await cpaRuntime.pickLocalAuthFiles()
+      await uploadSharedFiles(files)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
     }
   }
 
   return (
     <div className="mt-4 flex flex-col gap-6">
-      <input
-        ref={sharedUploadRef}
-        type="file"
-        accept=".json,application/json"
-        multiple
-        className="hidden"
-        onChange={(event) => void handleSharedUpload(event)}
-      />
-
       <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
         <div className="flex flex-col gap-4 p-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -108,7 +108,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <button className="btn btn-primary" disabled={uploading} onClick={() => sharedUploadRef.current?.click()}>
+            <button className="btn btn-primary" disabled={uploading} onClick={() => void handleSharedUploadClick()}>
               {uploading ? <span className="loading loading-spinner loading-xs"></span> : null}
               上传共享认证
             </button>
