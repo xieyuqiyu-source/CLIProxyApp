@@ -1776,6 +1776,7 @@ fn build_cpa_command(ctx: &RuntimeContext) -> Result<Command, String> {
             let mut command = Command::new(binary_path);
             command.arg("-config").arg(&ctx.paths.config_path);
             command.env("MANAGEMENT_STATIC_PATH", &ctx.paths.static_dir);
+            apply_windows_background_flags(&mut command);
             return Ok(command);
         }
     }
@@ -1784,6 +1785,7 @@ fn build_cpa_command(ctx: &RuntimeContext) -> Result<Command, String> {
         let mut command = Command::new(sidecar_path);
         command.arg("-config").arg(&ctx.paths.config_path);
         command.env("MANAGEMENT_STATIC_PATH", &ctx.paths.static_dir);
+        apply_windows_background_flags(&mut command);
         return Ok(command);
     }
 
@@ -1795,8 +1797,19 @@ fn build_cpa_command(ctx: &RuntimeContext) -> Result<Command, String> {
     command.arg("-config");
     command.arg(&ctx.paths.config_path);
     command.env("MANAGEMENT_STATIC_PATH", &ctx.paths.static_dir);
+    apply_windows_background_flags(&mut command);
     Ok(command)
 }
+
+#[cfg(target_os = "windows")]
+fn apply_windows_background_flags(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_windows_background_flags(_command: &mut Command) {}
 
 fn workspace_api_dir() -> Result<PathBuf, String> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
