@@ -3,7 +3,7 @@ import { QuotaPanel } from '../quota/QuotaPanel'
 import { PROVIDER_META, PROVIDER_ORDER } from '../quota/providerMeta'
 import type { QuotaProvider } from '../quota/types'
 import type { CloudFeatures, CloudPlan } from '../../lib/cloud/types'
-import type { BootstrapSettings, CpaManagementInfo, CpaState } from '../../lib/cpa/types'
+import type { CpaState } from '../../lib/cpa/types'
 import { OAuthPanel } from '../oauth/OAuthPanel'
 import type { OAuthProvider } from '../oauth/types'
 import { cloudClient } from '../../lib/cloud/client'
@@ -19,14 +19,10 @@ interface UserWorkspaceProps {
   userKey: string
   cloudToken: string
   cpaState: CpaState | null
-  settings: BootstrapSettings
-  managementInfo: CpaManagementInfo | null
   loadError: string | null
   pendingAction: string | null
   normalizingFreeTier: boolean
   onRefreshSession: () => Promise<{ plan: CloudPlan; features: CloudFeatures } | null>
-  onSettingsChange: (updater: (current: BootstrapSettings) => BootstrapSettings) => void
-  onSavePort: () => Promise<void>
   onStart: () => Promise<void>
   onRestart: () => Promise<void>
   onStop: () => Promise<void>
@@ -72,6 +68,13 @@ function mapQuotaProviderToOauthProvider(provider: QuotaProvider): OAuthProvider
   }
 }
 
+function resolveOauthProviders(provider: QuotaProvider | 'all'): OAuthProvider[] | undefined {
+  if (provider === 'all') {
+    return PROVIDER_ORDER.map(mapQuotaProviderToOauthProvider)
+  }
+  return [mapQuotaProviderToOauthProvider(provider)]
+}
+
 function getSharedSyncStorageKey(userKey: string) {
   return `cpapp-shared-sync-last:${userKey}`
 }
@@ -86,14 +89,10 @@ export function UserWorkspace({
   userKey,
   cloudToken,
   cpaState,
-  settings,
-  managementInfo,
   loadError,
   pendingAction,
   normalizingFreeTier,
   onRefreshSession,
-  onSettingsChange,
-  onSavePort,
   onStart,
   onRestart,
   onStop,
@@ -101,7 +100,7 @@ export function UserWorkspace({
   onNotify,
   onError
 }: UserWorkspaceProps) {
-  const [activeProvider, setActiveProvider] = useState<QuotaProvider>(PROVIDER_ORDER[0])
+  const [activeProvider, setActiveProvider] = useState<QuotaProvider | 'all'>('all')
   const [quotaSourceFilter, setQuotaSourceFilter] = useState<'all' | 'shared' | 'personal'>('all')
   const [providerCounts, setProviderCounts] = useState<Partial<Record<QuotaProvider, number>>>({})
   const [vipDialogOpen, setVipDialogOpen] = useState(false)
@@ -114,11 +113,6 @@ export function UserWorkspace({
   const [runningOpenClawSetup, setRunningOpenClawSetup] = useState(false)
   const [openClawLogs, setOpenClawLogs] = useState<string[]>([])
   const planLabel = useMemo(() => formatPlanLabel(plan.planCode, plan.name), [plan.name, plan.planCode])
-
-  const proxyUrl = useMemo(
-    () => `http://127.0.0.1:${cpaState?.apiPort ?? settings.apiPort ?? 8317}/v1`,
-    [cpaState?.apiPort, settings.apiPort]
-  )
 
   const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(userKey.trim().toLowerCase()), [userKey])
 
@@ -168,9 +162,9 @@ export function UserWorkspace({
     if (features.shared_pool_mode === 'sample' && sharedCooldownSeconds > 0) {
       const minutes = Math.floor(sharedCooldownSeconds / 60)
       const seconds = sharedCooldownSeconds % 60
-      return `共享号池更新 ${minutes}:${String(seconds).padStart(2, '0')}`
+      return `共享号池 ${minutes}:${String(seconds).padStart(2, '0')}`
     }
-    return '共享号池更新'
+    return '共享号池'
   }, [features.shared_pool_mode, sharedCooldownSeconds, syncingSharedPool])
 
   const handleSharedPoolAction = async () => {
@@ -280,26 +274,6 @@ export function UserWorkspace({
             <div className="badge badge-outline px-4">{planLabel}</div>
 
             <div className="join shadow-sm ml-auto">
-              <div className="join-item flex items-center border border-base-300 bg-base-100 px-3 text-sm">端口</div>
-              <input
-                type="number"
-                min={1}
-                max={65535}
-                className="join-item input input-bordered input-sm w-24 text-center font-mono"
-                value={settings.apiPort}
-                onChange={(event) => {
-                  onSettingsChange((current) => ({
-                    ...current,
-                    apiPort: Number(event.target.value || 0)
-                  }))
-                }}
-              />
-              <button className="join-item btn btn-primary btn-sm" disabled={pendingAction !== null} onClick={() => void onSavePort()}>
-                保存
-              </button>
-            </div>
-
-            <div className="join shadow-sm">
               <button className="join-item btn btn-primary btn-sm" disabled={pendingAction !== null} onClick={() => void onStart()}>
                 启动
               </button>
@@ -312,7 +286,7 @@ export function UserWorkspace({
             </div>
 
             <button className="btn btn-outline btn-sm" disabled={pendingAction !== null} onClick={() => void onRefresh()}>
-              刷新状态
+              刷新页面
             </button>
 
             <div
@@ -356,26 +330,6 @@ export function UserWorkspace({
               共享号池说明
             </button>
 
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={() => {
-                void navigator.clipboard.writeText(proxyUrl)
-                onNotify('代理地址已复制')
-              }}
-            >
-              复制代理地址
-            </button>
-
-            <button
-              className="btn btn-outline btn-sm"
-              disabled={!managementInfo?.managementKey}
-              onClick={() => {
-                void navigator.clipboard.writeText(managementInfo?.managementKey ?? '')
-                onNotify('API KEY 已复制')
-              }}
-            >
-              复制调用密钥
-            </button>
           </div>
 
           {normalizingFreeTier ? (
@@ -412,6 +366,17 @@ export function UserWorkspace({
               </button>
             </li>
             <li className="menu-title px-2 pt-3 pb-1 text-[11px] uppercase tracking-[0.22em] text-base-content/40">模型提供商</li>
+            <li>
+              <button
+                className={`justify-between rounded-box ${activeProvider === 'all' ? 'menu-active bg-primary text-primary-content' : ''}`}
+                onClick={() => setActiveProvider('all')}
+              >
+                <span>全部</span>
+                <span className={`badge badge-sm ${activeProvider === 'all' ? 'badge-neutral' : 'badge-ghost'}`}>
+                  {Object.values(providerCounts).reduce((sum, value) => sum + (value ?? 0), 0)}
+                </span>
+              </button>
+            </li>
             {PROVIDER_ORDER.map((provider) => {
               const meta = PROVIDER_META[provider]
               const active = provider === activeProvider
@@ -570,8 +535,8 @@ export function UserWorkspace({
         <div className="modal-box max-w-4xl">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h3 className="text-xl font-bold">OAuth 授权</h3>
-              <p className="text-sm text-base-content/60">直接在当前用户页内完成认证授权。</p>
+              <h3 className="text-xl font-bold">登录自己账号</h3>
+              <p className="text-sm text-base-content/60">直接在当前用户页内登录自己的账号。</p>
             </div>
             <button className="btn btn-ghost btn-sm" onClick={() => setOauthDialogOpen(false)}>
               关闭
@@ -581,7 +546,7 @@ export function UserWorkspace({
             <OAuthPanel
               canManage={false}
               cpaRunning={cpaState?.status === 'running'}
-              visibleProviders={[mapQuotaProviderToOauthProvider(activeProvider)]}
+              visibleProviders={resolveOauthProviders(activeProvider)}
               embeddedMode
               showExtendedTools={false}
               onNotify={onNotify}

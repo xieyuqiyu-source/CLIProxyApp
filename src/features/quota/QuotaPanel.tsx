@@ -1377,11 +1377,21 @@ export function QuotaPanel({
 
           <div className="flex flex-wrap items-center justify-end gap-3">
             <button
-              className={`btn btn-primary btn-sm ${loadingFiles ? 'btn-disabled' : ''}`}
+              className={`btn btn-primary btn-sm btn-square ${loadingFiles ? 'btn-disabled' : ''}`}
               onClick={() => void loadFiles()}
               disabled={!cpaRunning || loadingFiles}
+              title="刷新认证列表"
             >
-              刷新认证列表
+              {loadingFiles ? (
+                <span className="loading loading-spinner loading-xs" />
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 2v6h-6" />
+                  <path d="M3 12a9 9 0 0 1 15.55-6.36L21 8" />
+                  <path d="M3 22v-6h6" />
+                  <path d="M21 12a9 9 0 0 1-15.55 6.36L3 16" />
+                </svg>
+              )}
             </button>
             <button
               className="btn btn-outline btn-sm"
@@ -1405,7 +1415,7 @@ export function QuotaPanel({
                     : '开启自动切换'}
                 </button>
                 <button className="btn btn-outline btn-sm" onClick={onOpenOauth} disabled={!cpaRunning}>
-                  OAuth 授权
+                  登录自己账号
                 </button>
               </>
             ) : null}

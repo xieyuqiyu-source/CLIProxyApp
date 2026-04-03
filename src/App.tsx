@@ -1211,14 +1211,10 @@ function App() {
           userKey={session.user.email}
           cloudToken={session.token}
           cpaState={cpaState}
-          settings={settings}
-          managementInfo={managementInfo}
           loadError={loadError}
           pendingAction={pendingAction}
           normalizingFreeTier={normalizingFreeTier}
           onRefreshSession={refreshSessionFromCloud}
-          onSettingsChange={(updater) => setSettings((current) => updater(current))}
-          onSavePort={savePort}
           onStart={() => runAction('start', () => cpaRuntime.start(), '启动指令已发送')}
           onRestart={() => runAction('restart', () => cpaRuntime.restart(), '重启指令已发送')}
           onStop={() => runAction('stop', () => cpaRuntime.stop(), '停止指令已发送')}

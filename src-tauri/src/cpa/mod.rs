@@ -17,7 +17,13 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
 const CLOUD_BASE_URL: &str = "http://103.205.254.30:28899/api/v1";
-const APP_UPDATE_MANIFEST_PATH: &str = "/downloads/cliproxyapp/latest.json";
+const APP_UPDATE_MANIFEST_PATHS: [&str; 3] = [
+    "/downloads/cliproxyapp/latest.json",
+    "/cliproxyapp/latest.json",
+    "/latest.json",
+];
+const GITHUB_LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/xieyuqiyu-source/CLIProxyApp/releases/latest";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -591,25 +597,11 @@ pub fn proxy_cloud_download(request: CloudDownloadRequest) -> Result<CloudDownlo
 pub fn check_app_update(app: &AppHandle) -> Result<AppUpdateInfo, String> {
     let current_version = app.package_info().version.to_string();
     let checked_at = chrono_like_now_string();
-    let manifest_url = app_update_manifest_url()?;
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|error| format!("failed to create update client: {error}"))?;
-    let response = client
-        .get(&manifest_url)
-        .send()
-        .map_err(|error| format!("failed to request update manifest: {error}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .map_err(|error| format!("failed to read update manifest: {error}"))?;
-    if !status.is_success() {
-        return Err(format!("update manifest request failed with {status}: {text}"));
-    }
-
-    let payload = serde_json::from_str::<JsonValue>(&text)
-        .map_err(|error| format!("failed to parse update manifest: {error}"))?;
+    let payload = fetch_update_manifest(&client)?;
     let latest_version = payload
         .get("version")
         .and_then(JsonValue::as_str)
@@ -1451,7 +1443,7 @@ fn cloud_url(path: &str) -> String {
     format!("{}/{}", CLOUD_BASE_URL.trim_end_matches('/'), normalized_path)
 }
 
-fn app_update_manifest_url() -> Result<String, String> {
+fn app_update_origin() -> Result<String, String> {
     let base = reqwest::Url::parse(CLOUD_BASE_URL)
         .map_err(|error| format!("invalid cloud base url: {error}"))?;
     let host = base
@@ -1462,7 +1454,106 @@ fn app_update_manifest_url() -> Result<String, String> {
         origin.push(':');
         origin.push_str(&port.to_string());
     }
-    Ok(format!("{origin}{APP_UPDATE_MANIFEST_PATH}"))
+    Ok(origin)
+}
+
+fn app_update_manifest_urls() -> Result<Vec<String>, String> {
+    let origin = app_update_origin()?;
+    Ok(APP_UPDATE_MANIFEST_PATHS
+        .iter()
+        .map(|path| format!("{origin}{path}"))
+        .collect())
+}
+
+fn fetch_update_manifest(client: &reqwest::blocking::Client) -> Result<JsonValue, String> {
+    let mut failures = Vec::new();
+
+    for url in app_update_manifest_urls()? {
+        match client.get(&url).send() {
+            Ok(response) => {
+                let status = response.status();
+                let text = response
+                    .text()
+                    .map_err(|error| format!("failed to read update manifest: {error}"))?;
+                if status.is_success() {
+                    return serde_json::from_str::<JsonValue>(&text)
+                        .map_err(|error| format!("failed to parse update manifest: {error}"));
+                }
+                failures.push(format!("{url} -> {status}"));
+            }
+            Err(error) => failures.push(format!("{url} -> {error}")),
+        }
+    }
+
+    fetch_github_latest_release(client).map_err(|github_error| {
+        format!(
+            "未找到可用的更新清单。服务器返回：{}；GitHub 回退失败：{}",
+            failures.join(" | "),
+            github_error
+        )
+    })
+}
+
+fn fetch_github_latest_release(client: &reqwest::blocking::Client) -> Result<JsonValue, String> {
+    let response = client
+        .get(GITHUB_LATEST_RELEASE_API)
+        .header(reqwest::header::USER_AGENT, "CLIProxyApp")
+        .send()
+        .map_err(|error| format!("failed to request latest GitHub release: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("failed to read latest GitHub release: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("GitHub latest release request failed with {status}: {text}"));
+    }
+    let payload = serde_json::from_str::<JsonValue>(&text)
+        .map_err(|error| format!("failed to parse latest GitHub release: {error}"))?;
+
+    let version = payload
+        .get("tag_name")
+        .and_then(JsonValue::as_str)
+        .map(|value| value.trim().trim_start_matches('v').to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "GitHub release missing tag_name".to_string())?;
+
+    let download_url = payload
+        .get("assets")
+        .and_then(JsonValue::as_array)
+        .and_then(|assets| {
+            assets.iter().find_map(|asset| {
+                let name = asset.get("name").and_then(JsonValue::as_str)?.to_ascii_lowercase();
+                if cfg!(target_os = "windows") {
+                    if !name.ends_with(".exe") {
+                        return None;
+                    }
+                } else if cfg!(target_os = "macos") {
+                    if !(name.ends_with(".dmg") || name.ends_with(".app.zip")) {
+                        return None;
+                    }
+                }
+                asset
+                    .get("browser_download_url")
+                    .and_then(JsonValue::as_str)
+                    .map(str::to_string)
+            })
+        });
+
+    let notes = payload
+        .get("body")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let published_at = payload
+        .get("published_at")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+
+    Ok(serde_json::json!({
+        "version": version,
+        "downloadUrl": download_url,
+        "notes": notes,
+        "publishedAt": published_at
+    }))
 }
 
 fn chrono_like_now_string() -> String {
