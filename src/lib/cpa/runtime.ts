@@ -60,6 +60,7 @@ export const cpaRuntime = {
     fileName: string
     bytes: number[]
     mimeType?: string
+    fields?: Record<string, string>
     token: string
   }) => invoke<unknown>('proxy_cloud_upload', { request }),
   proxyCloudDownload: (request: {

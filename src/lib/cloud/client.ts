@@ -1,5 +1,6 @@
 import { cpaRuntime } from '../cpa/runtime'
 import type {
+  CloudAppReleaseManifest,
   CloudAdminUserSummary,
   CloudAuthFile,
   CloudLoginResponse,
@@ -47,6 +48,22 @@ async function uploadForm<T>(path: string, file: File, token: string): Promise<T
     fileName: file.name,
     bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
     mimeType: file.type || 'application/octet-stream',
+    token
+  }) as Promise<T>
+}
+
+async function uploadFormWithFields<T>(
+  path: string,
+  file: File,
+  token: string,
+  fields: Record<string, string>
+): Promise<T> {
+  return cpaRuntime.proxyCloudUpload({
+    path,
+    fileName: file.name,
+    bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
+    mimeType: file.type || 'application/octet-stream',
+    fields,
     token
   }) as Promise<T>
 }
@@ -139,6 +156,17 @@ export const cloudClient = {
 
   adminUploadSharedAuthFile: (token: string, file: File) =>
     uploadForm<{ file: CloudAuthFile }>('/admin/shared-auth-files/upload', file, token),
+
+  adminUploadAppRelease: (token: string, file: File, payload: { version: string; notes?: string }) =>
+    uploadFormWithFields<{ manifest: CloudAppReleaseManifest }>(
+      '/admin/app-releases/upload',
+      file,
+      token,
+      {
+        version: payload.version,
+        notes: payload.notes ?? ''
+      }
+    ),
 
   adminDeleteSharedAuthFile: (token: string, id: number) =>
     request<{ status: string }>(`/admin/shared-auth-files/${id}`, { method: 'DELETE' }, token),

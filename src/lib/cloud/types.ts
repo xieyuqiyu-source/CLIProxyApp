@@ -84,3 +84,10 @@ export interface CloudAdminUserSummary {
   plan: CloudPlan
   features: CloudFeatures
 }
+
+export interface CloudAppReleaseManifest {
+  version: string
+  notes?: string
+  publishedAt: string
+  downloads: Record<string, string>
+}

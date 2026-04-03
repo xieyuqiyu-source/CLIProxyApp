@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cloudClient } from '../../lib/cloud/client'
 import type { CloudAdminUserSummary, CloudPlan } from '../../lib/cloud/types'
 import { cpaRuntime } from '../../lib/cpa/runtime'
@@ -10,14 +10,18 @@ interface CloudAdminPanelProps {
 }
 
 export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelProps) {
+  const releaseInputRef = useRef<HTMLInputElement | null>(null)
   const [users, setUsers] = useState<CloudAdminUserSummary[]>([])
   const [plans, setPlans] = useState<CloudPlan[]>([])
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadingRelease, setUploadingRelease] = useState(false)
   const [clearingSharedPool, setClearingSharedPool] = useState(false)
   const [savingUserId, setSavingUserId] = useState<number | null>(null)
   const [draftPlans, setDraftPlans] = useState<Record<number, string>>({})
   const [draftExpiresAt, setDraftExpiresAt] = useState<Record<number, string>>({})
+  const [releaseVersion, setReleaseVersion] = useState('')
+  const [releaseNotes, setReleaseNotes] = useState('')
 
   const load = async (notify = false) => {
     try {
@@ -110,8 +114,39 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
     }
   }
 
+  const handleReleaseUploadSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) {
+      return
+    }
+    if (!releaseVersion.trim()) {
+      onError('请先填写版本号，再上传安装包')
+      return
+    }
+    try {
+      setUploadingRelease(true)
+      const response = await cloudClient.adminUploadAppRelease(token, file, {
+        version: releaseVersion.trim(),
+        notes: releaseNotes.trim()
+      })
+      onNotify(`已上传更新包并刷新 latest.json：${response.manifest.version}`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUploadingRelease(false)
+    }
+  }
+
   return (
     <div className="mt-4 flex flex-col gap-6">
+      <input
+        ref={releaseInputRef}
+        type="file"
+        className="hidden"
+        accept=".dmg,.exe,.zip"
+        onChange={(event) => void handleReleaseUploadSelection(event)}
+      />
       <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
         <div className="flex flex-col gap-4 p-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -135,6 +170,40 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
               刷新用户
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+        <div className="grid gap-4 p-6 lg:grid-cols-[200px_minmax(0,1fr)_auto] lg:items-end">
+          <label className="form-control">
+            <span className="label-text mb-2 text-sm font-medium">版本号</span>
+            <input
+              className="input input-bordered"
+              placeholder="例如 0.1.7"
+              value={releaseVersion}
+              onChange={(event) => setReleaseVersion(event.target.value)}
+            />
+          </label>
+          <label className="form-control">
+            <span className="label-text mb-2 text-sm font-medium">更新说明</span>
+            <input
+              className="input input-bordered"
+              placeholder="可选，写到 latest.json 里"
+              value={releaseNotes}
+              onChange={(event) => setReleaseNotes(event.target.value)}
+            />
+          </label>
+          <button
+            className="btn btn-secondary"
+            disabled={uploadingRelease}
+            onClick={() => releaseInputRef.current?.click()}
+          >
+            {uploadingRelease ? <span className="loading loading-spinner loading-xs"></span> : null}
+            上传更新包
+          </button>
+        </div>
+        <div className="px-6 pb-6 text-sm text-base-content/60">
+          上传 `.dmg` 或 `.exe` 后，后端会把文件落到 `/downloads/cliproxyapp/`，并自动覆盖生成 `latest.json`。
         </div>
       </section>
 

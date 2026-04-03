@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use serde_yaml::{Mapping, Number, Value as YamlValue};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Cursor, Read, Write},
@@ -179,6 +179,7 @@ pub struct CloudUploadRequest {
     pub file_name: String,
     pub bytes: Vec<u8>,
     pub mime_type: Option<String>,
+    pub fields: Option<HashMap<String, String>>,
     pub token: String,
 }
 
@@ -535,7 +536,12 @@ pub fn proxy_cloud_upload(request: CloudUploadRequest) -> Result<JsonValue, Stri
         .file_name(request.file_name)
         .mime_str(mime_type)
         .map_err(|error| format!("failed to build upload part: {error}"))?;
-    let form = reqwest::blocking::multipart::Form::new().part("file", part);
+    let mut form = reqwest::blocking::multipart::Form::new().part("file", part);
+    if let Some(fields) = request.fields {
+        for (key, value) in fields {
+            form = form.text(key, value);
+        }
+    }
 
     let response = client
         .post(url)
@@ -610,13 +616,7 @@ pub fn check_app_update(app: &AppHandle) -> Result<AppUpdateInfo, String> {
         .ok_or_else(|| "update manifest missing version".to_string())?
         .to_string();
 
-    let download_url = payload
-        .get("downloadUrl")
-        .or_else(|| payload.get("download_url"))
-        .and_then(JsonValue::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
+    let download_url = select_update_download_url(&payload)?;
     let notes = payload
         .get("notes")
         .and_then(JsonValue::as_str)
@@ -1455,6 +1455,52 @@ fn app_update_origin() -> Result<String, String> {
         origin.push_str(&port.to_string());
     }
     Ok(origin)
+}
+
+fn select_update_download_url(payload: &JsonValue) -> Result<Option<String>, String> {
+    let origin = app_update_origin()?;
+    let direct = payload
+        .get("downloadUrl")
+        .or_else(|| payload.get("download_url"))
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| resolve_download_url(value, &origin));
+    if direct.is_some() {
+        return Ok(direct);
+    }
+
+    let downloads = payload
+        .get("downloads")
+        .and_then(JsonValue::as_object);
+    let Some(downloads) = downloads else {
+        return Ok(None);
+    };
+
+    let keys = if cfg!(target_os = "windows") {
+        vec!["windows", "windows-x64"]
+    } else if cfg!(target_os = "macos") {
+        vec!["macos", "darwin-aarch64", "darwin-x64"]
+    } else {
+        vec!["linux", "linux-x64"]
+    };
+
+    for key in keys {
+        if let Some(url) = downloads.get(key).and_then(JsonValue::as_str) {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                return Ok(Some(resolve_download_url(trimmed, &origin)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_download_url(value: &str, origin: &str) -> String {
+    if value.starts_with("http://") || value.starts_with("https://") {
+        return value.to_string();
+    }
+    format!("{origin}/{}", value.trim_start_matches('/'))
 }
 
 fn app_update_manifest_urls() -> Result<Vec<String>, String> {
