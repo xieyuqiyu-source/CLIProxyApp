@@ -105,6 +105,9 @@ export const cloudClient = {
   deleteMyAuthFile: (token: string, id: number) =>
     request<{ status: string }>(`/me/auth-files/${id}`, { method: 'DELETE' }, token),
 
+  deleteAllMyAuthFiles: (token: string) =>
+    request<{ status: string; deleted: number }>('/me/auth-files', { method: 'DELETE' }, token),
+
   listSharedAuthFiles: (token: string) =>
     request<{ files: CloudAuthFile[] }>('/shared/auth-files', { method: 'GET' }, token),
 
@@ -135,5 +138,15 @@ export const cloudClient = {
     ),
 
   adminUploadSharedAuthFile: (token: string, file: File) =>
-    uploadForm<{ file: CloudAuthFile }>('/admin/shared-auth-files/upload', file, token)
+    uploadForm<{ file: CloudAuthFile }>('/admin/shared-auth-files/upload', file, token),
+
+  adminDeleteSharedAuthFile: (token: string, id: number) =>
+    request<{ status: string }>(`/admin/shared-auth-files/${id}`, { method: 'DELETE' }, token),
+
+  adminDeleteAllSharedAuthFiles: (token: string) =>
+    request<{ status: string; deleted: number }>(
+      '/admin/shared-auth-files',
+      { method: 'DELETE' },
+      token
+    )
 }

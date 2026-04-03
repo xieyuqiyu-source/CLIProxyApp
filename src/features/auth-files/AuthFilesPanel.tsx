@@ -128,9 +128,15 @@ export function AuthFilesPanel({
   const [cloudUploading, setCloudUploading] = useState(false)
   const [cloudDownloadingId, setCloudDownloadingId] = useState<number | null>(null)
   const [cloudDeletingId, setCloudDeletingId] = useState<number | null>(null)
+  const [clearingPersonalCloud, setClearingPersonalCloud] = useState(false)
+  const [clearingSharedCloud, setClearingSharedCloud] = useState(false)
   const [togglingName, setTogglingName] = useState<string | null>(null)
   const [deletingName, setDeletingName] = useState<string | null>(null)
   const [confirmDeleteFile, setConfirmDeleteFile] = useState<AuthFileItem | null>(null)
+  const [confirmDeletePersonalCloudFile, setConfirmDeletePersonalCloudFile] = useState<CloudAuthFile | null>(null)
+  const [confirmDeleteSharedCloudFile, setConfirmDeleteSharedCloudFile] = useState<CloudAuthFile | null>(null)
+  const [confirmClearPersonalCloud, setConfirmClearPersonalCloud] = useState(false)
+  const [confirmClearSharedCloud, setConfirmClearSharedCloud] = useState(false)
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all')
   const [expandedNames, setExpandedNames] = useState<Record<string, boolean>>({})
   const [modelsState, setModelsState] = useState<
@@ -340,6 +346,58 @@ export function AuthFilesPanel({
       onError(getErrorMessage(error))
     } finally {
       setCloudDeletingId(null)
+      setConfirmDeletePersonalCloudFile(null)
+    }
+  }
+
+  const deleteSharedCloudFile = async (file: CloudAuthFile) => {
+    if (!cloudToken) {
+      return
+    }
+    try {
+      setCloudDeletingId(file.id)
+      await cloudClient.adminDeleteSharedAuthFile(cloudToken, file.id)
+      await loadCloudFiles()
+      onNotify(`已删除共享认证文件：${file.displayName || file.fileName}`)
+    } catch (error) {
+      onError(getErrorMessage(error))
+    } finally {
+      setCloudDeletingId(null)
+      setConfirmDeleteSharedCloudFile(null)
+    }
+  }
+
+  const clearPersonalCloudFiles = async () => {
+    if (!cloudToken) {
+      return
+    }
+    try {
+      setClearingPersonalCloud(true)
+      const result = await cloudClient.deleteAllMyAuthFiles(cloudToken)
+      await loadCloudFiles()
+      onNotify(`已清空个人云认证文件，共删除 ${result.deleted} 个`)
+    } catch (error) {
+      onError(getErrorMessage(error))
+    } finally {
+      setClearingPersonalCloud(false)
+      setConfirmClearPersonalCloud(false)
+    }
+  }
+
+  const clearSharedCloudFiles = async () => {
+    if (!cloudToken) {
+      return
+    }
+    try {
+      setClearingSharedCloud(true)
+      const result = await cloudClient.adminDeleteAllSharedAuthFiles(cloudToken)
+      await loadCloudFiles()
+      onNotify(`已清空共享认证池，共删除 ${result.deleted} 个`)
+    } catch (error) {
+      onError(getErrorMessage(error))
+    } finally {
+      setClearingSharedCloud(false)
+      setConfirmClearSharedCloud(false)
     }
   }
 
@@ -459,7 +517,17 @@ export function AuthFilesPanel({
                   <h4 className="font-bold">个人云认证文件</h4>
                   <p className="text-sm text-base-content/55">只属于当前账号，可下载到本地继续使用。</p>
                 </div>
-                <span className="badge badge-outline">{personalCloudFiles.length} 个</span>
+                <div className="flex items-center gap-2">
+                  <span className="badge badge-outline">{personalCloudFiles.length} 个</span>
+                  <button
+                    className="btn btn-outline btn-error btn-xs"
+                    disabled={personalCloudFiles.length === 0 || clearingPersonalCloud}
+                    onClick={() => setConfirmClearPersonalCloud(true)}
+                  >
+                    {clearingPersonalCloud ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    一键删除
+                  </button>
+                </div>
               </div>
               {!allowPersonalCloudSync && planCode !== 'admin' ? (
                 <div className="alert">
@@ -490,7 +558,7 @@ export function AuthFilesPanel({
                           <button
                             className="btn btn-outline btn-error btn-sm"
                             disabled={cloudDeletingId === file.id}
-                            onClick={() => void deletePersonalCloudFile(file)}
+                            onClick={() => setConfirmDeletePersonalCloudFile(file)}
                           >
                             {cloudDeletingId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
                             删除
@@ -509,7 +577,19 @@ export function AuthFilesPanel({
                   <h4 className="font-bold">共享认证池</h4>
                   <p className="text-sm text-base-content/55">`Pro Max / Admin` 可见。下载后会导入本地认证目录。</p>
                 </div>
-                <span className="badge badge-outline">{sharedCloudFiles.length} 个</span>
+                <div className="flex items-center gap-2">
+                  <span className="badge badge-outline">{sharedCloudFiles.length} 个</span>
+                  {planCode === 'admin' ? (
+                    <button
+                      className="btn btn-outline btn-error btn-xs"
+                      disabled={sharedCloudFiles.length === 0 || clearingSharedCloud}
+                      onClick={() => setConfirmClearSharedCloud(true)}
+                    >
+                      {clearingSharedCloud ? <span className="loading loading-spinner loading-xs"></span> : null}
+                      一键删除
+                    </button>
+                  ) : null}
+                </div>
               </div>
               {!allowSharedPool && planCode !== 'admin' ? (
                 <div className="alert">
@@ -531,14 +611,26 @@ export function AuthFilesPanel({
                             {file.planRequired ? ` · ${file.planRequired}` : ''}
                           </div>
                         </div>
-                        <button
-                          className="btn btn-outline btn-sm"
-                          disabled={!cpaRunning || cloudDownloadingId === file.id}
-                          onClick={() => void importCloudFileToLocal('shared', file)}
-                        >
-                          {cloudDownloadingId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
-                          下载到本地
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            className="btn btn-outline btn-sm"
+                            disabled={!cpaRunning || cloudDownloadingId === file.id}
+                            onClick={() => void importCloudFileToLocal('shared', file)}
+                          >
+                            {cloudDownloadingId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
+                            下载到本地
+                          </button>
+                          {planCode === 'admin' ? (
+                            <button
+                              className="btn btn-outline btn-error btn-sm"
+                              disabled={cloudDeletingId === file.id}
+                              onClick={() => setConfirmDeleteSharedCloudFile(file)}
+                            >
+                              {cloudDeletingId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
+                              删除
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -772,6 +864,98 @@ export function AuthFilesPanel({
           </div>
         </div>
         <div className="modal-backdrop" onClick={() => setConfirmDeleteFile(null)} />
+      </dialog>
+
+      <dialog className={`modal ${confirmDeletePersonalCloudFile ? 'modal-open' : ''}`}>
+        <div className="modal-box">
+          <h3 className="text-lg font-bold">确认删除个人云认证</h3>
+          <p className="py-3 text-sm text-base-content/70">
+            {confirmDeletePersonalCloudFile
+              ? `确定要删除个人云认证文件 “${confirmDeletePersonalCloudFile.displayName || confirmDeletePersonalCloudFile.fileName}” 吗？同名再次上传时会重新覆盖创建。`
+              : ''}
+          </p>
+          <div className="modal-action">
+            <button className="btn" onClick={() => setConfirmDeletePersonalCloudFile(null)}>
+              取消
+            </button>
+            <button
+              className="btn btn-error"
+              disabled={!confirmDeletePersonalCloudFile || cloudDeletingId === confirmDeletePersonalCloudFile.id}
+              onClick={() => confirmDeletePersonalCloudFile && void deletePersonalCloudFile(confirmDeletePersonalCloudFile)}
+            >
+              {confirmDeletePersonalCloudFile && cloudDeletingId === confirmDeletePersonalCloudFile.id ? (
+                <span className="loading loading-spinner loading-xs"></span>
+              ) : null}
+              确认删除
+            </button>
+          </div>
+        </div>
+      </dialog>
+
+      <dialog className={`modal ${confirmDeleteSharedCloudFile ? 'modal-open' : ''}`}>
+        <div className="modal-box">
+          <h3 className="text-lg font-bold">确认删除共享认证</h3>
+          <p className="py-3 text-sm text-base-content/70">
+            {confirmDeleteSharedCloudFile
+              ? `确定要删除共享认证文件 “${confirmDeleteSharedCloudFile.displayName || confirmDeleteSharedCloudFile.fileName}” 吗？同名再次上传时会直接覆盖。`
+              : ''}
+          </p>
+          <div className="modal-action">
+            <button className="btn" onClick={() => setConfirmDeleteSharedCloudFile(null)}>
+              取消
+            </button>
+            <button
+              className="btn btn-error"
+              disabled={!confirmDeleteSharedCloudFile || cloudDeletingId === confirmDeleteSharedCloudFile.id}
+              onClick={() => confirmDeleteSharedCloudFile && void deleteSharedCloudFile(confirmDeleteSharedCloudFile)}
+            >
+              {confirmDeleteSharedCloudFile && cloudDeletingId === confirmDeleteSharedCloudFile.id ? (
+                <span className="loading loading-spinner loading-xs"></span>
+              ) : null}
+              确认删除
+            </button>
+          </div>
+        </div>
+      </dialog>
+
+      <dialog className={`modal ${confirmClearPersonalCloud ? 'modal-open' : ''}`}>
+        <div className="modal-box">
+          <h3 className="text-lg font-bold">确认清空个人云认证</h3>
+          <p className="py-3 text-sm text-base-content/70">此操作会删除当前账号上传到云端的全部认证文件。</p>
+          <div className="modal-action">
+            <button className="btn" onClick={() => setConfirmClearPersonalCloud(false)}>
+              取消
+            </button>
+            <button
+              className="btn btn-error"
+              disabled={clearingPersonalCloud}
+              onClick={() => void clearPersonalCloudFiles()}
+            >
+              {clearingPersonalCloud ? <span className="loading loading-spinner loading-xs"></span> : null}
+              确认删除
+            </button>
+          </div>
+        </div>
+      </dialog>
+
+      <dialog className={`modal ${confirmClearSharedCloud ? 'modal-open' : ''}`}>
+        <div className="modal-box">
+          <h3 className="text-lg font-bold">确认清空共享认证池</h3>
+          <p className="py-3 text-sm text-base-content/70">此操作会删除共享认证池中的全部文件，所有用户后续同步将拿不到这些共享认证。</p>
+          <div className="modal-action">
+            <button className="btn" onClick={() => setConfirmClearSharedCloud(false)}>
+              取消
+            </button>
+            <button
+              className="btn btn-error"
+              disabled={clearingSharedCloud}
+              onClick={() => void clearSharedCloudFiles()}
+            >
+              {clearingSharedCloud ? <span className="loading loading-spinner loading-xs"></span> : null}
+              确认删除
+            </button>
+          </div>
+        </div>
       </dialog>
     </div>
   )

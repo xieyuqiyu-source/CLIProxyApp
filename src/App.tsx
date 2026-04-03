@@ -12,6 +12,7 @@ import type { CloudFeatures, CloudPlan, CloudUser } from './lib/cloud/types'
 import { formatPlanLabel } from './lib/cloud/planLabels'
 import type {
   AppState,
+  AppUpdateInfo,
   BootstrapSettings,
   CpaManagementInfo,
   CpaState,
@@ -78,6 +79,7 @@ const statusLabelMap: Record<string, string> = {
 
 function App() {
   const passwordDialogRef = useRef<HTMLDialogElement | null>(null)
+  const updateDialogRef = useRef<HTMLDialogElement | null>(null)
   const [theme, setTheme] = useState<Theme>(() => {
     const raw = window.localStorage.getItem(THEME_KEY)
     if (THEMES.includes(raw as Theme)) {
@@ -115,6 +117,8 @@ function App() {
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [adminTab, setAdminTab] = useState<AdminTab>('overview')
   const [userTab, setUserTab] = useState<UserTab>('overview')
   const [normalizingFreeTier, setNormalizingFreeTier] = useState(false)
@@ -197,6 +201,31 @@ function App() {
     }
   }
 
+  const checkForUpdates = async (silent = false) => {
+    try {
+      setCheckingUpdate(true)
+      const info = await cpaRuntime.checkAppUpdate()
+      setUpdateInfo(info)
+      if (info.hasUpdate) {
+        if (!silent) {
+          showToast(`发现新版本 ${info.latestVersion}`)
+        }
+        updateDialogRef.current?.showModal()
+        return
+      }
+      if (!silent) {
+        showToast(`当前已是最新版 ${info.currentVersion}`)
+      }
+    } catch (error) {
+      if (!silent) {
+        const message = error instanceof Error ? error.message : String(error)
+        setLoadError(message)
+      }
+    } finally {
+      setCheckingUpdate(false)
+    }
+  }
+
   useEffect(() => {
     if (!session) return
 
@@ -207,6 +236,13 @@ function App() {
 
     return () => window.clearInterval(timer)
   }, [session])
+
+  useEffect(() => {
+    if (!session) {
+      return
+    }
+    void checkForUpdates(true)
+  }, [session?.token])
 
   useEffect(() => {
     if (!session) {
@@ -709,6 +745,14 @@ function App() {
                 开通会员
               </button>
             ) : null}
+            <button
+              className="btn btn-outline btn-sm"
+              disabled={checkingUpdate}
+              onClick={() => void checkForUpdates(false)}
+            >
+              {checkingUpdate ? <span className="loading loading-spinner loading-xs"></span> : null}
+              检查更新
+            </button>
             {/* 用户角色与用户名信息 */}
             <div className="text-right hidden sm:block">
               <div className="text-sm font-bold leading-none">{session.user.email}</div>
@@ -742,6 +786,54 @@ function App() {
           </div>
         </div>
       </div>
+
+      <dialog ref={updateDialogRef} className="modal">
+        <div className="modal-box max-w-xl">
+          <h3 className="text-xl font-bold">版本更新</h3>
+          <div className="mt-4 space-y-3 text-sm">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-box bg-base-200 px-4 py-3">
+                <div className="text-xs text-base-content/60">当前版本</div>
+                <div className="mt-1 font-mono font-semibold">{updateInfo?.currentVersion ?? '-'}</div>
+              </div>
+              <div className="rounded-box bg-base-200 px-4 py-3">
+                <div className="text-xs text-base-content/60">最新版本</div>
+                <div className="mt-1 font-mono font-semibold">{updateInfo?.latestVersion ?? '-'}</div>
+              </div>
+            </div>
+            {updateInfo?.notes ? (
+              <div className="rounded-box border border-base-300 bg-base-100 px-4 py-3 whitespace-pre-wrap">
+                {updateInfo.notes}
+              </div>
+            ) : null}
+            {!updateInfo?.hasUpdate ? (
+              <div className="alert alert-success">
+                <span>当前已是最新版本。</span>
+              </div>
+            ) : (
+              <div className="alert alert-info">
+                <span>检测到新版本，建议现在更新。更新包会从你的服务器地址下载。</span>
+              </div>
+            )}
+          </div>
+          <div className="modal-action">
+            <button className="btn" onClick={() => updateDialogRef.current?.close()}>
+              关闭
+            </button>
+            <button
+              className="btn btn-primary"
+              disabled={!updateInfo?.hasUpdate || !updateInfo.downloadUrl}
+              onClick={() => {
+                if (updateInfo?.downloadUrl) {
+                  void cpaRuntime.openExternalTarget(updateInfo.downloadUrl)
+                }
+              }}
+            >
+              打开下载地址
+            </button>
+          </div>
+        </div>
+      </dialog>
 
       {session.user.role === 'admin' ? (
         <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">

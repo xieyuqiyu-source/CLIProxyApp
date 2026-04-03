@@ -14,6 +14,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const [plans, setPlans] = useState<CloudPlan[]>([])
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [clearingSharedPool, setClearingSharedPool] = useState(false)
   const [savingUserId, setSavingUserId] = useState<number | null>(null)
   const [draftPlans, setDraftPlans] = useState<Record<number, string>>({})
   const [draftExpiresAt, setDraftExpiresAt] = useState<Record<number, string>>({})
@@ -96,6 +97,19 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
     }
   }
 
+  const clearSharedPool = async () => {
+    try {
+      setClearingSharedPool(true)
+      const result = await cloudClient.adminDeleteAllSharedAuthFiles(token)
+      await load()
+      onNotify(`已清空共享号池，共删除 ${result.deleted} 个文件`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setClearingSharedPool(false)
+    }
+  }
+
   return (
     <div className="mt-4 flex flex-col gap-6">
       <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
@@ -104,13 +118,17 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
             <div className="badge badge-outline badge-primary">Cloud Admin</div>
             <h2 className="mt-2 text-3xl font-black">共享池与用户套餐</h2>
             <p className="mt-2 text-sm text-base-content/60">
-              这里管理共享认证池上传，以及给云端账号分配 `plan_code`。
+              这里管理共享认证池上传，以及给云端账号分配 `plan_code`。同名共享文件会直接覆盖旧文件。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="btn btn-primary" disabled={uploading} onClick={() => void handleSharedUploadClick()}>
               {uploading ? <span className="loading loading-spinner loading-xs"></span> : null}
               上传共享认证
+            </button>
+            <button className="btn btn-outline btn-error" disabled={clearingSharedPool} onClick={() => void clearSharedPool()}>
+              {clearingSharedPool ? <span className="loading loading-spinner loading-xs"></span> : null}
+              清空共享号池
             </button>
             <button className="btn btn-outline" disabled={loading} onClick={() => void load(true)}>
               {loading ? <span className="loading loading-spinner loading-xs"></span> : null}

@@ -13,6 +13,10 @@ Phase 1 is focused on the desktop runtime wrapper:
 - Runtime paths and logs inspection
 - Bundled CPA sidecar for packaged builds
 - Internal-only management access foundation through Tauri
+- CPCloud account login and plan-aware user workspace
+- Personal cloud auth sync and shared auth pool access
+- Windows tray/background mode
+- Manual update check and packaged update reminder support
 
 ## Workspace Layout
 
@@ -42,6 +46,27 @@ Run:
 npm install
 npm run prepare:sidecar
 npm run tauri dev
+```
+
+## Update Manifest
+
+Packaged builds check a manifest on the same server host as `CPCloud`.
+
+Expected path:
+
+```text
+/downloads/cliproxyapp/latest.json
+```
+
+Expected JSON shape:
+
+```json
+{
+  "version": "0.1.6",
+  "downloadUrl": "https://your-server.example.com/downloads/CLIProxyApp_0.1.6_x64-setup.exe",
+  "notes": "Release notes here",
+  "publishedAt": "2026-04-03T12:00:00+08:00"
+}
 ```
 
 ## Notes

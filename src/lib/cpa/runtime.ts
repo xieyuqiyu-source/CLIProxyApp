@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   AppState,
+  AppUpdateInfo,
   BootstrapSettings,
   CpaManagementInfo,
   CpaState,
@@ -32,6 +33,8 @@ export const cpaRuntime = {
     invoke<LocalAuthFile[]>('get_local_auth_files'),
   setupOpenClawProvider: () =>
     invoke<OpenClawSetupResult>('setup_openclaw_provider'),
+  checkAppUpdate: () =>
+    invoke<AppUpdateInfo>('check_app_update'),
   onOpenClawSetupLog: (handler: (line: string) => void) =>
     listen<string>('openclaw-setup-log', (event) => handler(event.payload)),
   pickLocalAuthFiles: () =>

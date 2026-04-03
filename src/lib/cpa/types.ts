@@ -72,3 +72,13 @@ export interface OpenClawSetupResult {
   modelCount: number
   alias: string
 }
+
+export interface AppUpdateInfo {
+  currentVersion: string
+  latestVersion: string
+  hasUpdate: boolean
+  downloadUrl: string | null
+  notes: string | null
+  publishedAt: string | null
+  checkedAt: string
+}

@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.5"
+version = "0.1.6"
 description = "CLIProxyApp desktop host"
 authors = ["xieyuqiyu"]
 license = "MIT"
@@ -24,7 +24,7 @@ serde_yaml = "0.9"
 log = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 sysinfo = "0.37"
-tauri = { version = "2.10.3", features = [] }
+tauri = { version = "2.10.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 rfd = "0.15"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }

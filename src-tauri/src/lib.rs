@@ -1,12 +1,29 @@
 mod cpa;
 
 use cpa::CpaRuntimeState;
-use tauri::Manager;
+use std::sync::Mutex;
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, WebviewWindow,
+};
+
+const MAIN_WINDOW_LABEL: &str = "main";
+const TRAY_SHOW_ID: &str = "tray_show";
+const TRAY_START_ID: &str = "tray_start_cpa";
+const TRAY_STOP_ID: &str = "tray_stop_cpa";
+const TRAY_QUIT_ID: &str = "tray_quit";
+
+#[derive(Default)]
+struct DesktopShellState {
+    quitting: Mutex<bool>,
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(CpaRuntimeState::default())
+        .manage(DesktopShellState::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -15,9 +32,27 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            setup_tray(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
+            if cfg!(target_os = "windows")
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                let shell_state = window.state::<DesktopShellState>();
+                let quitting = shell_state
+                    .quitting
+                    .lock()
+                    .map(|flag| *flag)
+                    .unwrap_or(false);
+                if !quitting {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                    }
+                    let _ = window.hide();
+                    return;
+                }
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let state = window.state::<CpaRuntimeState>();
                 if let Err(error) = cpa::shutdown_cpa(&state) {
@@ -45,6 +80,7 @@ pub fn run() {
             open_external_target,
             import_vertex_credential,
             setup_openclaw_provider,
+            check_app_update,
             proxy_cloud_request,
             proxy_cloud_upload,
             proxy_cloud_download
@@ -63,6 +99,91 @@ pub fn run() {
             }
         }
     });
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, "显示主界面", true, None::<&str>)?;
+    let start_item = MenuItem::with_id(app, TRAY_START_ID, "启动 CPA", true, None::<&str>)?;
+    let stop_item = MenuItem::with_id(app, TRAY_STOP_ID, "停止 CPA", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, TRAY_QUIT_ID, "退出程序", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+
+    let menu = Menu::with_items(
+        app,
+        &[&show_item, &start_item, &stop_item, &separator, &quit_item],
+    )?;
+
+    TrayIconBuilder::with_id("app-tray")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => {
+                if let Err(error) = show_main_window(app) {
+                    eprintln!("failed to show main window: {error}");
+                }
+            }
+            TRAY_START_ID => {
+                let state = app.state::<CpaRuntimeState>();
+                if let Err(error) = cpa::start_cpa(app, &state) {
+                    eprintln!("failed to start CPA from tray: {error}");
+                }
+                let _ = show_main_window(app);
+            }
+            TRAY_STOP_ID => {
+                let state = app.state::<CpaRuntimeState>();
+                if let Err(error) = cpa::stop_cpa(app, &state) {
+                    eprintln!("failed to stop CPA from tray: {error}");
+                }
+            }
+            TRAY_QUIT_ID => {
+                if let Err(error) = quit_application(app) {
+                    eprintln!("failed to quit application from tray: {error}");
+                }
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Err(error) = show_main_window(&app) {
+                    eprintln!("failed to restore main window from tray click: {error}");
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+fn show_main_window(app: &AppHandle) -> Result<(), String> {
+    let window = resolve_main_window(app)?;
+    window
+        .show()
+        .map_err(|error| format!("failed to show main window: {error}"))?;
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+    Ok(())
+}
+
+fn resolve_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    app.get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "main window not found".to_string())
+}
+
+fn quit_application(app: &AppHandle) -> Result<(), String> {
+    let shell_state = app.state::<DesktopShellState>();
+    if let Ok(mut quitting) = shell_state.quitting.lock() {
+        *quitting = true;
+    }
+    let state = app.state::<CpaRuntimeState>();
+    cpa::shutdown_cpa(&state)?;
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -192,6 +313,13 @@ async fn setup_openclaw_provider(
     tauri::async_runtime::spawn_blocking(move || cpa::setup_openclaw_provider(&app))
         .await
         .map_err(|error| format!("failed to join OpenClaw setup task: {error}"))?
+}
+
+#[tauri::command]
+async fn check_app_update(app: tauri::AppHandle) -> Result<cpa::AppUpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::check_app_update(&app))
+        .await
+        .map_err(|error| format!("failed to join app update task: {error}"))?
 }
 
 #[tauri::command]

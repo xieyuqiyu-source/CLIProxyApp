@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
 const CLOUD_BASE_URL: &str = "http://103.205.254.30:28899/api/v1";
+const APP_UPDATE_MANIFEST_PATH: &str = "/downloads/cliproxyapp/latest.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,6 +136,18 @@ pub struct OpenClawSetupResult {
     pub provider_id: String,
     pub model_count: usize,
     pub alias: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdateInfo {
+    pub current_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub download_url: Option<String>,
+    pub notes: Option<String>,
+    pub published_at: Option<String>,
+    pub checked_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -566,6 +579,68 @@ pub fn proxy_cloud_download(request: CloudDownloadRequest) -> Result<CloudDownlo
         .to_vec();
 
     Ok(CloudDownloadResult { file_name, bytes })
+}
+
+pub fn check_app_update(app: &AppHandle) -> Result<AppUpdateInfo, String> {
+    let current_version = app.package_info().version.to_string();
+    let checked_at = chrono_like_now_string();
+    let manifest_url = app_update_manifest_url()?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("failed to create update client: {error}"))?;
+    let response = client
+        .get(&manifest_url)
+        .send()
+        .map_err(|error| format!("failed to request update manifest: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("failed to read update manifest: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("update manifest request failed with {status}: {text}"));
+    }
+
+    let payload = serde_json::from_str::<JsonValue>(&text)
+        .map_err(|error| format!("failed to parse update manifest: {error}"))?;
+    let latest_version = payload
+        .get("version")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "update manifest missing version".to_string())?
+        .to_string();
+
+    let download_url = payload
+        .get("downloadUrl")
+        .or_else(|| payload.get("download_url"))
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let notes = payload
+        .get("notes")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let published_at = payload
+        .get("publishedAt")
+        .or_else(|| payload.get("published_at"))
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    Ok(AppUpdateInfo {
+        has_update: compare_versions(&latest_version, &current_version).is_gt(),
+        current_version,
+        latest_version,
+        download_url,
+        notes,
+        published_at,
+        checked_at,
+    })
 }
 
 pub fn import_auth_files(
@@ -1299,6 +1374,57 @@ fn ensure_json_object(value: &mut JsonValue) -> &mut JsonMap<String, JsonValue> 
 fn cloud_url(path: &str) -> String {
     let normalized_path = path.trim().trim_start_matches('/');
     format!("{}/{}", CLOUD_BASE_URL.trim_end_matches('/'), normalized_path)
+}
+
+fn app_update_manifest_url() -> Result<String, String> {
+    let base = reqwest::Url::parse(CLOUD_BASE_URL)
+        .map_err(|error| format!("invalid cloud base url: {error}"))?;
+    let host = base
+        .host_str()
+        .ok_or_else(|| "cloud base url missing host".to_string())?;
+    let mut origin = format!("{}://{}", base.scheme(), host);
+    if let Some(port) = base.port() {
+        origin.push(':');
+        origin.push_str(&port.to_string());
+    }
+    Ok(format!("{origin}{APP_UPDATE_MANIFEST_PATH}"))
+}
+
+fn chrono_like_now_string() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0));
+    format!("{}", now.as_secs())
+}
+
+fn parse_version_numbers(input: &str) -> Vec<u64> {
+    input
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(|char| char.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let left_parts = parse_version_numbers(left);
+    let right_parts = parse_version_numbers(right);
+    let max_len = left_parts.len().max(right_parts.len());
+    for index in 0..max_len {
+        let left_part = *left_parts.get(index).unwrap_or(&0);
+        let right_part = *right_parts.get(index).unwrap_or(&0);
+        match left_part.cmp(&right_part) {
+            std::cmp::Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 fn parse_cloud_json_response(response: reqwest::blocking::Response) -> Result<JsonValue, String> {
