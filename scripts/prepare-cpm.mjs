@@ -5,9 +5,14 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(__dirname, '..')
+const workspaceRoot = resolve(projectRoot, '..')
+const aggregatedWorkspaceRoot = resolve(workspaceRoot, 'CLIProxy')
+const defaultCpmRoot = existsSync(resolve(workspaceRoot, 'CLIProxyManagement'))
+  ? resolve(workspaceRoot, 'CLIProxyManagement')
+  : resolve(aggregatedWorkspaceRoot, 'CLIProxyManagement')
 const cpmRoot = process.env.CLIPROXYMANAGEMENT_DIR
   ? resolve(process.env.CLIPROXYMANAGEMENT_DIR)
-  : resolve(projectRoot, '../CLIProxyManagement')
+  : defaultCpmRoot
 const cpmDist = resolve(cpmRoot, 'dist')
 const targetDir = resolve(projectRoot, 'public/cpm')
 

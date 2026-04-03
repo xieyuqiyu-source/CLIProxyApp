@@ -5,9 +5,14 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(__dirname, '..')
+const workspaceRoot = resolve(projectRoot, '..')
+const aggregatedWorkspaceRoot = resolve(workspaceRoot, 'CLIProxy')
+const defaultCpaRoot = existsSync(resolve(workspaceRoot, 'CLIProxyApi'))
+  ? resolve(workspaceRoot, 'CLIProxyApi')
+  : resolve(aggregatedWorkspaceRoot, 'CLIProxyApi')
 const cpaRoot = process.env.CLIPROXYAPI_DIR
   ? resolve(process.env.CLIPROXYAPI_DIR)
-  : resolve(projectRoot, '../CLIProxyApi')
+  : defaultCpaRoot
 const resourcesRoot = resolve(projectRoot, 'src-tauri/resources/sidecar')
 
 if (!existsSync(cpaRoot)) {

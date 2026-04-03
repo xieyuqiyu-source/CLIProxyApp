@@ -1956,14 +1956,19 @@ fn workspace_api_dir() -> Result<PathBuf, String> {
     let workspace_dir = app_dir
         .parent()
         .ok_or_else(|| "failed to resolve workspace directory".to_string())?;
-    let api_dir = workspace_dir.join("CLIProxyApi");
-    if !api_dir.exists() {
-        return Err(format!(
-            "development workspace CLIProxyApi not found at {}",
-            api_dir.display()
-        ));
+    let direct_api_dir = workspace_dir.join("CLIProxyApi");
+    if direct_api_dir.exists() {
+        return Ok(direct_api_dir);
     }
-    Ok(api_dir)
+    let aggregated_api_dir = workspace_dir.join("CLIProxy").join("CLIProxyApi");
+    if aggregated_api_dir.exists() {
+        return Ok(aggregated_api_dir);
+    }
+    Err(format!(
+        "development workspace CLIProxyApi not found at {} or {}",
+        direct_api_dir.display(),
+        aggregated_api_dir.display()
+    ))
 }
 
 fn resolve_runtime_binary_path(settings: &BootstrapSettings) -> Option<String> {
