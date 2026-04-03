@@ -138,6 +138,13 @@ pub struct OpenClawSetupResult {
     pub alias: String,
 }
 
+#[derive(Debug, Clone)]
+struct CommandSpec {
+    program: PathBuf,
+    args: Vec<String>,
+    display: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUpdateInfo {
@@ -994,14 +1001,12 @@ pub fn setup_openclaw_provider(app: &AppHandle) -> Result<OpenClawSetupResult, S
     let mut logs = Vec::new();
 
     log_openclaw(app, &mut logs, "开始接入 OpenClaw...");
-    let openclaw_cmd = resolve_openclaw_command();
+    let openclaw_cmd = resolve_openclaw_command(app, &mut logs)?;
     log_openclaw(
         app,
         &mut logs,
-        &format!("检测 OpenClaw CLI: {}", openclaw_cmd.display()),
+        &format!("检测 OpenClaw CLI: {}", openclaw_cmd.display),
     );
-
-    ensure_command_available(&openclaw_cmd, app, &mut logs)?;
     let config_path = resolve_openclaw_config_path(&openclaw_cmd, app, &mut logs)?;
 
     let api_host = if ctx.bootstrap.host == "0.0.0.0" {
@@ -1109,41 +1114,42 @@ fn unique_auth_file_name(name: &str, used_names: &mut HashSet<String>) -> String
     }
 }
 
-fn resolve_openclaw_command() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        PathBuf::from("openclaw.exe")
-    } else {
-        PathBuf::from("openclaw")
-    }
-}
-
-fn ensure_command_available(
-    command_path: &Path,
+fn resolve_openclaw_command(
     app: &AppHandle,
     logs: &mut Vec<String>,
-) -> Result<(), String> {
-    let output = Command::new(command_path)
-        .arg("--help")
-        .output()
-        .map_err(|error| format!("未检测到 OpenClaw CLI，请先安装 openclaw：{error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "OpenClaw CLI 不可用: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+) -> Result<CommandSpec, String> {
+    let candidates = openclaw_command_candidates();
+    let mut errors = Vec::new();
+
+    for candidate in candidates {
+        log_openclaw(app, logs, &format!("尝试检测 OpenClaw CLI: {}", candidate.display));
+        match execute_command(&candidate, &["--help"]) {
+            Ok(output) if output.status.success() => {
+                log_openclaw(app, logs, "OpenClaw CLI 检测通过");
+                return Ok(candidate);
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let detail = if !stderr.is_empty() { stderr } else { stdout };
+                errors.push(format!("{} => {}", candidate.display, detail));
+            }
+            Err(error) => errors.push(format!("{} => {}", candidate.display, error)),
+        }
     }
-    log_openclaw(app, logs, "OpenClaw CLI 检测通过");
-    Ok(())
+
+    Err(format!(
+        "未检测到 OpenClaw CLI，请先安装 openclaw。已尝试：{}",
+        errors.join(" | ")
+    ))
 }
 
 fn resolve_openclaw_config_path(
-    command_path: &Path,
+    command: &CommandSpec,
     app: &AppHandle,
     logs: &mut Vec<String>,
 ) -> Result<PathBuf, String> {
-    let output = Command::new(command_path)
-        .args(["config", "file"])
-        .output()
+    let output = execute_command(command, &["config", "file"])
         .map_err(|error| format!("执行 openclaw config file 失败: {error}"))?;
     if !output.status.success() {
         return Err(format!(
@@ -1174,6 +1180,77 @@ fn expand_user_path(raw: &str) -> Result<PathBuf, String> {
         return Ok(home.join(rest.replace('\\', "/")));
     }
     Ok(PathBuf::from(raw))
+}
+
+fn openclaw_command_candidates() -> Vec<CommandSpec> {
+    let mut candidates = Vec::new();
+
+    if cfg!(target_os = "windows") {
+        candidates.push(CommandSpec {
+            program: PathBuf::from("openclaw.cmd"),
+            args: Vec::new(),
+            display: "openclaw.cmd".to_string(),
+        });
+        candidates.push(CommandSpec {
+            program: PathBuf::from("openclaw.exe"),
+            args: Vec::new(),
+            display: "openclaw.exe".to_string(),
+        });
+
+        if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+            candidates.push(CommandSpec {
+                program: PathBuf::from(local_app_data).join("npm").join("openclaw.cmd"),
+                args: Vec::new(),
+                display: "%LOCALAPPDATA%\\npm\\openclaw.cmd".to_string(),
+            });
+        }
+
+        if let Ok(app_data) = env::var("APPDATA") {
+            candidates.push(CommandSpec {
+                program: PathBuf::from(app_data).join("npm").join("openclaw.cmd"),
+                args: Vec::new(),
+                display: "%APPDATA%\\npm\\openclaw.cmd".to_string(),
+            });
+        }
+
+        candidates.push(CommandSpec {
+            program: PathBuf::from("npm.cmd"),
+            args: vec!["exec".to_string(), "--".to_string(), "openclaw".to_string()],
+            display: "npm exec -- openclaw".to_string(),
+        });
+        candidates.push(CommandSpec {
+            program: PathBuf::from("npx.cmd"),
+            args: vec!["openclaw".to_string()],
+            display: "npx openclaw".to_string(),
+        });
+    } else {
+        candidates.push(CommandSpec {
+            program: PathBuf::from("openclaw"),
+            args: Vec::new(),
+            display: "openclaw".to_string(),
+        });
+        candidates.push(CommandSpec {
+            program: PathBuf::from("npm"),
+            args: vec!["exec".to_string(), "--".to_string(), "openclaw".to_string()],
+            display: "npm exec -- openclaw".to_string(),
+        });
+        candidates.push(CommandSpec {
+            program: PathBuf::from("npx"),
+            args: vec!["openclaw".to_string()],
+            display: "npx openclaw".to_string(),
+        });
+    }
+
+    candidates
+}
+
+fn execute_command(command: &CommandSpec, extra_args: &[&str]) -> Result<std::process::Output, String> {
+    let mut process = Command::new(&command.program);
+    process.args(&command.args);
+    process.args(extra_args);
+    process
+        .output()
+        .map_err(|error| format!("{}: {error}", command.display))
 }
 
 fn user_home_dir() -> Result<PathBuf, String> {
@@ -1297,14 +1374,12 @@ fn write_openclaw_config(
 }
 
 fn validate_openclaw_config(
-    command_path: &Path,
+    command: &CommandSpec,
     app: &AppHandle,
     logs: &mut Vec<String>,
 ) -> Result<(), String> {
     log_openclaw(app, logs, "执行 openclaw config validate ...");
-    let output = Command::new(command_path)
-        .args(["config", "validate"])
-        .output()
+    let output = execute_command(command, &["config", "validate"])
         .map_err(|error| format!("执行 openclaw config validate 失败: {error}"))?;
     if !output.status.success() {
         return Err(format!(
