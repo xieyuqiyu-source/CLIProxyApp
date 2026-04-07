@@ -113,7 +113,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         &[&show_item, &start_item, &stop_item, &separator, &quit_item],
     )?;
 
-    TrayIconBuilder::with_id("app-tray")
+    let mut tray_builder = TrayIconBuilder::with_id("app-tray")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -154,8 +154,13 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     eprintln!("failed to restore main window from tray click: {error}");
                 }
             }
-        })
-        .build(app)?;
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+
+    tray_builder.build(app)?;
 
     Ok(())
 }

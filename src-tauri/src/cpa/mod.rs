@@ -16,7 +16,7 @@ use sysinfo::{Signal, System};
 use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
-const CLOUD_BASE_URL: &str = "http://103.205.254.30:28899/api/v1";
+const CLOUD_BASE_URL: &str = "http://124.223.111.163:8090/api/v1";
 const APP_UPDATE_MANIFEST_PATHS: [&str; 3] = [
     "/downloads/cliproxyapp/latest.json",
     "/cliproxyapp/latest.json",
