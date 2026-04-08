@@ -212,8 +212,24 @@ export const cloudClient = {
       token
     ),
 
-  adminListPaymentOrders: (token: string, limit = 50) =>
-    request<{ orders: CloudPaymentOrder[] }>(`/admin/pay/orders?limit=${limit}`, { method: 'GET' }, token),
+  adminListPaymentOrders: (token: string, options?: { limit?: number; status?: string; query?: string }) => {
+    const params = new URLSearchParams()
+    params.set('limit', String(options?.limit ?? 50))
+    if (options?.status) {
+      params.set('status', options.status)
+    }
+    if (options?.query) {
+      params.set('query', options.query)
+    }
+    return request<{ orders: CloudPaymentOrder[] }>(`/admin/pay/orders?${params.toString()}`, { method: 'GET' }, token)
+  },
+
+  adminRegrantPaymentOrder: (token: string, orderNo: string) =>
+    request<{ status: string; order: CloudPaymentOrder }>(
+      `/admin/pay/orders/${encodeURIComponent(orderNo)}/regrant`,
+      { method: 'POST' },
+      token
+    ),
 
   createPaymentOrder: (
     token: string,

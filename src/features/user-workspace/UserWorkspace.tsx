@@ -354,18 +354,18 @@ export function UserWorkspace({
 
   const paymentPollingHint = useMemo(() => {
     if (!activePayment) {
-      return '创建订单后会自动轮询支付结果。'
+      return '创建订单后将自动检查支付结果。'
     }
     if (activePayment.order.status === 'paid') {
-      return '支付已完成，正在同步会员状态。'
+      return '支付已完成，会员权益即将生效。'
     }
     if (activePayment.order.status === 'closed' || activePayment.order.status === 'failed' || activePayment.order.status === 'refunded') {
-      return '当前订单已结束，不再自动轮询。'
+      return '当前订单已结束，请重新创建新的支付订单。'
     }
     if (paymentPolling) {
-      return `正在自动检查支付结果，${paymentPollCountdown} 秒后再次查询。`
+      return `系统正在自动确认支付结果，${paymentPollCountdown} 秒后再次查询。`
     }
-    return '正在准备自动轮询支付状态。'
+    return '系统正在准备检查支付状态。'
   }, [activePayment, paymentPollCountdown, paymentPolling])
 
   const handleRefreshPaymentOrder = async () => {
@@ -699,7 +699,7 @@ export function UserWorkspace({
           <div className="flex items-start justify-between gap-4">
             <div>
               <h3 className="text-xl font-bold">开通会员</h3>
-              <p className="mt-3 text-sm text-base-content/70">当前套餐为 <span className="font-semibold">{planLabel}</span>。你可以直接创建微信或支付宝订单完成购买。</p>
+              <p className="mt-3 text-sm text-base-content/70">当前套餐为 <span className="font-semibold">{planLabel}</span>。请选择套餐后完成支付，系统会自动开通对应会员权益。</p>
             </div>
             <button className="btn btn-ghost btn-sm btn-circle" onClick={handleCloseVipDialog}>
               ✕
@@ -719,7 +719,7 @@ export function UserWorkspace({
                   return (
                     <button
                       key={product.id}
-                      className={`rounded-box border p-4 text-left transition ${active ? 'border-primary bg-primary/5 shadow-sm' : 'border-base-300 bg-base-100'}`}
+                    className={`rounded-box border p-4 text-left transition ${active ? 'border-primary bg-primary/5 shadow-sm' : 'border-base-300 bg-base-100'}`}
                       onClick={() => setSelectedProductCode(product.productCode)}
                       disabled={hasPendingPayment}
                     >
@@ -759,14 +759,14 @@ export function UserWorkspace({
                 <div className="mt-4 flex flex-wrap gap-2">
                   <button className="btn btn-primary btn-sm" disabled={creatingPaymentOrder || !selectedProduct || hasPendingPayment} onClick={() => void handleCreatePaymentOrder()}>
                     {creatingPaymentOrder ? <span className="loading loading-spinner loading-xs"></span> : null}
-                    {hasPendingPayment ? '待当前订单结束' : '创建支付订单'}
+                    {hasPendingPayment ? '当前订单处理中' : '立即支付'}
                   </button>
                   <button
                     className="btn btn-outline btn-sm"
                     onClick={() => window.open(activePayment?.checkout.codeUrl || '#', '_blank', 'noopener,noreferrer')}
                     disabled={!activePayment?.checkout.codeUrl}
                   >
-                    打开支付链接
+                    打开支付页面
                   </button>
                 </div>
               </div>
@@ -776,8 +776,8 @@ export function UserWorkspace({
               <div className="rounded-box border border-base-300 bg-base-100 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold text-base-content">支付二维码</div>
-                    <div className="mt-1 text-xs text-base-content/55">{selectedPaymentProvider === 'wechat' ? '请用微信扫码' : '请用支付宝扫码'}</div>
+                    <div className="text-sm font-semibold text-base-content">支付状态</div>
+                    <div className="mt-1 text-xs text-base-content/55">{selectedPaymentProvider === 'wechat' ? '请使用微信扫码完成支付' : '请使用支付宝扫码完成支付'}</div>
                   </div>
                   <div className={`badge ${activePayment?.order.status === 'paid' ? 'badge-success' : 'badge-ghost'}`}>{paymentStatusLabel}</div>
                 </div>
@@ -804,12 +804,32 @@ export function UserWorkspace({
                   </button>
                 </div>
                 <div className="mt-4 flex min-h-[280px] items-center justify-center rounded-box bg-base-200/60 p-4">
-                  {paymentQrDataUrl ? (
+                  {activePayment?.order.status === 'paid' ? (
+                    <div className="space-y-4 text-center">
+                      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-success/15 text-3xl text-success">
+                        ✓
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-lg font-semibold text-base-content">支付成功</div>
+                        <div className="text-sm text-base-content/65">会员权益已到账，你可以关闭窗口继续使用。</div>
+                      </div>
+                    </div>
+                  ) : activePayment?.order.status === 'closed' || activePayment?.order.status === 'failed' || activePayment?.order.status === 'refunded' ? (
+                    <div className="space-y-4 text-center">
+                      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-warning/15 text-3xl text-warning">
+                        !
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-lg font-semibold text-base-content">当前订单不可继续支付</div>
+                        <div className="text-sm text-base-content/65">请返回左侧重新创建新的支付订单。</div>
+                      </div>
+                    </div>
+                  ) : paymentQrDataUrl ? (
                     <img src={paymentQrDataUrl} alt="支付二维码" className="h-64 w-64 rounded-box bg-white p-3" />
                   ) : (
                     <div className="space-y-3 text-center text-sm text-base-content/60">
-                      <div>创建订单后这里会显示支付二维码。</div>
-                      <div>若支付通道异常，可展开下方人工通道联系处理。</div>
+                      <div>创建订单后，这里会显示对应的支付二维码。</div>
+                      <div>如暂时无法在线支付，可展开下方人工协助通道。</div>
                     </div>
                   )}
                 </div>
@@ -819,16 +839,16 @@ export function UserWorkspace({
                     <div>套餐：{activePayment.product.displayName}</div>
                     <div>金额：¥{(activePayment.product.priceAmount / 100).toFixed(2)}</div>
                     {activePayment.order.expiresAt ? <div>订单有效期至：{new Date(activePayment.order.expiresAt).toLocaleString('zh-CN', { hour12: false })}</div> : null}
-                    {activePayment.checkout.message ? <div>说明：{activePayment.checkout.message}</div> : null}
+                    {activePayment.checkout.message ? <div>订单说明：{activePayment.checkout.message}</div> : null}
                   </div>
                 ) : null}
               </div>
 
               <div className="rounded-box bg-base-200/60 p-4 text-sm text-base-content/70">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>若你暂时无法完成在线支付，可以使用人工通道处理。</div>
+                  <div>如需人工协助开通，可使用下方人工通道。</div>
                   <button className="btn btn-outline btn-sm" onClick={() => setManualHelpVisible((value) => !value)}>
-                    {manualHelpVisible ? '收起人工通道' : '展开人工通道'}
+                    {manualHelpVisible ? '收起人工协助' : '展开人工协助'}
                   </button>
                 </div>
                 {manualHelpVisible ? (
@@ -842,12 +862,12 @@ export function UserWorkspace({
                     </div>
                     <div className="space-y-3">
                       <div>
-                        <div className="font-semibold text-base-content">人工处理说明</div>
-                        <div className="mt-1">扫码后说明账号和套餐需求，管理员会在后台直接处理会员开通或虚拟卡购买。</div>
+                        <div className="font-semibold text-base-content">人工协助说明</div>
+                        <div className="mt-1">扫码后说明账号和所需套餐，管理员会在后台协助完成会员开通或虚拟卡处理。</div>
                       </div>
                       <div>
                         <div className="font-semibold text-base-content">适用场景</div>
-                        <div className="mt-1">支付通道异常、需要人工确认、或者你想直接咨询套餐区别时，都可以走这里。</div>
+                        <div className="mt-1">适用于支付通道异常、需要人工确认，或希望先咨询套餐差异的情况。</div>
                       </div>
                     </div>
                   </div>

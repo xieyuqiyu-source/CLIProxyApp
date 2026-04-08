@@ -19,6 +19,8 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const [sharedCloudFiles, setSharedCloudFiles] = useState<CloudAuthFile[]>([])
   const [paymentProducts, setPaymentProducts] = useState<CloudPaymentProduct[]>([])
   const [paymentOrders, setPaymentOrders] = useState<CloudPaymentOrder[]>([])
+  const [paymentOrderStatusFilter, setPaymentOrderStatusFilter] = useState<'all' | 'pending' | 'paid' | 'closed' | 'failed' | 'refunded'>('all')
+  const [paymentOrderQuery, setPaymentOrderQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadingRelease, setUploadingRelease] = useState(false)
@@ -26,6 +28,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const [savingUserId, setSavingUserId] = useState<number | null>(null)
   const [savingPaymentProductId, setSavingPaymentProductId] = useState<number | null>(null)
   const [creatingPaymentProduct, setCreatingPaymentProduct] = useState(false)
+  const [regrantingOrderNo, setRegrantingOrderNo] = useState<string | null>(null)
   const [draftPlans, setDraftPlans] = useState<Record<number, string>>({})
   const [draftExpiresAt, setDraftExpiresAt] = useState<Record<number, string>>({})
   const [draftPaymentProducts, setDraftPaymentProducts] = useState<Record<number, CloudPaymentProduct>>({})
@@ -44,7 +47,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
     description: ''
   })
 
-  const load = async (notify = false) => {
+  const load = async (notify = false, orderOptions?: { status?: string; query?: string }) => {
     try {
       setLoading(true)
       const [usersResponse, plansResponse, sharedResponse, paymentProductsResponse, paymentOrdersResponse] = await Promise.all([
@@ -52,7 +55,11 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
         cloudClient.adminListPlans(token),
         cloudClient.listSharedAuthFiles(token),
         cloudClient.adminListPaymentProducts(token),
-        cloudClient.adminListPaymentOrders(token)
+        cloudClient.adminListPaymentOrders(token, {
+          limit: 50,
+          status: orderOptions?.status ?? paymentOrderStatusFilter,
+          query: orderOptions?.query ?? paymentOrderQuery
+        })
       ])
       setUsers(usersResponse.users)
       setPlans(plansResponse.plans)
@@ -64,6 +71,15 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
         usersResponse.users.forEach((item) => {
           if (!next[item.user.id]) {
             next[item.user.id] = item.plan.planCode
+          }
+        })
+        return next
+      })
+      setDraftExpiresAt((current) => {
+        const next = { ...current }
+        usersResponse.users.forEach((item) => {
+          if (!(item.user.id in next)) {
+            next[item.user.id] = item.expiresAt ? item.expiresAt.slice(0, 16) : ''
           }
         })
         return next
@@ -84,6 +100,26 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   useEffect(() => {
     void load()
   }, [token])
+
+  const handleRefreshPaymentOrders = async () => {
+    await load(false, {
+      status: paymentOrderStatusFilter,
+      query: paymentOrderQuery.trim()
+    })
+  }
+
+  const handleRegrantOrder = async (orderNo: string) => {
+    try {
+      setRegrantingOrderNo(orderNo)
+      await cloudClient.adminRegrantPaymentOrder(token, orderNo)
+      await handleRefreshPaymentOrders()
+      onNotify(`已重新发放订单 ${orderNo} 对应的会员权益`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRegrantingOrderNo(null)
+    }
+  }
 
   const savePlan = async (user: CloudAdminUserSummary) => {
     const planCode = draftPlans[user.user.id] || user.plan.planCode
@@ -402,6 +438,9 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                     <td>
                       <div className="font-semibold">{item.plan.planCode}</div>
                       <div className="text-xs text-base-content/55">{item.plan.name}</div>
+                      <div className="mt-1 text-xs text-base-content/45">
+                        到期：{item.expiresAt ? new Date(item.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '未设置'}
+                      </div>
                     </td>
                     <td>
                       <select
@@ -549,7 +588,30 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
           <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
             <div className="border-b border-base-300 px-6 py-4">
               <h3 className="text-xl font-bold">支付订单</h3>
-              <p className="mt-1 text-sm text-base-content/60">查看当前订单状态，为后续接微信和支付宝做后台准备。</p>
+              <p className="mt-1 text-sm text-base-content/60">支持按状态筛选、搜索订单，并对已支付订单执行重新发放。</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 px-6 pt-4">
+              <select
+                className="select select-bordered select-sm w-40"
+                value={paymentOrderStatusFilter}
+                onChange={(event) => setPaymentOrderStatusFilter(event.target.value as typeof paymentOrderStatusFilter)}
+              >
+                <option value="all">全部状态</option>
+                <option value="pending">待支付</option>
+                <option value="paid">已支付</option>
+                <option value="closed">已关闭</option>
+                <option value="failed">支付失败</option>
+                <option value="refunded">已退款</option>
+              </select>
+              <input
+                className="input input-bordered input-sm w-72"
+                placeholder="搜索订单号 / 套餐 / 商品 / 渠道 / 用户ID"
+                value={paymentOrderQuery}
+                onChange={(event) => setPaymentOrderQuery(event.target.value)}
+              />
+              <button className="btn btn-outline btn-sm" onClick={() => void handleRefreshPaymentOrders()}>
+                刷新订单
+              </button>
             </div>
             <div className="overflow-x-auto p-4">
               <table className="table table-zebra">
@@ -557,11 +619,13 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                   <tr>
                     <th>订单号</th>
                     <th>用户</th>
+                    <th>商品</th>
                     <th>套餐</th>
                     <th>渠道</th>
                     <th>金额</th>
                     <th>状态</th>
                     <th>创建时间</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -569,13 +633,29 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                     <tr key={order.id}>
                       <td className="font-mono text-xs">{order.orderNo}</td>
                       <td>{order.userId}</td>
+                      <td>{order.productDisplayName || order.productCode || '-'}</td>
                       <td>{order.planCode}</td>
                       <td>{order.paymentProvider}</td>
                       <td>{order.amount} {order.currency}</td>
                       <td><span className="badge badge-outline">{order.status}</span></td>
                       <td>{order.createdAt ? new Date(order.createdAt).toLocaleString() : '-'}</td>
+                      <td>
+                        <button
+                          className="btn btn-outline btn-sm"
+                          disabled={order.status !== 'paid' || regrantingOrderNo === order.orderNo}
+                          onClick={() => void handleRegrantOrder(order.orderNo)}
+                        >
+                          {regrantingOrderNo === order.orderNo ? <span className="loading loading-spinner loading-xs"></span> : null}
+                          重新发放
+                        </button>
+                      </td>
                     </tr>
                   ))}
+                  {paymentOrders.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="text-center text-sm text-base-content/50">当前筛选条件下暂无订单</td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>

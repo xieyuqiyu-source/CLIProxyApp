@@ -83,6 +83,7 @@ export interface CloudAdminUserSummary {
   user: CloudUser
   plan: CloudPlan
   features: CloudFeatures
+  expiresAt?: string | null
 }
 
 export interface CloudAppReleaseManifest {
@@ -113,6 +114,11 @@ export interface CloudPaymentOrder {
   orderNo: string
   userId: number
   productId: number
+  productCode: string
+  productName: string
+  productDisplayName: string
+  productDescription: string
+  durationDays: number
   planCode: string
   paymentProvider: 'wechat' | 'alipay'
   amount: number
