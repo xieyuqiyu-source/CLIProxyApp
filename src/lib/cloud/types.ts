@@ -42,6 +42,7 @@ export interface CloudLoginResponse {
   user: CloudUser
   plan: CloudPlan
   features: CloudFeatures
+  expiresAt?: string | null
   device: CloudDevice
 }
 
@@ -49,6 +50,7 @@ export interface CloudMeResponse {
   user: CloudUser
   plan: CloudPlan
   features: CloudFeatures
+  expiresAt?: string | null
 }
 
 export interface CloudAuthFile {

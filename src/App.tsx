@@ -27,6 +27,7 @@ interface LoginSession {
   user: CloudUser
   plan: CloudPlan
   features: CloudFeatures
+  expiresAt?: string | null
 }
 
 const SESSION_KEY = 'cpapp-login-session'
@@ -169,12 +170,13 @@ function App() {
       return null
     }
     const next = await cloudClient.me(session.token)
-    const nextSession: LoginSession = {
-      token: session.token,
-      user: next.user,
-      plan: next.plan,
-      features: next.features
-    }
+      const nextSession: LoginSession = {
+        token: session.token,
+        user: next.user,
+        plan: next.plan,
+        features: next.features,
+        expiresAt: next.expiresAt ?? null
+      }
     window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
     setSession(nextSession)
     return nextSession
@@ -260,7 +262,8 @@ function App() {
           token: session.token,
           user: next.user,
           plan: next.plan,
-          features: next.features
+          features: next.features,
+          expiresAt: next.expiresAt ?? null
         }
         window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
         setSession(nextSession)
@@ -399,7 +402,8 @@ function App() {
         token: response.token,
         user: response.user,
         plan: response.plan,
-        features: response.features
+        features: response.features,
+        expiresAt: response.expiresAt ?? null
       }
       window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
       setSession(nextSession)
@@ -1197,10 +1201,11 @@ function App() {
           )}
         </main>
       ) : useNewUserWorkspace ? (
-        <UserWorkspace
-          plan={session.plan}
-          features={session.features}
-          userKey={session.user.email}
+                <UserWorkspace
+                  plan={session.plan}
+                  features={session.features}
+                  planExpiresAt={session.expiresAt ?? null}
+                  userKey={session.user.email}
           cloudToken={session.token}
           cpaState={cpaState}
           loadError={loadError}

@@ -24,6 +24,7 @@ import { authFilesApi } from '../auth-files/api'
 interface UserWorkspaceProps {
   plan: CloudPlan
   features: CloudFeatures
+  planExpiresAt: string | null
   userKey: string
   cloudToken: string
   cpaState: CpaState | null
@@ -94,6 +95,7 @@ function buildSharedLocalFileName(fileName: string) {
 export function UserWorkspace({
   plan,
   features,
+  planExpiresAt,
   userKey,
   cloudToken,
   cpaState,
@@ -139,6 +141,10 @@ export function UserWorkspace({
   const [manualHelpVisible, setManualHelpVisible] = useState(false)
   const paidNotifiedOrderRef = useRef<string | null>(null)
   const planLabel = useMemo(() => formatPlanLabel(plan.planCode, plan.name), [plan.name, plan.planCode])
+  const planExpiryLabel = useMemo(() => {
+    if (!planExpiresAt) return '未设置'
+    return new Date(planExpiresAt).toLocaleString('zh-CN', { hour12: false })
+  }, [planExpiresAt])
 
   const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(userKey.trim().toLowerCase()), [userKey])
 
@@ -608,6 +614,7 @@ export function UserWorkspace({
               {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
             </div>
             <div className="badge badge-outline px-4">{planLabel}</div>
+            <div className="badge badge-ghost px-4">到期：{planExpiryLabel}</div>
 
             <div className="join shadow-sm ml-auto">
               <button className="join-item btn btn-primary btn-sm" disabled={pendingAction !== null} onClick={() => void onStart()}>
