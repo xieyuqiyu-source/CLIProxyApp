@@ -2,6 +2,7 @@ import { cpaRuntime } from '../cpa/runtime'
 import type {
   CloudAppReleaseManifest,
   CloudCreatePaymentOrderResponse,
+  CloudQuotePaymentOrderResponse,
   CloudPaymentOrder,
   CloudPaymentProduct,
   CloudAdminUserSummary,
@@ -160,6 +161,23 @@ export const cloudClient = {
   listPaymentProducts: (token: string) =>
     request<{ products: CloudPaymentProduct[] }>('/pay/products', { method: 'GET' }, token),
 
+  quotePaymentOrder: (
+    token: string,
+    payload: {
+      product_code: string
+      billing_months: number
+      purchase_mode: 'standard' | 'upgrade_diff_all' | 'upgrade_replace_month'
+    }
+  ) =>
+    request<CloudQuotePaymentOrderResponse>(
+      '/pay/quote',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      },
+      token
+    ),
+
   adminListPaymentProducts: (token: string) =>
     request<{ products: CloudPaymentProduct[] }>('/admin/pay/products', { method: 'GET' }, token),
 
@@ -236,6 +254,8 @@ export const cloudClient = {
     payload: {
       product_code: string
       provider: 'wechat' | 'alipay'
+      billing_months: number
+      purchase_mode: 'standard' | 'upgrade_diff_all' | 'upgrade_replace_month'
     }
   ) =>
     request<CloudCreatePaymentOrderResponse>(

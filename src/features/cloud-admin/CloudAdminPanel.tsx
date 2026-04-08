@@ -368,7 +368,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                       <tr key={order.id}>
                         <td className="font-mono text-xs">{order.orderNo}</td>
                         <td>{order.planCode}</td>
-                        <td>{order.amount} {order.currency}</td>
+                        <td>¥{(order.amount / 100).toFixed(2)} {order.currency}</td>
                         <td><span className="badge badge-outline">{order.status}</span></td>
                       </tr>
                     ))}
@@ -505,7 +505,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                     <th>编码</th>
                     <th>显示名</th>
                     <th>套餐</th>
-                    <th>价格(分)</th>
+                    <th>价格(元)</th>
                     <th>时长(天)</th>
                     <th>状态</th>
                     <th>排序</th>
@@ -531,7 +531,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                           </select>
                         </td>
                         <td>
-                          <input type="number" className="input input-bordered input-sm w-28" value={draft.priceAmount} onChange={(event) => setDraftPaymentProducts((current) => ({ ...current, [item.id]: { ...draft, priceAmount: Number(event.target.value) } }))} />
+                          <input type="number" step="0.01" className="input input-bordered input-sm w-28" value={(draft.priceAmount / 100).toFixed(2)} onChange={(event) => setDraftPaymentProducts((current) => ({ ...current, [item.id]: { ...draft, priceAmount: Math.round((Number(event.target.value) || 0) * 100) } }))} />
                         </td>
                         <td>
                           <input type="number" className="input input-bordered input-sm w-24" value={draft.durationDays} onChange={(event) => setDraftPaymentProducts((current) => ({ ...current, [item.id]: { ...draft, durationDays: Number(event.target.value) } }))} />
@@ -564,7 +564,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                         ))}
                       </select>
                     </td>
-                    <td><input type="number" className="input input-bordered input-sm w-28" value={newProduct.price_amount} onChange={(event) => setNewProduct((current) => ({ ...current, price_amount: Number(event.target.value) }))} /></td>
+                    <td><input type="number" step="0.01" className="input input-bordered input-sm w-28" value={(newProduct.price_amount / 100).toFixed(2)} onChange={(event) => setNewProduct((current) => ({ ...current, price_amount: Math.round((Number(event.target.value) || 0) * 100) }))} /></td>
                     <td><input type="number" className="input input-bordered input-sm w-24" value={newProduct.duration_days} onChange={(event) => setNewProduct((current) => ({ ...current, duration_days: Number(event.target.value) }))} /></td>
                     <td>
                       <select className="select select-bordered select-sm w-28" value={newProduct.status} onChange={(event) => setNewProduct((current) => ({ ...current, status: event.target.value }))}>
@@ -636,7 +636,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                       <td>{order.productDisplayName || order.productCode || '-'}</td>
                       <td>{order.planCode}</td>
                       <td>{order.paymentProvider}</td>
-                      <td>{order.amount} {order.currency}</td>
+                      <td>¥{(order.amount / 100).toFixed(2)} {order.currency}</td>
                       <td><span className="badge badge-outline">{order.status}</span></td>
                       <td>{order.createdAt ? new Date(order.createdAt).toLocaleString() : '-'}</td>
                       <td>

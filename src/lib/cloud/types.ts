@@ -109,6 +109,23 @@ export interface CloudPaymentProduct {
   updatedAt: string
 }
 
+export type CloudPaymentPurchaseMode = 'standard' | 'upgrade_diff_all' | 'upgrade_replace_month'
+
+export interface CloudPaymentQuote {
+  productCode: string
+  productDisplayName: string
+  planCode: string
+  purchaseMode: CloudPaymentPurchaseMode
+  billingMonths: number
+  amount: number
+  currency: string
+  durationDays: number
+  title: string
+  description: string
+  allowed: boolean
+  reason?: string
+}
+
 export interface CloudPaymentOrder {
   id: number
   orderNo: string
@@ -118,6 +135,8 @@ export interface CloudPaymentOrder {
   productName: string
   productDisplayName: string
   productDescription: string
+  purchaseMode: CloudPaymentPurchaseMode
+  billingMonths: number
   durationDays: number
   planCode: string
   paymentProvider: 'wechat' | 'alipay'
@@ -145,4 +164,9 @@ export interface CloudCreatePaymentOrderResponse {
   order: CloudPaymentOrder
   product: CloudPaymentProduct
   checkout: CloudPaymentCheckout
+}
+
+export interface CloudQuotePaymentOrderResponse {
+  product: CloudPaymentProduct
+  quote: CloudPaymentQuote
 }
