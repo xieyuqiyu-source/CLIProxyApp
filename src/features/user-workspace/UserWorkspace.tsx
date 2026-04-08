@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
+import QRCode from 'qrcode'
 import { QuotaPanel } from '../quota/QuotaPanel'
 import { PROVIDER_META, PROVIDER_ORDER } from '../quota/providerMeta'
 import type { QuotaProvider } from '../quota/types'
-import type { CloudFeatures, CloudPlan } from '../../lib/cloud/types'
+import type {
+  CloudCreatePaymentOrderResponse,
+  CloudFeatures,
+  CloudPaymentProduct,
+  CloudPlan
+} from '../../lib/cloud/types'
 import type { CpaState } from '../../lib/cpa/types'
 import { OAuthPanel } from '../oauth/OAuthPanel'
 import type { OAuthProvider } from '../oauth/types'
@@ -112,6 +118,14 @@ export function UserWorkspace({
   const [openClawDialogOpen, setOpenClawDialogOpen] = useState(false)
   const [runningOpenClawSetup, setRunningOpenClawSetup] = useState(false)
   const [openClawLogs, setOpenClawLogs] = useState<string[]>([])
+  const [paymentProducts, setPaymentProducts] = useState<CloudPaymentProduct[]>([])
+  const [loadingPaymentProducts, setLoadingPaymentProducts] = useState(false)
+  const [creatingPaymentOrder, setCreatingPaymentOrder] = useState(false)
+  const [selectedProductCode, setSelectedProductCode] = useState<string>('')
+  const [selectedPaymentProvider, setSelectedPaymentProvider] = useState<'wechat' | 'alipay'>('wechat')
+  const [activePayment, setActivePayment] = useState<CloudCreatePaymentOrderResponse | null>(null)
+  const [paymentQrDataUrl, setPaymentQrDataUrl] = useState<string | null>(null)
+  const [manualHelpVisible, setManualHelpVisible] = useState(false)
   const planLabel = useMemo(() => formatPlanLabel(plan.planCode, plan.name), [plan.name, plan.planCode])
 
   const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(userKey.trim().toLowerCase()), [userKey])
@@ -155,6 +169,113 @@ export function UserWorkspace({
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    const loadProducts = async () => {
+      try {
+        setLoadingPaymentProducts(true)
+        const response = await cloudClient.listPaymentProducts(cloudToken)
+        if (cancelled) {
+          return
+        }
+        const products = response.products ?? []
+        setPaymentProducts(products)
+        setSelectedProductCode((current) => {
+          if (current && products.some((product) => product.productCode === current)) {
+            return current
+          }
+          return products[0]?.productCode ?? ''
+        })
+      } catch (error) {
+        if (!cancelled) {
+          onError(error instanceof Error ? error.message : String(error))
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingPaymentProducts(false)
+        }
+      }
+    }
+
+    void loadProducts()
+    return () => {
+      cancelled = true
+    }
+  }, [cloudToken, onError])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const buildQr = async () => {
+      if (!activePayment?.checkout.codeUrl) {
+        setPaymentQrDataUrl(null)
+        return
+      }
+      try {
+        const dataUrl = await QRCode.toDataURL(activePayment.checkout.codeUrl, {
+          margin: 1,
+          width: 260
+        })
+        if (!cancelled) {
+          setPaymentQrDataUrl(dataUrl)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          onError(error instanceof Error ? error.message : String(error))
+        }
+      }
+    }
+
+    void buildQr()
+    return () => {
+      cancelled = true
+    }
+  }, [activePayment, onError])
+
+  useEffect(() => {
+    if (!vipDialogOpen || !activePayment?.order?.orderNo) {
+      return
+    }
+    if (activePayment.order.status === 'paid' || activePayment.order.status === 'closed' || activePayment.order.status === 'failed' || activePayment.order.status === 'refunded') {
+      return
+    }
+
+    let cancelled = false
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const response = await cloudClient.getPaymentOrder(cloudToken, activePayment.order.orderNo)
+          if (cancelled) {
+            return
+          }
+          setActivePayment((current) => {
+            if (!current || current.order.orderNo !== response.order.orderNo) {
+              return current
+            }
+            return {
+              ...current,
+              order: response.order
+            }
+          })
+          if (response.order.status === 'paid') {
+            onNotify('支付成功，会员状态已更新')
+            await onRefreshSession()
+          }
+        } catch (error) {
+          if (!cancelled) {
+            onError(error instanceof Error ? error.message : String(error))
+          }
+        }
+      })()
+    }, 3000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [activePayment, cloudToken, onError, onNotify, onRefreshSession, vipDialogOpen])
+
   const sharedButtonLabel = useMemo(() => {
     if (syncingSharedPool) {
       return '共享号池更新中'
@@ -166,6 +287,58 @@ export function UserWorkspace({
     }
     return '共享号池'
   }, [features.shared_pool_mode, sharedCooldownSeconds, syncingSharedPool])
+
+  const selectedProduct = useMemo(
+    () => paymentProducts.find((product) => product.productCode === selectedProductCode) ?? null,
+    [paymentProducts, selectedProductCode]
+  )
+
+  const paymentStatusLabel = useMemo(() => {
+    switch (activePayment?.order.status) {
+      case 'paid':
+        return '已支付'
+      case 'closed':
+        return '已关闭'
+      case 'failed':
+        return '支付失败'
+      case 'refunded':
+        return '已退款'
+      case 'pending':
+        return '待支付'
+      default:
+        return '未创建订单'
+    }
+  }, [activePayment])
+
+  const handleCreatePaymentOrder = async () => {
+    if (!selectedProductCode) {
+      onError('请先选择要购买的套餐')
+      return
+    }
+    try {
+      setCreatingPaymentOrder(true)
+      onError(null)
+      const response = await cloudClient.createPaymentOrder(cloudToken, {
+        product_code: selectedProductCode,
+        provider: selectedPaymentProvider
+      })
+      setActivePayment(response)
+      if (!response.checkout.paymentEnabled) {
+        onError(response.checkout.message || '当前支付通道未启用')
+        return
+      }
+      onNotify(`已创建${selectedPaymentProvider === 'wechat' ? '微信' : '支付宝'}支付订单`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCreatingPaymentOrder(false)
+    }
+  }
+
+  const handleOpenVipDialog = () => {
+    setManualHelpVisible(false)
+    setVipDialogOpen(true)
+  }
 
   const handleSharedPoolAction = async () => {
     const latestSession = await onRefreshSession()
@@ -318,7 +491,7 @@ export function UserWorkspace({
               一键接入 OpenClaw
             </button>
 
-            <button className="btn btn-primary btn-sm" onClick={() => setVipDialogOpen(true)}>
+            <button className="btn btn-primary btn-sm" onClick={handleOpenVipDialog}>
               开通会员
             </button>
 
@@ -407,7 +580,7 @@ export function UserWorkspace({
             compactUserMode
             maxEnabledAuthFiles={features.max_enabled_auth_files}
             allowAutoRotation={features.allow_auto_rotation}
-            onUpgradeVip={() => setVipDialogOpen(true)}
+                onUpgradeVip={handleOpenVipDialog}
             onOpenOauth={() => setOauthDialogOpen(true)}
             onProviderCountsChange={setProviderCounts}
             onNotify={onNotify}
@@ -417,35 +590,130 @@ export function UserWorkspace({
       </section>
 
       <dialog className={`modal ${vipDialogOpen ? 'modal-open' : ''}`}>
-        <div className="modal-box max-w-lg">
+        <div className="modal-box max-w-6xl">
           <h3 className="text-xl font-bold">开通会员</h3>
-          <p className="mt-3 text-sm text-base-content/70">
-            当前套餐为 <span className="font-semibold">{planLabel}</span>。
-            免费版只能启用一个认证文件，自动切换、共享池和更多并发能力需要升级到 Pro 或 Pro Max。
-          </p>
-          <div className="mt-4 rounded-box bg-base-200/60 p-4 text-sm text-base-content/70">
-            当前支付能力暂未接入。你可以扫码添加客服或进群，后台人工为你开通对应会员权限。
-          </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-[180px_minmax(0,1fr)]">
-            <div className="rounded-box border border-base-300 bg-base-100 p-3">
-              <img
-                src={vipQrImage}
-                alt="会员开通二维码"
-                className="h-full w-full rounded-box object-cover"
-              />
+          <p className="mt-3 text-sm text-base-content/70">当前套餐为 <span className="font-semibold">{planLabel}</span>。你可以直接创建微信或支付宝订单完成购买。</p>
+          <div className="mt-4 grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
+            <div className="space-y-4">
+              <div className="grid gap-3">
+                {loadingPaymentProducts ? (
+                  <div className="flex items-center gap-2 text-sm text-base-content/60">
+                    <span className="loading loading-spinner loading-xs"></span>
+                    正在加载可购买套餐
+                  </div>
+                ) : null}
+                {paymentProducts.map((product) => {
+                  const active = product.productCode === selectedProductCode
+                  return (
+                    <button
+                      key={product.id}
+                      className={`rounded-box border p-4 text-left transition ${active ? 'border-primary bg-primary/5 shadow-sm' : 'border-base-300 bg-base-100'}`}
+                      onClick={() => setSelectedProductCode(product.productCode)}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-lg font-semibold">{product.displayName}</div>
+                          <div className="mt-1 text-sm text-base-content/60 line-clamp-3">{product.description}</div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <div className="text-2xl font-bold">¥{(product.priceAmount / 100).toFixed(2)}</div>
+                          <div className="mt-1 text-xs text-base-content/50">{product.durationDays} 天</div>
+                        </div>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="rounded-box border border-base-300 bg-base-100 p-4">
+                <div className="text-sm font-semibold">支付方式</div>
+                <div className="mt-3 join">
+                  <button
+                    className={`join-item btn btn-sm ${selectedPaymentProvider === 'wechat' ? 'btn-success' : 'btn-outline'}`}
+                    onClick={() => setSelectedPaymentProvider('wechat')}
+                  >
+                    微信支付
+                  </button>
+                  <button
+                    className={`join-item btn btn-sm ${selectedPaymentProvider === 'alipay' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setSelectedPaymentProvider('alipay')}
+                  >
+                    支付宝
+                  </button>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button className="btn btn-primary btn-sm" disabled={creatingPaymentOrder || !selectedProduct} onClick={() => void handleCreatePaymentOrder()}>
+                    {creatingPaymentOrder ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    创建支付订单
+                  </button>
+                  <button
+                    className="btn btn-outline btn-sm"
+                    onClick={() => window.open(activePayment?.checkout.codeUrl || '#', '_blank', 'noopener,noreferrer')}
+                    disabled={!activePayment?.checkout.codeUrl}
+                  >
+                    打开支付链接
+                  </button>
+                </div>
+              </div>
             </div>
-            <div className="space-y-3 text-sm text-base-content/70">
-              <div>
-                <div className="font-semibold text-base-content">开通方式</div>
-                <div className="mt-1">扫码后添加客服或进群，备注你的账号和需要开通的套餐。</div>
+
+            <div className="space-y-4">
+              <div className="rounded-box border border-base-300 bg-base-100 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-base-content">支付二维码</div>
+                    <div className="mt-1 text-xs text-base-content/55">{selectedPaymentProvider === 'wechat' ? '请用微信扫码' : '请用支付宝扫码'}</div>
+                  </div>
+                  <div className={`badge ${activePayment?.order.status === 'paid' ? 'badge-success' : 'badge-ghost'}`}>{paymentStatusLabel}</div>
+                </div>
+                <div className="mt-4 flex min-h-[280px] items-center justify-center rounded-box bg-base-200/60 p-4">
+                  {paymentQrDataUrl ? (
+                    <img src={paymentQrDataUrl} alt="支付二维码" className="h-64 w-64 rounded-box bg-white p-3" />
+                  ) : (
+                    <div className="space-y-3 text-center text-sm text-base-content/60">
+                      <div>创建订单后这里会显示支付二维码。</div>
+                      <div>若支付通道异常，可展开下方人工通道联系处理。</div>
+                    </div>
+                  )}
+                </div>
+                {activePayment ? (
+                  <div className="mt-4 space-y-2 text-xs text-base-content/65">
+                    <div>订单号：{activePayment.order.orderNo}</div>
+                    <div>套餐：{activePayment.product.displayName}</div>
+                    <div>金额：¥{(activePayment.product.priceAmount / 100).toFixed(2)}</div>
+                    {activePayment.checkout.message ? <div>说明：{activePayment.checkout.message}</div> : null}
+                  </div>
+                ) : null}
               </div>
-              <div>
-                <div className="font-semibold text-base-content">后台授权</div>
-                <div className="mt-1">管理员会在后台直接为你的账号分配 `Pro / Pro Max` 等权限。</div>
-              </div>
-              <div>
-                <div className="font-semibold text-base-content">建议</div>
-                <div className="mt-1">如果你主要需要自动切换和共享号池，优先开通 Pro 或 Pro Max 再使用当前用户工作台。</div>
+
+              <div className="rounded-box bg-base-200/60 p-4 text-sm text-base-content/70">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>若你暂时无法完成在线支付，可以使用人工通道处理。</div>
+                  <button className="btn btn-outline btn-sm" onClick={() => setManualHelpVisible((value) => !value)}>
+                    {manualHelpVisible ? '收起人工通道' : '展开人工通道'}
+                  </button>
+                </div>
+                {manualHelpVisible ? (
+                  <div className="mt-4 grid gap-4 sm:grid-cols-[180px_minmax(0,1fr)]">
+                    <div className="rounded-box border border-base-300 bg-base-100 p-3">
+                      <img
+                        src={vipQrImage}
+                        alt="人工开通二维码"
+                        className="h-full w-full rounded-box object-cover"
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="font-semibold text-base-content">人工处理说明</div>
+                        <div className="mt-1">扫码后说明账号和套餐需求，管理员会在后台直接处理会员开通或虚拟卡购买。</div>
+                      </div>
+                      <div>
+                        <div className="font-semibold text-base-content">适用场景</div>
+                        <div className="mt-1">支付通道异常、需要人工确认、或者你想直接咨询套餐区别时，都可以走这里。</div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

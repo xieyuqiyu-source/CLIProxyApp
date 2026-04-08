@@ -16,7 +16,8 @@ use sysinfo::{Signal, System};
 use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
-const CLOUD_BASE_URL: &str = "http://124.223.111.163:8090/api/v1";
+const CLOUD_BASE_URL_DEV: &str = "https://cliproxy.szxsai.com/api/v1";
+const CLOUD_BASE_URL_RELEASE: &str = "https://cliproxy.szxsai.com/api/v1";
 const APP_UPDATE_MANIFEST_PATHS: [&str; 3] = [
     "/downloads/cliproxyapp/latest.json",
     "/cliproxyapp/latest.json",
@@ -1440,11 +1441,11 @@ fn ensure_json_object(value: &mut JsonValue) -> &mut JsonMap<String, JsonValue> 
 
 fn cloud_url(path: &str) -> String {
     let normalized_path = path.trim().trim_start_matches('/');
-    format!("{}/{}", CLOUD_BASE_URL.trim_end_matches('/'), normalized_path)
+    format!("{}/{}", cloud_base_url().trim_end_matches('/'), normalized_path)
 }
 
 fn app_update_origin() -> Result<String, String> {
-    let base = reqwest::Url::parse(CLOUD_BASE_URL)
+    let base = reqwest::Url::parse(cloud_base_url())
         .map_err(|error| format!("invalid cloud base url: {error}"))?;
     let host = base
         .host_str()
@@ -1455,6 +1456,14 @@ fn app_update_origin() -> Result<String, String> {
         origin.push_str(&port.to_string());
     }
     Ok(origin)
+}
+
+fn cloud_base_url() -> &'static str {
+    if cfg!(debug_assertions) {
+        CLOUD_BASE_URL_DEV
+    } else {
+        CLOUD_BASE_URL_RELEASE
+    }
 }
 
 fn select_update_download_url(payload: &JsonValue) -> Result<Option<String>, String> {

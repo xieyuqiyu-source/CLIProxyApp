@@ -737,14 +737,6 @@ function App() {
           </div>
 
           <div className="flex items-center gap-3 pl-2 sm:pl-4 sm:border-l border-base-300">
-            {session.user.role !== 'admin' ? (
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() => showToast('开通会员入口即将接入')}
-              >
-                开通会员
-              </button>
-            ) : null}
             <button
               className="btn btn-outline btn-sm"
               disabled={checkingUpdate}

@@ -1,6 +1,9 @@
 import { cpaRuntime } from '../cpa/runtime'
 import type {
   CloudAppReleaseManifest,
+  CloudCreatePaymentOrderResponse,
+  CloudPaymentOrder,
+  CloudPaymentProduct,
   CloudAdminUserSummary,
   CloudAuthFile,
   CloudLoginResponse,
@@ -153,6 +156,83 @@ export const cloudClient = {
       },
       token
     ),
+
+  listPaymentProducts: (token: string) =>
+    request<{ products: CloudPaymentProduct[] }>('/pay/products', { method: 'GET' }, token),
+
+  adminListPaymentProducts: (token: string) =>
+    request<{ products: CloudPaymentProduct[] }>('/admin/pay/products', { method: 'GET' }, token),
+
+  adminCreatePaymentProduct: (
+    token: string,
+    payload: {
+      product_code: string
+      name: string
+      display_name: string
+      plan_code: string
+      price_amount: number
+      currency: string
+      duration_days: number
+      status: string
+      sort_order: number
+      description: string
+    }
+  ) =>
+    request<{ product: CloudPaymentProduct }>(
+      '/admin/pay/products',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      },
+      token
+    ),
+
+  adminUpdatePaymentProduct: (
+    token: string,
+    id: number,
+    payload: Partial<{
+      product_code: string
+      name: string
+      display_name: string
+      plan_code: string
+      price_amount: number
+      currency: string
+      duration_days: number
+      status: string
+      sort_order: number
+      description: string
+    }>
+  ) =>
+    request<{ product: CloudPaymentProduct }>(
+      `/admin/pay/products/${id}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      },
+      token
+    ),
+
+  adminListPaymentOrders: (token: string, limit = 50) =>
+    request<{ orders: CloudPaymentOrder[] }>(`/admin/pay/orders?limit=${limit}`, { method: 'GET' }, token),
+
+  createPaymentOrder: (
+    token: string,
+    payload: {
+      product_code: string
+      provider: 'wechat' | 'alipay'
+    }
+  ) =>
+    request<CloudCreatePaymentOrderResponse>(
+      '/pay/orders',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      },
+      token
+    ),
+
+  getPaymentOrder: (token: string, orderNo: string) =>
+    request<{ order: CloudPaymentOrder }>(`/pay/orders/${orderNo}`, { method: 'GET' }, token),
 
   adminUploadSharedAuthFile: (token: string, file: File) =>
     uploadForm<{ file: CloudAuthFile }>('/admin/shared-auth-files/upload', file, token),

@@ -91,3 +91,52 @@ export interface CloudAppReleaseManifest {
   publishedAt: string
   downloads: Record<string, string>
 }
+
+export interface CloudPaymentProduct {
+  id: number
+  productCode: string
+  name: string
+  displayName: string
+  planCode: string
+  priceAmount: number
+  currency: string
+  durationDays: number
+  status: 'active' | 'disabled'
+  sortOrder: number
+  description: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CloudPaymentOrder {
+  id: number
+  orderNo: string
+  userId: number
+  productId: number
+  planCode: string
+  paymentProvider: 'wechat' | 'alipay'
+  amount: number
+  currency: string
+  status: 'pending' | 'paid' | 'closed' | 'failed' | 'refunded'
+  providerOrderId: string | null
+  providerTradeNo: string | null
+  expiresAt: string | null
+  paidAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CloudPaymentCheckout {
+  provider: 'wechat' | 'alipay'
+  paymentEnabled: boolean
+  codeUrl?: string
+  providerOrderId?: string
+  providerTradeNo?: string
+  message?: string
+}
+
+export interface CloudCreatePaymentOrderResponse {
+  order: CloudPaymentOrder
+  product: CloudPaymentProduct
+  checkout: CloudPaymentCheckout
+}
