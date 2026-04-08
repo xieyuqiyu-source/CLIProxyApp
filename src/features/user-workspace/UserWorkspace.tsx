@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { QuotaPanel } from '../quota/QuotaPanel'
 import { PROVIDER_META, PROVIDER_ORDER } from '../quota/providerMeta'
@@ -125,7 +125,13 @@ export function UserWorkspace({
   const [selectedPaymentProvider, setSelectedPaymentProvider] = useState<'wechat' | 'alipay'>('wechat')
   const [activePayment, setActivePayment] = useState<CloudCreatePaymentOrderResponse | null>(null)
   const [paymentQrDataUrl, setPaymentQrDataUrl] = useState<string | null>(null)
+  const [paymentPolling, setPaymentPolling] = useState(false)
+  const [paymentPollCountdown, setPaymentPollCountdown] = useState(0)
+  const [refreshingPaymentStatus, setRefreshingPaymentStatus] = useState(false)
+  const [lastPaymentCheckedAt, setLastPaymentCheckedAt] = useState<string | null>(null)
+  const [vipCloseConfirmOpen, setVipCloseConfirmOpen] = useState(false)
   const [manualHelpVisible, setManualHelpVisible] = useState(false)
+  const paidNotifiedOrderRef = useRef<string | null>(null)
   const planLabel = useMemo(() => formatPlanLabel(plan.planCode, plan.name), [plan.name, plan.planCode])
 
   const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(userKey.trim().toLowerCase()), [userKey])
@@ -234,14 +240,28 @@ export function UserWorkspace({
   }, [activePayment, onError])
 
   useEffect(() => {
-    if (!vipDialogOpen || !activePayment?.order?.orderNo) {
+    if (!activePayment?.order?.orderNo) {
+      setPaymentPolling(false)
+      setPaymentPollCountdown(0)
       return
     }
     if (activePayment.order.status === 'paid' || activePayment.order.status === 'closed' || activePayment.order.status === 'failed' || activePayment.order.status === 'refunded') {
+      setPaymentPolling(false)
+      setPaymentPollCountdown(0)
+      if (activePayment.order.status === 'paid' && paidNotifiedOrderRef.current !== activePayment.order.orderNo) {
+        paidNotifiedOrderRef.current = activePayment.order.orderNo
+        onNotify('支付成功，会员状态已更新')
+        void onRefreshSession()
+      }
       return
     }
 
     let cancelled = false
+    setPaymentPolling(true)
+    setPaymentPollCountdown(3)
+    const countdownTimer = window.setInterval(() => {
+      setPaymentPollCountdown((current) => (current <= 1 ? 3 : current - 1))
+    }, 1000)
     const timer = window.setInterval(() => {
       void (async () => {
         try {
@@ -249,6 +269,8 @@ export function UserWorkspace({
           if (cancelled) {
             return
           }
+          setLastPaymentCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }))
+          setPaymentPollCountdown(3)
           setActivePayment((current) => {
             if (!current || current.order.orderNo !== response.order.orderNo) {
               return current
@@ -259,8 +281,11 @@ export function UserWorkspace({
             }
           })
           if (response.order.status === 'paid') {
-            onNotify('支付成功，会员状态已更新')
-            await onRefreshSession()
+            if (paidNotifiedOrderRef.current !== response.order.orderNo) {
+              paidNotifiedOrderRef.current = response.order.orderNo
+              onNotify('支付成功，会员状态已更新')
+              await onRefreshSession()
+            }
           }
         } catch (error) {
           if (!cancelled) {
@@ -272,9 +297,12 @@ export function UserWorkspace({
 
     return () => {
       cancelled = true
+      setPaymentPolling(false)
+      setPaymentPollCountdown(0)
       window.clearInterval(timer)
+      window.clearInterval(countdownTimer)
     }
-  }, [activePayment, cloudToken, onError, onNotify, onRefreshSession, vipDialogOpen])
+  }, [activePayment, cloudToken, onError, onNotify, onRefreshSession])
 
   const sharedButtonLabel = useMemo(() => {
     if (syncingSharedPool) {
@@ -310,6 +338,67 @@ export function UserWorkspace({
     }
   }, [activePayment])
 
+  const hasPendingPayment = activePayment?.order.status === 'pending'
+
+  const paymentExpiresCountdown = useMemo(() => {
+    if (!activePayment?.order.expiresAt || activePayment.order.status !== 'pending') {
+      return null
+    }
+    const expiresAt = new Date(activePayment.order.expiresAt).getTime()
+    const remainingMs = Math.max(0, expiresAt - Date.now())
+    const totalSeconds = Math.floor(remainingMs / 1000)
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    return `${minutes}:${String(seconds).padStart(2, '0')}`
+  }, [activePayment, paymentPollCountdown, lastPaymentCheckedAt])
+
+  const paymentPollingHint = useMemo(() => {
+    if (!activePayment) {
+      return '创建订单后会自动轮询支付结果。'
+    }
+    if (activePayment.order.status === 'paid') {
+      return '支付已完成，正在同步会员状态。'
+    }
+    if (activePayment.order.status === 'closed' || activePayment.order.status === 'failed' || activePayment.order.status === 'refunded') {
+      return '当前订单已结束，不再自动轮询。'
+    }
+    if (paymentPolling) {
+      return `正在自动检查支付结果，${paymentPollCountdown} 秒后再次查询。`
+    }
+    return '正在准备自动轮询支付状态。'
+  }, [activePayment, paymentPollCountdown, paymentPolling])
+
+  const handleRefreshPaymentOrder = async () => {
+    if (!activePayment?.order.orderNo) {
+      return
+    }
+    try {
+      setRefreshingPaymentStatus(true)
+      onError(null)
+      const response = await cloudClient.getPaymentOrder(cloudToken, activePayment.order.orderNo)
+      setLastPaymentCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }))
+      setPaymentPollCountdown(3)
+      setActivePayment((current) => {
+        if (!current || current.order.orderNo !== response.order.orderNo) {
+          return current
+        }
+        return {
+          ...current,
+          order: response.order
+        }
+      })
+      if (response.order.status === 'paid' && paidNotifiedOrderRef.current !== response.order.orderNo) {
+        paidNotifiedOrderRef.current = response.order.orderNo
+        onNotify('支付成功，会员状态已更新')
+        await onRefreshSession()
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRefreshingPaymentStatus(false)
+    }
+  }
+
   const handleCreatePaymentOrder = async () => {
     if (!selectedProductCode) {
       onError('请先选择要购买的套餐')
@@ -322,7 +411,10 @@ export function UserWorkspace({
         product_code: selectedProductCode,
         provider: selectedPaymentProvider
       })
+      paidNotifiedOrderRef.current = null
       setActivePayment(response)
+      setLastPaymentCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }))
+      setPaymentPollCountdown(3)
       if (!response.checkout.paymentEnabled) {
         onError(response.checkout.message || '当前支付通道未启用')
         return
@@ -338,6 +430,19 @@ export function UserWorkspace({
   const handleOpenVipDialog = () => {
     setManualHelpVisible(false)
     setVipDialogOpen(true)
+  }
+
+  const handleCloseVipDialog = () => {
+    if (hasPendingPayment) {
+      setVipCloseConfirmOpen(true)
+      return
+    }
+    setVipDialogOpen(false)
+  }
+
+  const confirmCloseVipDialog = () => {
+    setVipCloseConfirmOpen(false)
+    setVipDialogOpen(false)
   }
 
   const handleSharedPoolAction = async () => {
@@ -591,8 +696,15 @@ export function UserWorkspace({
 
       <dialog className={`modal ${vipDialogOpen ? 'modal-open' : ''}`}>
         <div className="modal-box max-w-6xl">
-          <h3 className="text-xl font-bold">开通会员</h3>
-          <p className="mt-3 text-sm text-base-content/70">当前套餐为 <span className="font-semibold">{planLabel}</span>。你可以直接创建微信或支付宝订单完成购买。</p>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-xl font-bold">开通会员</h3>
+              <p className="mt-3 text-sm text-base-content/70">当前套餐为 <span className="font-semibold">{planLabel}</span>。你可以直接创建微信或支付宝订单完成购买。</p>
+            </div>
+            <button className="btn btn-ghost btn-sm btn-circle" onClick={handleCloseVipDialog}>
+              ✕
+            </button>
+          </div>
           <div className="mt-4 grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
             <div className="space-y-4">
               <div className="grid gap-3">
@@ -609,6 +721,7 @@ export function UserWorkspace({
                       key={product.id}
                       className={`rounded-box border p-4 text-left transition ${active ? 'border-primary bg-primary/5 shadow-sm' : 'border-base-300 bg-base-100'}`}
                       onClick={() => setSelectedProductCode(product.productCode)}
+                      disabled={hasPendingPayment}
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="min-w-0 flex-1">
@@ -631,20 +744,22 @@ export function UserWorkspace({
                   <button
                     className={`join-item btn btn-sm ${selectedPaymentProvider === 'wechat' ? 'btn-success' : 'btn-outline'}`}
                     onClick={() => setSelectedPaymentProvider('wechat')}
+                    disabled={hasPendingPayment}
                   >
                     微信支付
                   </button>
                   <button
                     className={`join-item btn btn-sm ${selectedPaymentProvider === 'alipay' ? 'btn-primary' : 'btn-outline'}`}
                     onClick={() => setSelectedPaymentProvider('alipay')}
+                    disabled={hasPendingPayment}
                   >
                     支付宝
                   </button>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
-                  <button className="btn btn-primary btn-sm" disabled={creatingPaymentOrder || !selectedProduct} onClick={() => void handleCreatePaymentOrder()}>
+                  <button className="btn btn-primary btn-sm" disabled={creatingPaymentOrder || !selectedProduct || hasPendingPayment} onClick={() => void handleCreatePaymentOrder()}>
                     {creatingPaymentOrder ? <span className="loading loading-spinner loading-xs"></span> : null}
-                    创建支付订单
+                    {hasPendingPayment ? '待当前订单结束' : '创建支付订单'}
                   </button>
                   <button
                     className="btn btn-outline btn-sm"
@@ -666,6 +781,28 @@ export function UserWorkspace({
                   </div>
                   <div className={`badge ${activePayment?.order.status === 'paid' ? 'badge-success' : 'badge-ghost'}`}>{paymentStatusLabel}</div>
                 </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-base-content/60">
+                  {activePayment?.order.status === 'pending' ? (
+                    <>
+                      <span className={`badge badge-sm ${paymentPolling ? 'badge-info' : 'badge-ghost'}`}>
+                        {paymentPolling ? '轮询中' : '等待轮询'}
+                      </span>
+                      <span>{paymentPollingHint}</span>
+                      {paymentExpiresCountdown ? <span>剩余支付时间：{paymentExpiresCountdown}</span> : null}
+                      {lastPaymentCheckedAt ? <span>最近检查：{lastPaymentCheckedAt}</span> : null}
+                    </>
+                  ) : (
+                    <span>{paymentPollingHint}</span>
+                  )}
+                  <button
+                    className="btn btn-ghost btn-xs ml-auto"
+                    onClick={() => void handleRefreshPaymentOrder()}
+                    disabled={!activePayment?.order.orderNo || refreshingPaymentStatus}
+                  >
+                    {refreshingPaymentStatus ? <span className="loading loading-spinner loading-xs" /> : null}
+                    立即检查
+                  </button>
+                </div>
                 <div className="mt-4 flex min-h-[280px] items-center justify-center rounded-box bg-base-200/60 p-4">
                   {paymentQrDataUrl ? (
                     <img src={paymentQrDataUrl} alt="支付二维码" className="h-64 w-64 rounded-box bg-white p-3" />
@@ -681,6 +818,7 @@ export function UserWorkspace({
                     <div>订单号：{activePayment.order.orderNo}</div>
                     <div>套餐：{activePayment.product.displayName}</div>
                     <div>金额：¥{(activePayment.product.priceAmount / 100).toFixed(2)}</div>
+                    {activePayment.order.expiresAt ? <div>订单有效期至：{new Date(activePayment.order.expiresAt).toLocaleString('zh-CN', { hour12: false })}</div> : null}
                     {activePayment.checkout.message ? <div>说明：{activePayment.checkout.message}</div> : null}
                   </div>
                 ) : null}
@@ -721,8 +859,25 @@ export function UserWorkspace({
             <button className="btn btn-outline" onClick={() => setCardDialogOpen(true)}>
               购买虚拟卡
             </button>
-            <button className="btn btn-primary" onClick={() => setVipDialogOpen(false)}>
+            <button className="btn btn-primary" onClick={handleCloseVipDialog}>
               知道了
+            </button>
+          </div>
+        </div>
+      </dialog>
+
+      <dialog className={`modal ${vipCloseConfirmOpen ? 'modal-open' : ''}`}>
+        <div className="modal-box max-w-md">
+          <h3 className="text-lg font-bold">确认关闭支付弹窗</h3>
+          <p className="mt-3 text-sm text-base-content/70">
+            当前订单仍在等待支付。关闭后系统仍会继续轮询支付结果，但你将暂时看不到二维码和状态变化。
+          </p>
+          <div className="modal-action">
+            <button className="btn btn-outline" onClick={() => setVipCloseConfirmOpen(false)}>
+              继续支付
+            </button>
+            <button className="btn btn-primary" onClick={confirmCloseVipDialog}>
+              确认关闭
             </button>
           </div>
         </div>
