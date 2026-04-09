@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "useLocalToolsDir": true,
     "resources": [
       "resources/sidecar/**/*"
     ],
