@@ -8,6 +8,7 @@ import type {
   VertexImportState
 } from './types'
 import { cpaRuntime } from '../../lib/cpa/runtime'
+import { JiegehaoManager } from './autologin/JiegehaoManager'
 
 const PROVIDERS: ProviderDefinition[] = [
   {
@@ -157,6 +158,7 @@ export function OAuthPanel({
   showExtendedTools = true
 }: OAuthPanelProps) {
   const [states, setStates] = useState<Record<OAuthProvider, ProviderState>>({} as Record<OAuthProvider, ProviderState>)
+  const [showJiegehaoManager, setShowJiegehaoManager] = useState(false)
   const [iflowCookie, setIflowCookie] = useState<{
     cookie: string
     loading: boolean
@@ -444,7 +446,18 @@ export function OAuthPanel({
                       <p className="text-sm text-base-content/60">{provider.subtitle}</p>
                     </div>
                   </div>
-                  <div className={`badge ${getStatusBadgeClass(state.status)}`}>{getStatusText(state)}</div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {provider.id === 'codex' && canManage && (
+                      <button
+                        className="btn btn-xs btn-outline"
+                        title="借个号批量自动登录"
+                        onClick={() => setShowJiegehaoManager(true)}
+                      >
+                        借个号批量登录
+                      </button>
+                    )}
+                    <div className={`badge ${getStatusBadgeClass(state.status)}`}>{getStatusText(state)}</div>
+                  </div>
                 </div>
 
                 {provider.projectIdSupported && (
@@ -690,6 +703,16 @@ export function OAuthPanel({
         </div>
       </div>
       ) : null}
+
+      {/* Jiegehao batch auto-login modal */}
+      {showJiegehaoManager && (
+        <JiegehaoManager
+          onClose={() => setShowJiegehaoManager(false)}
+          onCodexAuthSuccess={() => {
+            onNotify('Codex 批量自动授权完成')
+          }}
+        />
+      )}
     </div>
   )
 }

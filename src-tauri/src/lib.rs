@@ -1,4 +1,5 @@
 mod cpa;
+mod autologin;
 
 use cpa::CpaRuntimeState;
 use std::sync::Mutex;
@@ -53,7 +54,9 @@ pub fn run() {
                     return;
                 }
             }
-            if matches!(event, tauri::WindowEvent::Destroyed) {
+            if matches!(event, tauri::WindowEvent::Destroyed)
+                && window.label() == MAIN_WINDOW_LABEL
+            {
                 let state = window.state::<CpaRuntimeState>();
                 if let Err(error) = cpa::shutdown_cpa(&state) {
                     eprintln!("failed to stop CPA on window destroy: {error}");
@@ -83,7 +86,17 @@ pub fn run() {
             check_app_update,
             proxy_cloud_request,
             proxy_cloud_upload,
-            proxy_cloud_download
+            proxy_cloud_download,
+            // autologin commands
+            autologin::autologin_load_accounts,
+            autologin::autologin_save_account,
+            autologin::autologin_delete_account,
+            autologin::autologin_jiegehao_get_codex,
+            autologin::autologin_fetch_code,
+            autologin::autologin_open_window,
+            autologin::autologin_eval_window,
+            autologin::autologin_close_window,
+            autologin::autologin_webview_report
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
