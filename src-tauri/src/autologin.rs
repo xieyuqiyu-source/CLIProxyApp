@@ -387,10 +387,92 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
         }}
       }}
 
+      /* ── Shared: watch for post-password SPA states ──────────────────── */
+      // After password submit the page may SPA-transition (no new page load) to:
+      //   • device push-approval  →  click "试试电子邮件" then keep watching
+      //   • check-inbox / OTP     →  emit need_code
+      //   • consent               →  click allow
+      async function watchPostPassword() {{
+        report('progress', 'watching_post_password');
+        var deadline = Date.now() + 45000;
+        var clickedEmailFallback = false;
+
+        while (Date.now() < deadline) {{
+          await sleep(600);
+          var pageText = (document.body && document.body.innerText || '').toLowerCase();
+
+          /* --- device push-approval: click "试试电子邮件" once --- */
+          if (!clickedEmailFallback) {{
+            var allBtns2 = Array.prototype.slice.call(document.querySelectorAll('button'));
+            var efBtn = null;
+            for (var bi = 0; bi < allBtns2.length; bi++) {{
+              var bt = (allBtns2[bi].textContent || allBtns2[bi].innerText || '').trim();
+              if (bt.includes('\u8bd5\u8bd5\u7535\u5b50\u90ae\u4ef6') || bt.toLowerCase().includes('try email')) {{
+                efBtn = allBtns2[bi]; break;
+              }}
+            }}
+            if (efBtn) {{
+              report('progress', 'device_approval_clicking_email_fallback');
+              efBtn.click();
+              clickedEmailFallback = true;
+              await sleep(1500);
+              continue;
+            }}
+          }}
+
+          /* --- OTP input already visible --- */
+          var otpSels = ['input[name="code"]','input[autocomplete="one-time-code"]',
+            'input[inputmode="numeric"]','input[type="number"][maxlength]',
+            'input[placeholder*="code" i]','input[placeholder*="\u9a8c\u8bc1\u7801" i]'];
+          for (var oi = 0; oi < otpSels.length; oi++) {{
+            var otpEl2 = document.querySelector(otpSels[oi]);
+            if (otpEl2 && otpEl2.offsetParent !== null) {{
+              report('need_code', {{ type: 'email' }});
+              return;
+            }}
+          }}
+
+          /* --- check-inbox hint in page text --- */
+          if (pageText.includes('check your email') || pageText.includes('check your inbox') ||
+              pageText.includes('\u68c0\u67e5\u60a8\u7684\u6536\u4ef6\u7bb1') ||
+              pageText.includes('\u6536\u4ef6\u7bb1') ||
+              pageText.includes('verification code') || pageText.includes('\u9a8c\u8bc1\u7801')) {{
+            report('need_code', {{ type: 'email' }});
+            return;
+          }}
+
+          /* --- consent / authorization page --- */
+          var cKw = ['authorize','allow','connect','accept','codex','\u6388\u6743'];
+          if (cKw.some(function(k) {{ return pageText.includes(k); }})) {{
+            var cSels = ['button[data-testid="allow-btn"]','button[name="action"][value="accept"]',
+              'button[name="action"][value="allow"]','form button[type="submit"]:not([disabled])',
+              'button[class*="allow" i]','button[class*="confirm" i]'];
+            for (var ci = 0; ci < cSels.length; ci++) {{
+              var cb = document.querySelector(cSels[ci]);
+              if (cb && cb.offsetParent !== null && !cb.disabled) {{
+                report('progress', 'clicking_consent');
+                cb.click();
+                return;
+              }}
+            }}
+          }}
+
+          /* --- redirected away from auth.openai.com (success) --- */
+          var curUrl = window.location.href;
+          if (!curUrl.includes('auth.openai.com') &&
+              !curUrl.includes('accounts.openai.com')) {{
+            report('progress', 'redirected_success:' + curUrl.substring(0, 80));
+            return;
+          }}
+        }}
+        report('progress', 'watchPostPassword_timeout');
+      }}
+
       /* ── 1. Password field already visible (direct navigation) ───────── */
       var pwdNow = document.querySelector('input[type="password"], input[name="password"]');
       if (pwdNow && !pwdNow.disabled && !pwdNow.readOnly && pwdNow.offsetParent !== null) {{
         await doPasswordStep(pwdNow);
+        await watchPostPassword();
         return;
       }}
 
@@ -456,10 +538,25 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
         }} else {{
           report('progress', 'password_field_not_appeared_after_email');
         }}
+        await watchPostPassword();
         return;
       }}
 
-      /* ── 3. Consent / authorization page ────────────────────────────── */
+      /* ── 3. Device push-approval page → fall back to email OTP ─────── */
+      // Appears after password submit when the account has a linked mobile device.
+      // We click "试试电子邮件" / "Try email" to switch to email OTP which we can handle.
+      var allBtns = Array.prototype.slice.call(document.querySelectorAll('button'));
+      var emailFallbackBtn = allBtns.find(function(b) {{
+        var t = (b.textContent || b.innerText || '').trim();
+        return t.includes('试试电子邮件') || t.toLowerCase().includes('try email');
+      }});
+      if (emailFallbackBtn) {{
+        report('progress', 'device_approval_clicking_email_fallback');
+        emailFallbackBtn.click();
+        return;
+      }}
+
+      /* ── 4. Consent / authorization page ────────────────────────────── */
       var pageText = (document.body && document.body.innerText || '').toLowerCase();
       var consentSelectors = [
         'button[data-testid="allow-btn"]',
@@ -482,7 +579,7 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
         }}
       }}
 
-      /* ── 4. Device authorization: button to trigger sending OTP ─────── */
+      /* ── 5. Device authorization: button to trigger sending OTP ─────── */
       var deviceBtn = document.querySelector(
         'button[value="send-otp"], button[name="action"][value="send-otp"], ' +
         'button[data-action*="send" i], button[class*="send-code" i]'
@@ -495,7 +592,7 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
         return;
       }}
 
-      /* ── 5. OTP / verification code input ───────────────────────────── */
+      /* ── 6. OTP / verification code input ───────────────────────────── */
       var otpSelectors = [
         'input[name="code"]',
         'input[autocomplete="one-time-code"]',
