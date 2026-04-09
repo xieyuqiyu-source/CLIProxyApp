@@ -363,10 +363,28 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
   /* ── Main automation logic ───────────────────────────────────────────── */
   async function run() {{
     try {{
-      await sleep(800);
-
+      /* Report page_load immediately (before any sleep) so it always appears in logs */
       var url = window.location.href;
       report('progress', 'page_load:' + url.replace(/[?#].*$/, '').substring(0, 80));
+
+      /* ── 0. Device push-approval page (check FIRST, before any sleep) ── */
+      // This page has no email/password inputs. Detect it by looking for the
+      // "试试电子邮件" / "Try email" button which is always present on this page.
+      // Must run before sleep so it fires even if the page navigates away quickly.
+      (function checkDeviceApproval() {{
+        var btns = Array.prototype.slice.call(document.querySelectorAll('button'));
+        for (var i = 0; i < btns.length; i++) {{
+          var t = (btns[i].textContent || btns[i].innerText || '').trim();
+          if (t.includes('试试电子邮件') || t.includes('电子邮件') ||
+              t.toLowerCase().includes('try email') || t.toLowerCase().includes('use email')) {{
+            report('progress', 'device_approval_clicking_email_fallback');
+            btns[i].click();
+            return;
+          }}
+        }}
+      }})();
+
+      await sleep(800);
 
       /* ── Shared: fill password input and click submit ────────────────── */
       async function doPasswordStep(pwdEl) {{
@@ -401,23 +419,41 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
           await sleep(600);
           var pageText = (document.body && document.body.innerText || '').toLowerCase();
 
-          /* --- device push-approval: click "试试电子邮件" once --- */
-          if (!clickedEmailFallback) {{
-            var allBtns2 = Array.prototype.slice.call(document.querySelectorAll('button'));
-            var efBtn = null;
-            for (var bi = 0; bi < allBtns2.length; bi++) {{
-              var bt = (allBtns2[bi].textContent || allBtns2[bi].innerText || '').trim();
-              if (bt.includes('\u8bd5\u8bd5\u7535\u5b50\u90ae\u4ef6') || bt.toLowerCase().includes('try email')) {{
-                efBtn = allBtns2[bi]; break;
+          /* --- detect device push-approval page by TEXT (reliable even before buttons render) --- */
+          // Unique phrases only present on the "approve on device" page:
+          // Chinese: "上批准" / "重新发送提示" / "已向你的设备发送"
+          // English: "approve on your" / "sent a push" / "resend push"
+          var onDeviceApprovalPage =
+            pageText.includes('\u4e0a\u6279\u51c6') ||          /* 上批准 */
+            pageText.includes('\u91cd\u65b0\u53d1\u9001\u63d0\u793a') ||  /* 重新发送提示 */
+            pageText.includes('\u5df2\u5411\u4f60\u7684\u8bbe\u5907\u53d1\u9001') ||  /* 已向你的设备发送 */
+            pageText.includes('\u8bd5\u8bd5\u7535\u5b50\u90ae\u4ef6') ||  /* 试试电子邮件 (button text unique to this page) */
+            pageText.includes('approve on your') ||
+            pageText.includes('sent a push') ||
+            pageText.includes('resend push') ||
+            pageText.includes('try email');
+
+          if (onDeviceApprovalPage) {{
+            if (!clickedEmailFallback) {{
+              /* Try to click "试试电子邮件" button */
+              var allBtns2 = Array.prototype.slice.call(document.querySelectorAll('button'));
+              var efBtn = null;
+              for (var bi = 0; bi < allBtns2.length; bi++) {{
+                var bt = (allBtns2[bi].textContent || allBtns2[bi].innerText || '').trim();
+                if (bt.includes('\u8bd5\u8bd5\u7535\u5b50\u90ae\u4ef6') || bt.includes('\u7535\u5b50\u90ae\u4ef6') ||
+                    bt.toLowerCase().includes('try email') || bt.toLowerCase().includes('use email')) {{
+                  efBtn = allBtns2[bi]; break;
+                }}
+              }}
+              if (efBtn) {{
+                report('progress', 'device_approval_clicking_email_fallback');
+                efBtn.click();
+                clickedEmailFallback = true;
+                await sleep(1500);
               }}
             }}
-            if (efBtn) {{
-              report('progress', 'device_approval_clicking_email_fallback');
-              efBtn.click();
-              clickedEmailFallback = true;
-              await sleep(1500);
-              continue;
-            }}
+            /* Still on device approval page — skip inbox/consent checks */
+            continue;
           }}
 
           /* --- OTP input already visible --- */
@@ -433,27 +469,42 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
           }}
 
           /* --- check-inbox hint in page text --- */
+          // NOTE: do NOT include '验证码' here — the password page has '使用一次性验证码登录'
+          // which would cause a false positive before the page has transitioned.
           if (pageText.includes('check your email') || pageText.includes('check your inbox') ||
               pageText.includes('\u68c0\u67e5\u60a8\u7684\u6536\u4ef6\u7bb1') ||
-              pageText.includes('\u6536\u4ef6\u7bb1') ||
-              pageText.includes('verification code') || pageText.includes('\u9a8c\u8bc1\u7801')) {{
+              pageText.includes('\u6536\u4ef6\u7bb1')) {{
             report('need_code', {{ type: 'email' }});
             return;
           }}
 
           /* --- consent / authorization page --- */
-          var cKw = ['authorize','allow','connect','accept','codex','\u6388\u6743'];
+          var cKw = ['authorize','allow','connect','accept','codex','\u6388\u6743','\u7ee7\u7eed'];
           if (cKw.some(function(k) {{ return pageText.includes(k); }})) {{
             var cSels = ['button[data-testid="allow-btn"]','button[name="action"][value="accept"]',
               'button[name="action"][value="allow"]','form button[type="submit"]:not([disabled])',
               'button[class*="allow" i]','button[class*="confirm" i]'];
+            var consentFound = null;
             for (var ci = 0; ci < cSels.length; ci++) {{
               var cb = document.querySelector(cSels[ci]);
-              if (cb && cb.offsetParent !== null && !cb.disabled) {{
-                report('progress', 'clicking_consent');
-                cb.click();
-                return;
+              if (cb && cb.offsetParent !== null && !cb.disabled) {{ consentFound = cb; break; }}
+            }}
+            /* text-based fallback: find '继续'/'continue' button, skip '取消' */
+            if (!consentFound) {{
+              var allB = Array.prototype.slice.call(document.querySelectorAll('button'));
+              for (var bi2 = 0; bi2 < allB.length; bi2++) {{
+                var bt2 = (allB[bi2].textContent || allB[bi2].innerText || '').trim();
+                if ((bt2 === '\u7ee7\u7eed' || bt2.toLowerCase() === 'continue') &&
+                    allB[bi2].offsetParent !== null && !allB[bi2].disabled) {{
+                  consentFound = allB[bi2]; break;
+                }}
               }}
+            }}
+            if (consentFound) {{
+              report('progress', 'clicking_consent');
+              consentFound.click();
+              await sleep(1500);
+              continue; /* keep watching — next page may be device approval or OTP */
             }}
           }}
 
@@ -496,12 +547,12 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
       var emailInput = findWritableEmailInput();
       if (!emailInput) {{
         emailInput = await new Promise(function(resolve) {{
-          var deadline = Date.now() + 5000;
+          var deadline = Date.now() + 2000;
           function check() {{
             var el = findWritableEmailInput();
             if (el) return resolve(el);
             if (Date.now() >= deadline) return resolve(null);
-            setTimeout(check, 300);
+            setTimeout(check, 200);
           }}
           check();
         }});
@@ -545,10 +596,21 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
       /* ── 3. Device push-approval page → fall back to email OTP ─────── */
       // Appears after password submit when the account has a linked mobile device.
       // We click "试试电子邮件" / "Try email" to switch to email OTP which we can handle.
-      var allBtns = Array.prototype.slice.call(document.querySelectorAll('button'));
-      var emailFallbackBtn = allBtns.find(function(b) {{
-        var t = (b.textContent || b.innerText || '').trim();
-        return t.includes('试试电子邮件') || t.toLowerCase().includes('try email');
+      // Wait up to 3s for buttons to render (page may still be loading).
+      var emailFallbackBtn = await new Promise(function(resolve) {{
+        var deadline = Date.now() + 3000;
+        function check() {{
+          var btns = Array.prototype.slice.call(document.querySelectorAll('button'));
+          for (var i = 0; i < btns.length; i++) {{
+            var t = (btns[i].textContent || btns[i].innerText || '').trim();
+            if (t.includes('试试电子邮件') || t.toLowerCase().includes('try email')) {{
+              return resolve(btns[i]);
+            }}
+          }}
+          if (Date.now() >= deadline) return resolve(null);
+          setTimeout(check, 200);
+        }}
+        check();
       }});
       if (emailFallbackBtn) {{
         report('progress', 'device_approval_clicking_email_fallback');
@@ -571,6 +633,17 @@ fn build_init_script(codex_account: &str, codex_password: &str) -> String {
 
       if (hasConsentKeyword) {{
         var consentBtn = await waitForEl(consentSelectors, 3000).catch(function() {{ return null; }});
+        /* text-based fallback: find '继续'/'continue' button, skip '取消' */
+        if (!consentBtn) {{
+          var allBc = Array.prototype.slice.call(document.querySelectorAll('button'));
+          for (var bic = 0; bic < allBc.length; bic++) {{
+            var btc = (allBc[bic].textContent || allBc[bic].innerText || '').trim();
+            if ((btc === '继续' || btc.toLowerCase() === 'continue') &&
+                allBc[bic].offsetParent !== null && !allBc[bic].disabled) {{
+              consentBtn = allBc[bic]; break;
+            }}
+          }}
+        }}
         if (consentBtn) {{
           report('progress', 'clicking_consent');
           consentBtn.click();
