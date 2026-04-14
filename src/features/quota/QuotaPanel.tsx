@@ -152,6 +152,25 @@ function getMetricResetText(hint?: string) {
   return hint.replace(/^重置\s*/u, '').trim() || '--'
 }
 
+function isSharedAuthFile(file: AuthFileItem) {
+  return file.name.startsWith('共享-')
+}
+
+function pickCompactMetrics(metrics: QuotaMetric[]) {
+  const normalized = metrics.map((metric) => ({
+    metric,
+    label: metric.label.replace(/\s+/g, '').toLowerCase()
+  }))
+
+  const fiveHour =
+    normalized.find(({ label }) => label.includes('5小时') || label.includes('fivehour'))?.metric ?? null
+  const oneWeek =
+    normalized.find(({ label }) => label.includes('1周') || label.includes('7天') || label.includes('1week'))?.metric ?? null
+
+  const selected = [fiveHour, oneWeek].filter((metric): metric is QuotaMetric => metric !== null)
+  return selected.length > 0 ? selected : metrics.slice(0, 2)
+}
+
 function formatResetTime(value?: string | null) {
   if (!value) {
     return '-'
@@ -1025,13 +1044,11 @@ export function QuotaPanel({
   onError,
   activeProvider = 'all',
   sourceFilter = 'all',
-  onSourceFilterChange,
   showHeader = true,
   compactUserMode = false,
   maxEnabledAuthFiles,
   allowAutoRotation,
   onUpgradeVip,
-  onOpenOauth,
   onProviderCountsChange
 }: QuotaPanelProps) {
   const [files, setFiles] = useState<AuthFileItem[]>([])
@@ -1047,7 +1064,7 @@ export function QuotaPanel({
         if (!resolveAuthProvider(file) || isRuntimeOnlyAuthFile(file)) {
           return false
         }
-        const isShared = file.name.startsWith('共享-')
+        const isShared = isSharedAuthFile(file)
         if (sourceFilter === 'shared') {
           return isShared
         }
@@ -1059,15 +1076,25 @@ export function QuotaPanel({
     [files, sourceFilter]
   )
 
-  const sections = useMemo(
-    () =>
-      PROVIDER_ORDER.map((provider) => ({
-        provider,
-        meta: PROVIDER_META[provider],
-        files: visibleFiles.filter((file) => resolveAuthProvider(file) === provider)
-      })).filter((section) => activeProvider === 'all' || section.provider === activeProvider),
-    [activeProvider, visibleFiles]
-  )
+  const sections = useMemo(() => {
+    if (compactUserMode && activeProvider === 'all') {
+      return [
+        {
+          key: 'all',
+          provider: 'all' as const,
+          meta: null,
+          files: visibleFiles
+        }
+      ]
+    }
+
+    return PROVIDER_ORDER.map((provider) => ({
+      key: provider,
+      provider,
+      meta: PROVIDER_META[provider],
+      files: visibleFiles.filter((file) => resolveAuthProvider(file) === provider)
+    })).filter((section) => activeProvider === 'all' || section.provider === activeProvider)
+  }, [activeProvider, compactUserMode, visibleFiles])
 
   const providerCounts = useMemo(
     () =>
@@ -1347,33 +1374,7 @@ export function QuotaPanel({
         </div>
       ) : (
         <div className="flex flex-wrap items-center justify-between gap-3">
-          {compactUserMode ? (
-            <div role="tablist" className="tabs tabs-box tabs-xs">
-              <button
-                role="tab"
-                className={`tab ${sourceFilter === 'all' ? 'tab-active' : ''}`}
-                onClick={() => onSourceFilterChange?.('all')}
-              >
-                全部
-              </button>
-              <button
-                role="tab"
-                className={`tab ${sourceFilter === 'personal' ? 'tab-active' : ''}`}
-                onClick={() => onSourceFilterChange?.('personal')}
-              >
-                自己的
-              </button>
-              <button
-                role="tab"
-                className={`tab ${sourceFilter === 'shared' ? 'tab-active' : ''}`}
-                onClick={() => onSourceFilterChange?.('shared')}
-              >
-                共享
-              </button>
-            </div>
-          ) : (
-            <div />
-          )}
+          <div />
 
           <div className="flex flex-wrap items-center justify-end gap-3">
             <button
@@ -1414,9 +1415,6 @@ export function QuotaPanel({
                       : '开启自动切换'
                     : '开启自动切换'}
                 </button>
-                <button className="btn btn-outline btn-sm" onClick={onOpenOauth} disabled={!cpaRunning}>
-                  登录自己账号
-                </button>
               </>
             ) : null}
           </div>
@@ -1434,12 +1432,12 @@ export function QuotaPanel({
         </div>
       ) : null}
 
-      {sections.map(({ provider, meta, files: providerFiles }) => (
+      {sections.map(({ key, meta, files: providerFiles }) => (
         <section
-          key={provider}
+          key={key}
           className={compactUserMode ? '' : 'rounded-box border border-base-300 bg-base-100 shadow-sm'}
         >
-          {!compactUserMode ? (
+          {!compactUserMode && meta ? (
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-base-200 px-6 py-5">
               <div className="space-y-1">
                 <div className={`inline-flex rounded-full bg-gradient-to-r px-3 py-1 text-xs font-semibold text-white ${meta.accent}`}>
@@ -1452,72 +1450,125 @@ export function QuotaPanel({
           ) : null}
 
           {providerFiles.length === 0 ? (
-            <div className="px-6 py-12 text-center text-base-content/55">当前没有可用的 {meta.label} 认证文件。</div>
+            <div className="px-6 py-12 text-center text-base-content/55">当前没有可用的 {meta?.label ?? '该供应商'} 认证文件。</div>
           ) : (
-            <div className={`grid gap-2 ${compactUserMode ? 'p-2.5 xl:grid-cols-4' : 'p-6 xl:grid-cols-2'}`}>
+            <div className={`grid gap-2 ${compactUserMode ? 'p-1.5 xl:grid-cols-4' : 'p-6 xl:grid-cols-2'}`}>
               {providerFiles.map((file) => {
                 const state = states[file.name] ?? { status: 'idle' }
                 const data = state.data
                 const enabled = !isDisabledAuthFile(file)
+                const shared = isSharedAuthFile(file)
+                const compactMetrics = pickCompactMetrics(data?.metrics ?? [])
+                const resolvedProvider = resolveAuthProvider(file) ?? 'codex'
+                const compactStatusLabel = enabled ? (state.status === 'loading' ? '刷新中' : '正常') : '未启用'
+                const compactStatusClass = enabled
+                  ? state.status === 'loading'
+                    ? 'text-warning'
+                    : 'text-success'
+                  : 'text-error'
 
                 return (
                   <div
                     key={file.name}
                     className={`rounded-box border shadow-sm transition-all ${
-                      enabled ? 'border-success/40 bg-success/10 ring-1 ring-success/20' : 'border-base-300 bg-base-100'
+                      compactUserMode
+                        ? shared
+                          ? 'rounded-[24px] border-warning/30 bg-warning/10'
+                          : 'rounded-[24px] border-success/30 bg-success/10'
+                        : enabled
+                          ? 'border-success/40 bg-success/10 ring-1 ring-success/20'
+                          : 'border-base-300 bg-base-100'
                     } ${syncingAuthName === file.name ? 'opacity-70' : 'cursor-pointer hover:border-primary/40'}`}
                     onClick={() => void enableFile(file)}
                   >
                     {compactUserMode ? (
-                      <div className="p-3.5">
-                        <div className="flex items-center gap-2">
-                          <div className="badge border-0 bg-primary/15 px-2.5 py-2.5 text-[12px] font-semibold text-primary shadow-none">
-                            {meta.label}
+                      <div className="space-y-2.5 p-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <div className={`text-lg ${shared ? 'text-warning' : 'text-success'}`}>◉</div>
+                            <div className="truncate text-[15px] font-bold text-base-content">
+                              {shared ? '共享账号' : '账号数据'}
+                            </div>
                           </div>
-                          <h3 className="min-w-0 flex-1 truncate text-[15px] font-bold text-base-content" title={file.name}>
-                            {file.name}
-                          </h3>
+                          <div className="flex items-center gap-1">
+                            <button
+                              className={`btn btn-ghost btn-xs btn-square ${state.status === 'loading' ? 'btn-disabled' : ''}`}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void refreshFileQuota(file)
+                              }}
+                              disabled={!cpaRunning || isDisabledAuthFile(file) || state.status === 'loading'}
+                              title="刷新"
+                            >
+                              {state.status === 'loading' ? (
+                                <span className="loading loading-spinner loading-xs" />
+                              ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M21 2v6h-6" />
+                                  <path d="M3 12a9 9 0 0 1 15.55-6.36L21 8" />
+                                  <path d="M3 22v-6h6" />
+                                  <path d="M21 12a9 9 0 0 1-15.55 6.36L3 16" />
+                                </svg>
+                              )}
+                            </button>
+                            <button
+                              className="btn btn-ghost btn-xs btn-square text-error"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                setDeleteTarget(file)
+                              }}
+                              disabled={deletingAuthName === file.name}
+                              title="删除"
+                            >
+                              {deletingAuthName === file.name ? (
+                                <span className="loading loading-spinner loading-xs" />
+                              ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M3 6h18" />
+                                  <path d="M8 6V4h8v2" />
+                                  <path d="M19 6l-1 14H6L5 6" />
+                                </svg>
+                              )}
+                            </button>
+                          </div>
                         </div>
 
-                        <div className="my-2.5 border-t border-dashed border-base-300" />
-
-                        <div className="mb-3 flex items-center gap-2 text-[13px]">
-                          <span className="text-base-content/45">套餐</span>
-                          <span className="font-semibold text-base-content">{getCompactPlanLabel(data, provider)}</span>
-                          <span
-                            className={`badge ml-auto ${
-                              enabled
-                                ? state.status === 'loading'
-                                  ? 'badge-warning'
-                                  : 'badge-success'
-                                : 'badge-error'
-                            }`}
-                          >
-                            {enabled
-                              ? state.status === 'loading'
-                                ? '启用中'
-                                : '已启用'
-                              : '未启用'}
-                          </span>
+                        <div className="grid gap-2 text-[13px]">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-base-content/55">当前账号</span>
+                            <span className="max-w-[11.5rem] truncate font-semibold text-base-content" title={file.name}>
+                              {file.name}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-base-content/55">状态</span>
+                            <span className={`font-semibold ${compactStatusClass}`}>{compactStatusLabel}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-base-content/55">类型</span>
+                            <span className="badge badge-primary badge-sm border-0 font-medium">
+                              {getCompactPlanLabel(data, resolvedProvider)}
+                            </span>
+                          </div>
                         </div>
 
-                        <div className="space-y-2.5">
+                        <div className="space-y-3">
                           {state.status === 'error' ? (
-                            <div className="alert alert-error py-3">
+                            <div className="alert alert-error py-2 text-[12px]">
                               <span>{state.error}</span>
                             </div>
                           ) : null}
 
-                          {data && data.metrics.length > 0 ? (
-                            data.metrics.map((metric) => {
+                          {data && compactMetrics.length > 0 ? (
+                            compactMetrics.map((metric) => {
                               const percentValue = parsePercentDisplay(metric.value)
                               return (
-                                <div key={metric.id} className="space-y-1">
-                                  <div className="flex items-end justify-between gap-3">
-                                    <div className="min-w-0 text-[13px] font-semibold text-base-content">
-                                      {metric.label}
+                                <div key={metric.id} className="space-y-1.5">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="min-w-0 text-[13px] font-semibold text-base-content/80">
+                                      {metric.label.includes('5') ? '5h' : '1week'}
                                     </div>
-                                    <div className="flex shrink-0 items-center gap-3">
+                                    <div className="flex shrink-0 items-center gap-2">
                                       <div className={`text-[13px] font-bold ${getMetricToneClass(metric.tone)}`}>
                                         {metric.value}
                                       </div>
@@ -1544,34 +1595,10 @@ export function QuotaPanel({
                               <span className="text-[13px] text-base-content/70">正在查询最新配额...</span>
                             </div>
                           ) : (
-                            <div className="rounded-box border border-dashed border-base-300 px-2.5 py-3 text-[13px] text-base-content/55">
+                            <div className="rounded-box border border-dashed border-base-300 px-2.5 py-3 text-[12px] text-base-content/55">
                               点击卡片即可启用并自动刷新配额。
                             </div>
                           )}
-                        </div>
-
-                        <div className="mt-3 flex items-center justify-end gap-1.5">
-                          <button
-                            className={`btn btn-xs ${state.status === 'loading' ? 'btn-disabled' : 'btn-outline'}`}
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              void refreshFileQuota(file)
-                            }}
-                            disabled={!cpaRunning || isDisabledAuthFile(file) || state.status === 'loading'}
-                          >
-                            刷新
-                          </button>
-                          <button
-                            className="btn btn-outline btn-error btn-xs"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              setDeleteTarget(file)
-                            }}
-                            disabled={deletingAuthName === file.name}
-                          >
-                            {deletingAuthName === file.name ? <span className="loading loading-spinner loading-xs" /> : null}
-                            删除
-                          </button>
                         </div>
                       </div>
                     ) : (

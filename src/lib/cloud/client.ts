@@ -270,6 +270,9 @@ export const cloudClient = {
   getPaymentOrder: (token: string, orderNo: string) =>
     request<{ order: CloudPaymentOrder }>(`/pay/orders/${orderNo}`, { method: 'GET' }, token),
 
+  cancelPaymentOrder: (token: string, orderNo: string) =>
+    request<{ order: CloudPaymentOrder }>(`/pay/orders/${encodeURIComponent(orderNo)}/cancel`, { method: 'POST' }, token),
+
   adminUploadSharedAuthFile: (token: string, file: File) =>
     uploadForm<{ file: CloudAuthFile }>('/admin/shared-auth-files/upload', file, token),
 

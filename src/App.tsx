@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { LogicalSize } from '@tauri-apps/api/dpi'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { cpaRuntime } from './lib/cpa/runtime'
 import { OAuthPanel } from './features/oauth/OAuthPanel'
 import { QuotaPanel } from './features/quota/QuotaPanel'
@@ -78,9 +80,13 @@ const statusLabelMap: Record<string, string> = {
   error: '异常'
 }
 
+const MOBILE_WINDOW_SIZE = { width: 430, height: 920, minWidth: 390, minHeight: 760 }
+const ADMIN_WINDOW_SIZE = { width: 1440, height: 920, minWidth: 1180, minHeight: 760 }
+
 function App() {
   const passwordDialogRef = useRef<HTMLDialogElement | null>(null)
   const updateDialogRef = useRef<HTMLDialogElement | null>(null)
+  const autoStartAttemptedRef = useRef(false)
   const [theme, setTheme] = useState<Theme>(() => {
     const raw = window.localStorage.getItem(THEME_KEY)
     if (THEMES.includes(raw as Theme)) {
@@ -369,6 +375,39 @@ function App() {
       setPendingAction(null)
     }
   }
+
+  useEffect(() => {
+    const syncWindowShell = async () => {
+      try {
+        const appWindow = getCurrentWindow()
+        const target = session?.user.role === 'admin' ? ADMIN_WINDOW_SIZE : MOBILE_WINDOW_SIZE
+        await appWindow.setMinSize(new LogicalSize(target.minWidth, target.minHeight))
+        await appWindow.setSize(new LogicalSize(target.width, target.height))
+        await appWindow.center()
+      } catch {
+        // Ignore browser mode or early Tauri runtime unavailability.
+      }
+    }
+
+    void syncWindowShell()
+  }, [session?.user.role])
+
+  useEffect(() => {
+    if (!session || session.user.role === 'admin' || !settings.autoStart) {
+      autoStartAttemptedRef.current = false
+      return
+    }
+    if (cpaState?.status === 'running' || cpaState?.status === 'starting') {
+      autoStartAttemptedRef.current = true
+      return
+    }
+    if (pendingAction !== null || cpaState?.status !== 'stopped' || autoStartAttemptedRef.current) {
+      return
+    }
+
+    autoStartAttemptedRef.current = true
+    void runAction('start', () => cpaRuntime.start())
+  }, [session, settings.autoStart, cpaState?.status, pendingAction])
 
   const savePort = async () => {
     const normalizedPort = Number(settings.apiPort)
@@ -724,64 +763,95 @@ function App() {
         className="hidden"
         onChange={(event) => void handleImportSelection(event)}
       />
-      <div className="navbar border-b border-base-300 bg-base-100 px-6 shadow-sm h-16">
-        <div className="flex-1">
-          <div className="flex items-center gap-3">
-            <div className="text-2xl font-black tracking-tight">
-              {session.user.role === 'admin' ? 'CPM 管理入口' : 'CPAPP 业务入口'}
+      {session.user.role === 'admin' ? (
+        <div className="navbar h-16 border-b border-base-300 bg-base-100 px-6 shadow-sm">
+          <div className="flex-1">
+            <div className="flex items-center gap-3">
+              <div className="text-2xl font-black tracking-tight">CPM 管理入口</div>
+              <ThemeDropdown theme={theme} onChange={setTheme} />
             </div>
-            <ThemeDropdown theme={theme} onChange={setTheme} />
+          </div>
+          <div className="flex-none flex items-center gap-4">
+            <div className="hidden sm:flex items-center gap-2 rounded-full border border-base-300 bg-base-200 px-3 py-1.5 text-xs font-mono text-base-content/60 shadow-sm">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>
+              cli v{appState?.appVersion ?? '0.1.0'}
+            </div>
+            <div className="flex items-center gap-3 border-base-300 pl-2 sm:border-l sm:pl-4">
+              <button
+                className="btn btn-outline btn-sm"
+                disabled={checkingUpdate}
+                onClick={() => void checkForUpdates(false)}
+              >
+                {checkingUpdate ? <span className="loading loading-spinner loading-xs"></span> : null}
+                检查更新
+              </button>
+              <div className="hidden text-right sm:block">
+                <div className="text-sm font-bold leading-none">{session.user.email}</div>
+                <div className="mt-1.5 text-[11px] font-medium tracking-wide text-base-content/55">
+                  {sessionPlanLabel}
+                </div>
+              </div>
+              <div className="avatar placeholder">
+                <div className="w-10 rounded-full bg-neutral text-neutral-content">
+                  <span className="text-lg">{userDisplayName.slice(0, 1).toUpperCase()}</span>
+                </div>
+              </div>
+              <button
+                className="ml-2 text-base-content/60 transition-colors hover:text-primary"
+                onClick={() => passwordDialogRef.current?.showModal()}
+                title="修改密码"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              </button>
+              <button
+                className="ml-2 text-base-content/60 transition-colors hover:text-error"
+                onClick={logout}
+                title="退出登录"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+              </button>
+            </div>
           </div>
         </div>
-        <div className="flex-none flex items-center gap-4">
-          {/* CLI 版本指示标 */}
-          <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-base-content/60 bg-base-200 px-3 py-1.5 rounded-full border border-base-300 shadow-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>
-            cli v{appState?.appVersion ?? '0.1.0'}
-          </div>
-
-          <div className="flex items-center gap-3 pl-2 sm:pl-4 sm:border-l border-base-300">
-            <button
-              className="btn btn-outline btn-sm"
-              disabled={checkingUpdate}
-              onClick={() => void checkForUpdates(false)}
-            >
-              {checkingUpdate ? <span className="loading loading-spinner loading-xs"></span> : null}
-              检查更新
-            </button>
-            {/* 用户角色与用户名信息 */}
-            <div className="text-right hidden sm:block">
-              <div className="text-sm font-bold leading-none">{session.user.email}</div>
-              <div className="text-[11px] font-medium text-base-content/55 mt-1.5 tracking-wide">
-                {sessionPlanLabel}
-              </div>
+      ) : (
+        <div className="border-b border-base-300 bg-base-100 shadow-sm">
+          <div className="mx-auto flex h-14 w-full max-w-[420px] items-center justify-between px-4">
+            <div className="min-w-0">
+              <div className="text-sm font-black tracking-wide">CPAPP</div>
+              <div className="truncate text-[11px] text-base-content/55">{session.user.email}</div>
             </div>
-            
-            {/* 用户头像占位 */}
-            <div className="avatar placeholder">
-              <div className="bg-neutral text-neutral-content rounded-full w-10">
-                <span className="text-lg">{userDisplayName.slice(0, 1).toUpperCase()}</span>
-              </div>
+            <div className="flex items-center gap-2">
+              <ThemeDropdown theme={theme} onChange={setTheme} />
+              <button
+                className="btn btn-ghost btn-sm btn-square"
+                disabled={checkingUpdate}
+                onClick={() => void checkForUpdates(false)}
+                title="检查更新"
+              >
+                {checkingUpdate ? (
+                  <span className="loading loading-spinner loading-xs"></span>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/><path d="M12 7v5l3 3"/></svg>
+                )}
+              </button>
+              <button
+                className="btn btn-ghost btn-sm btn-square"
+                onClick={() => passwordDialogRef.current?.showModal()}
+                title="修改密码"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
+              </button>
+              <button
+                className="btn btn-ghost btn-sm btn-square text-error"
+                onClick={logout}
+                title="退出登录"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+              </button>
             </div>
-
-            {/* 退出按钮 */}
-            <button
-              className="ml-2 text-base-content/60 hover:text-primary transition-colors"
-              onClick={() => passwordDialogRef.current?.showModal()}
-              title="修改密码"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
-            </button>
-            <button 
-              className="ml-2 text-base-content/60 hover:text-error transition-colors" 
-              onClick={logout} 
-              title="退出登录"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
-            </button>
           </div>
         </div>
-      </div>
+      )}
 
       <dialog ref={updateDialogRef} className="modal">
         <div className="modal-box max-w-xl">

@@ -92,33 +92,33 @@ function buildSharedLocalFileName(fileName: string) {
   return fileName.startsWith('共享-') ? fileName : `共享-${fileName}`
 }
 
+function buildQuoteCacheKey(productCode: string, billingMonths: number, purchaseMode: CloudPaymentPurchaseMode) {
+  return `${productCode}:${billingMonths}:${purchaseMode}`
+}
+
 export function UserWorkspace({
   plan,
   features,
-  planExpiresAt,
   userKey,
   cloudToken,
   cpaState,
   loadError,
-  pendingAction,
   normalizingFreeTier,
   onRefreshSession,
-  onStart,
-  onRestart,
-  onStop,
-  onRefresh,
   onNotify,
   onError
 }: UserWorkspaceProps) {
+  const providerTabsContainerRef = useRef<HTMLDivElement | null>(null)
+  const providerTabRefs = useRef(new Map<string, HTMLButtonElement>())
   const [activeProvider, setActiveProvider] = useState<QuotaProvider | 'all'>('all')
-  const [quotaSourceFilter, setQuotaSourceFilter] = useState<'all' | 'shared' | 'personal'>('all')
   const [providerCounts, setProviderCounts] = useState<Partial<Record<QuotaProvider, number>>>({})
   const [vipDialogOpen, setVipDialogOpen] = useState(false)
   const [oauthDialogOpen, setOauthDialogOpen] = useState(false)
   const [sharedPoolInfoOpen, setSharedPoolInfoOpen] = useState(false)
   const [cardDialogOpen, setCardDialogOpen] = useState(false)
   const [syncingSharedPool, setSyncingSharedPool] = useState(false)
-  const [sharedCooldownSeconds, setSharedCooldownSeconds] = useState(0)
+  const [, setSharedCooldownSeconds] = useState(0)
+  const [openClawIntroOpen, setOpenClawIntroOpen] = useState(false)
   const [openClawDialogOpen, setOpenClawDialogOpen] = useState(false)
   const [runningOpenClawSetup, setRunningOpenClawSetup] = useState(false)
   const [openClawLogs, setOpenClawLogs] = useState<string[]>([])
@@ -130,22 +130,19 @@ export function UserWorkspace({
   const [selectedPurchaseMode, setSelectedPurchaseMode] = useState<CloudPaymentPurchaseMode>('standard')
   const [paymentQuote, setPaymentQuote] = useState<CloudPaymentQuote | null>(null)
   const [loadingPaymentQuote, setLoadingPaymentQuote] = useState(false)
+  const [paymentQuoteCache, setPaymentQuoteCache] = useState<Record<string, CloudPaymentQuote>>({})
   const [selectedPaymentProvider, setSelectedPaymentProvider] = useState<'wechat' | 'alipay'>('wechat')
   const [activePayment, setActivePayment] = useState<CloudCreatePaymentOrderResponse | null>(null)
+  const [paymentCheckoutOpen, setPaymentCheckoutOpen] = useState(false)
   const [paymentQrDataUrl, setPaymentQrDataUrl] = useState<string | null>(null)
   const [paymentPolling, setPaymentPolling] = useState(false)
   const [paymentPollCountdown, setPaymentPollCountdown] = useState(0)
   const [refreshingPaymentStatus, setRefreshingPaymentStatus] = useState(false)
+  const [closingPaymentCheckout, setClosingPaymentCheckout] = useState(false)
   const [lastPaymentCheckedAt, setLastPaymentCheckedAt] = useState<string | null>(null)
-  const [vipCloseConfirmOpen, setVipCloseConfirmOpen] = useState(false)
   const [manualHelpVisible, setManualHelpVisible] = useState(false)
   const paidNotifiedOrderRef = useRef<string | null>(null)
   const planLabel = useMemo(() => formatPlanLabel(plan.planCode, plan.name), [plan.name, plan.planCode])
-  const planExpiryLabel = useMemo(() => {
-    if (!planExpiresAt) return '未设置'
-    return new Date(planExpiresAt).toLocaleString('zh-CN', { hour12: false })
-  }, [planExpiresAt])
-
   const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(userKey.trim().toLowerCase()), [userKey])
 
   useEffect(() => {
@@ -186,6 +183,23 @@ export function UserWorkspace({
       unlisten?.()
     }
   }, [])
+
+  useEffect(() => {
+    if (activeProvider === 'all') {
+      providerTabsContainerRef.current?.scrollTo({
+        left: 0,
+        behavior: 'smooth'
+      })
+      return
+    }
+    const key = activeProvider
+    const node = providerTabRefs.current.get(key)
+    node?.scrollIntoView({
+      behavior: 'smooth',
+      inline: 'center',
+      block: 'nearest'
+    })
+  }, [activeProvider])
 
   useEffect(() => {
     let cancelled = false
@@ -316,18 +330,6 @@ export function UserWorkspace({
     }
   }, [activePayment, cloudToken, onError, onNotify, onRefreshSession])
 
-  const sharedButtonLabel = useMemo(() => {
-    if (syncingSharedPool) {
-      return '共享号池更新中'
-    }
-    if (features.shared_pool_mode === 'sample' && sharedCooldownSeconds > 0) {
-      const minutes = Math.floor(sharedCooldownSeconds / 60)
-      const seconds = sharedCooldownSeconds % 60
-      return `共享号池 ${minutes}:${String(seconds).padStart(2, '0')}`
-    }
-    return '共享号池'
-  }, [features.shared_pool_mode, sharedCooldownSeconds, syncingSharedPool])
-
   const selectedProduct = useMemo(
     () => paymentProducts.find((product) => product.productCode === selectedProductCode) ?? null,
     [paymentProducts, selectedProductCode]
@@ -335,6 +337,16 @@ export function UserWorkspace({
 
   const showUpgradeModes = plan.planCode === 'vip1' && selectedProduct?.planCode === 'vip2'
   const downgradeBlocked = plan.planCode === 'vip2' && selectedProduct?.planCode === 'vip1'
+  const billingQuotes = useMemo(() => {
+    if (!selectedProductCode) {
+      return {}
+    }
+    return {
+      1: paymentQuoteCache[buildQuoteCacheKey(selectedProductCode, 1, 'standard')],
+      6: paymentQuoteCache[buildQuoteCacheKey(selectedProductCode, 6, 'standard')],
+      12: paymentQuoteCache[buildQuoteCacheKey(selectedProductCode, 12, 'standard')]
+    } satisfies Partial<Record<1 | 6 | 12, CloudPaymentQuote>>
+  }, [paymentQuoteCache, selectedProductCode])
 
   const paymentStatusLabel = useMemo(() => {
     switch (activePayment?.order.status) {
@@ -371,6 +383,16 @@ export function UserWorkspace({
     }
     let cancelled = false
     const loadQuote = async () => {
+      const quoteKey = buildQuoteCacheKey(
+        selectedProductCode,
+        selectedPurchaseMode === 'standard' ? selectedBillingMonths : 1,
+        selectedPurchaseMode
+      )
+      const cached = paymentQuoteCache[quoteKey]
+      if (cached) {
+        setPaymentQuote(cached)
+        return
+      }
       try {
         setLoadingPaymentQuote(true)
         const response = await cloudClient.quotePaymentOrder(cloudToken, {
@@ -381,6 +403,10 @@ export function UserWorkspace({
         if (cancelled) {
           return
         }
+        setPaymentQuoteCache((current) => ({
+          ...current,
+          [quoteKey]: response.quote
+        }))
         setPaymentQuote(response.quote)
       } catch (error) {
         if (!cancelled) {
@@ -397,9 +423,51 @@ export function UserWorkspace({
     return () => {
       cancelled = true
     }
-  }, [cloudToken, onError, selectedBillingMonths, selectedProductCode, selectedPurchaseMode, vipDialogOpen])
+  }, [cloudToken, onError, paymentQuoteCache, selectedBillingMonths, selectedProductCode, selectedPurchaseMode, vipDialogOpen])
+
+  useEffect(() => {
+    if (!vipDialogOpen || !selectedProductCode || showUpgradeModes) {
+      return
+    }
+    let cancelled = false
+
+    const warmupQuotes = async () => {
+      const monthsList: Array<1 | 6 | 12> = [1, 6, 12]
+      const missing = monthsList.filter((months) => !paymentQuoteCache[buildQuoteCacheKey(selectedProductCode, months, 'standard')])
+      if (missing.length === 0) {
+        return
+      }
+
+      try {
+        await Promise.all(
+          missing.map(async (months) => {
+            const response = await cloudClient.quotePaymentOrder(cloudToken, {
+              product_code: selectedProductCode,
+              billing_months: months,
+              purchase_mode: 'standard'
+            })
+            if (cancelled) {
+              return
+            }
+            setPaymentQuoteCache((current) => ({
+              ...current,
+              [buildQuoteCacheKey(selectedProductCode, months, 'standard')]: response.quote
+            }))
+          })
+        )
+      } catch {
+        // keep current quote flow working even if warmup partially fails
+      }
+    }
+
+    void warmupQuotes()
+    return () => {
+      cancelled = true
+    }
+  }, [cloudToken, paymentQuoteCache, selectedProductCode, showUpgradeModes, vipDialogOpen])
 
   const hasPendingPayment = activePayment?.order.status === 'pending'
+  const mobileProviderOrder: (QuotaProvider | 'all')[] = ['all', 'codex', 'claude', 'gemini-cli', 'antigravity', 'kimi']
 
   const paymentExpiresCountdown = useMemo(() => {
     if (!activePayment?.order.expiresAt || activePayment.order.status !== 'pending') {
@@ -476,6 +544,7 @@ export function UserWorkspace({
       })
       paidNotifiedOrderRef.current = null
       setActivePayment(response)
+      setPaymentCheckoutOpen(true)
       setLastPaymentCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }))
       setPaymentPollCountdown(3)
       if (!response.checkout.paymentEnabled) {
@@ -493,20 +562,28 @@ export function UserWorkspace({
   const handleOpenVipDialog = () => {
     setManualHelpVisible(false)
     setSelectedBillingMonths(1)
+    setPaymentCheckoutOpen(false)
     setVipDialogOpen(true)
   }
 
   const handleCloseVipDialog = () => {
-    if (hasPendingPayment) {
-      setVipCloseConfirmOpen(true)
-      return
-    }
     setVipDialogOpen(false)
   }
 
-  const confirmCloseVipDialog = () => {
-    setVipCloseConfirmOpen(false)
-    setVipDialogOpen(false)
+  const handleClosePaymentCheckout = async () => {
+    if (activePayment?.order.orderNo && activePayment.order.status === 'pending') {
+      try {
+        setClosingPaymentCheckout(true)
+        const response = await cloudClient.cancelPaymentOrder(cloudToken, activePayment.order.orderNo)
+        setActivePayment((current) => (current ? { ...current, order: response.order } : current))
+      } catch (error) {
+        onError(error instanceof Error ? error.message : String(error))
+        return
+      } finally {
+        setClosingPaymentCheckout(false)
+      }
+    }
+    setPaymentCheckoutOpen(false)
   }
 
   const handleSharedPoolAction = async () => {
@@ -583,6 +660,7 @@ export function UserWorkspace({
   }
 
   const handleOpenClawSetup = async () => {
+    setOpenClawIntroOpen(false)
     setOpenClawDialogOpen(true)
     setOpenClawLogs(['准备开始接入 OpenClaw...'])
     setRunningOpenClawSetup(true)
@@ -605,153 +683,116 @@ export function UserWorkspace({
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
-      <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
-        <div className="flex flex-col gap-4 p-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="badge badge-primary badge-outline badge-lg px-4">用户工作台</div>
-            <div className={`badge badge-lg px-4 ${getStatusTone(cpaState?.status)}`}>
-              {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
+    <main className="mx-auto flex w-full max-w-[390px] flex-col gap-3 px-3 py-3">
+      <section className="rounded-[24px] border border-base-300 bg-base-100 shadow-sm">
+        <div className="flex flex-col gap-4 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <div className="truncate text-sm font-black">{userKey}</div>
+                <div className={`badge badge-xs px-2 ${getStatusTone(cpaState?.status)}`}>
+                  {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
+                </div>
+                <div className="badge badge-outline badge-xs px-2">{planLabel}</div>
+              </div>
             </div>
-            <div className="badge badge-outline px-4">{planLabel}</div>
-            <div className="badge badge-ghost px-4">到期：{planExpiryLabel}</div>
-
-            <div className="join shadow-sm ml-auto">
-              <button className="join-item btn btn-primary btn-sm" disabled={pendingAction !== null} onClick={() => void onStart()}>
-                启动
-              </button>
-              <button className="join-item btn btn-secondary btn-sm" disabled={pendingAction !== null} onClick={() => void onRestart()}>
-                重启
-              </button>
-              <button className="join-item btn btn-warning btn-sm" disabled={pendingAction !== null} onClick={() => void onStop()}>
-                停止
-              </button>
-            </div>
-
-            <button className="btn btn-outline btn-sm" disabled={pendingAction !== null} onClick={() => void onRefresh()}>
-              刷新页面
+            <button className="btn btn-ghost btn-sm btn-square" onClick={() => setSharedPoolInfoOpen(true)} title="共享号池说明">
+              <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
             </button>
+          </div>
 
-            <div
-              className="tooltip tooltip-bottom"
-              data-tip={
-                features.allow_shared_pool
-                  ? features.shared_pool_mode === 'sample'
-                    ? '当前套餐每次随机同步 3 个共享认证文件到本地，可每 30 分钟更新一次。'
-                    : '同步云端共享号池全部认证文件到本地 CPA，可直接参与使用。'
-                  : '共享号池属于付费功能，升级后可一键拉取共享认证文件。'
-              }
-            >
+          <div className="grid gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <button
-                className={`btn btn-sm ${features.allow_shared_pool ? 'btn-accent' : 'btn-outline'}`}
+                className={`btn h-11 rounded-2xl px-0 ${features.allow_shared_pool ? 'btn-accent' : 'btn-outline'}`}
                 onClick={() => void handleSharedPoolAction()}
                 disabled={syncingSharedPool}
               >
+                <span className="truncate">获取账号</span>
                 {syncingSharedPool ? <span className="loading loading-spinner loading-xs" /> : null}
-                {sharedButtonLabel}
+              </button>
+
+              <button
+                className="btn btn-secondary h-11 rounded-2xl px-0"
+                disabled={runningOpenClawSetup}
+                onClick={() => setOpenClawIntroOpen(true)}
+              >
+                {runningOpenClawSetup ? <span className="loading loading-spinner loading-xs" /> : 'OpenClaw'}
+              </button>
+
+              <button className="btn btn-primary h-11 rounded-2xl px-0" onClick={handleOpenVipDialog}>
+                开通会员
               </button>
             </div>
 
-            <button
-              className="btn btn-secondary btn-sm"
-              disabled={runningOpenClawSetup}
-              onClick={() => void handleOpenClawSetup()}
-            >
-              {runningOpenClawSetup ? <span className="loading loading-spinner loading-xs" /> : null}
-              一键接入 OpenClaw
-            </button>
-
-            <button className="btn btn-primary btn-sm" onClick={handleOpenVipDialog}>
-              开通会员
-            </button>
-
-            <button className="btn btn-outline btn-sm" onClick={() => setCardDialogOpen(true)}>
-              购买虚拟卡
-            </button>
-
-            <button className="btn btn-ghost btn-sm" onClick={() => setSharedPoolInfoOpen(true)}>
-              共享号池说明
-            </button>
-
+            <div className="grid grid-cols-2 gap-2">
+              <button className="btn btn-outline btn-sm rounded-2xl" onClick={() => setOauthDialogOpen(true)}>
+                登录自己账号
+              </button>
+              <button className="btn btn-outline btn-sm rounded-2xl" onClick={() => setCardDialogOpen(true)}>
+                购买虚拟卡
+              </button>
+            </div>
           </div>
 
           {normalizingFreeTier ? (
-            <div className="alert alert-warning">
-              <span>正在按免费版规则整理本地认证文件，请稍候。</span>
+            <div className="alert alert-warning py-2 text-sm">
+              <span>正在按免费版规则整理认证文件。</span>
             </div>
           ) : null}
 
           {loadError ? (
-            <div className="alert alert-error">
+            <div className="alert alert-error py-2 text-sm">
               <span>{loadError}</span>
             </div>
           ) : null}
         </div>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="rounded-box border border-base-300 bg-base-100 shadow-sm">
-          <div className="border-b border-base-200 px-4 py-4">
-            <div className="text-xs font-medium uppercase tracking-[0.28em] text-base-content/45">模型提供商</div>
-            <h3 className="mt-2 text-lg font-bold">Provider</h3>
-          </div>
-          <ul className="menu gap-2 p-3">
-            <li className="menu-title px-2 py-1 text-[11px] uppercase tracking-[0.22em] text-base-content/40">能力入口</li>
-            <li>
-              <button
-                className="justify-between rounded-box"
-                onClick={() => void handleSharedPoolAction()}
-              >
-                <span>云端</span>
-                <span className={`badge badge-sm ${features.allow_shared_pool ? 'badge-info' : 'badge-ghost'}`}>
-                  {features.allow_shared_pool ? planLabel : 'Free'}
-                </span>
-              </button>
-            </li>
-            <li className="menu-title px-2 pt-3 pb-1 text-[11px] uppercase tracking-[0.22em] text-base-content/40">模型提供商</li>
-            <li>
-              <button
-                className={`justify-between rounded-box ${activeProvider === 'all' ? 'menu-active bg-primary text-primary-content' : ''}`}
-                onClick={() => setActiveProvider('all')}
-              >
-                <span>全部</span>
-                <span className={`badge badge-sm ${activeProvider === 'all' ? 'badge-neutral' : 'badge-ghost'}`}>
-                  {Object.values(providerCounts).reduce((sum, value) => sum + (value ?? 0), 0)}
-                </span>
-              </button>
-            </li>
-            {PROVIDER_ORDER.map((provider) => {
-              const meta = PROVIDER_META[provider]
-              const active = provider === activeProvider
-              return (
-                <li key={provider}>
+      <section className="rounded-[24px] border border-base-300 bg-base-100 shadow-sm">
+        <div className="border-b border-base-200 px-2.5 py-2.5">
+          <div ref={providerTabsContainerRef} className="-mx-1 overflow-x-auto scrollbar-none">
+            <div className="tabs tabs-box tabs-sm inline-flex min-w-full flex-nowrap gap-1 bg-transparent px-1">
+              {mobileProviderOrder.map((provider) => {
+                const active = provider === activeProvider
+                const label = provider === 'all' ? '全部' : PROVIDER_META[provider].label
+                const count =
+                  provider === 'all'
+                    ? Object.values(providerCounts).reduce((sum, value) => sum + (value ?? 0), 0)
+                    : (providerCounts[provider] ?? 0)
+                return (
                   <button
-                    className={`justify-between rounded-box ${active ? 'menu-active bg-primary text-primary-content' : ''}`}
+                    key={provider}
+                    ref={(node) => {
+                      if (node) {
+                        providerTabRefs.current.set(provider, node)
+                      } else {
+                        providerTabRefs.current.delete(provider)
+                      }
+                    }}
+                    className={`tab h-9 min-w-fit whitespace-nowrap rounded-full px-3 text-xs font-medium ${active ? 'tab-active bg-primary text-primary-content' : ''}`}
                     onClick={() => setActiveProvider(provider)}
                   >
-                    <span>{meta.label}</span>
-                    <span className={`badge badge-sm ${active ? 'badge-neutral' : 'badge-ghost'}`}>
-                      {providerCounts[provider] ?? 0}
+                    {label}
+                    <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${active ? 'bg-primary-content/15 text-primary-content' : 'bg-base-300 text-base-content/65'}`}>
+                      {count}
                     </span>
                   </button>
-                </li>
-              )
-            })}
-          </ul>
-        </aside>
+                )
+              })}
+            </div>
+          </div>
+        </div>
 
-        <div className="rounded-box border border-base-300 bg-base-100 px-4 pb-4 shadow-sm">
+        <div className="px-2 pb-2 pt-1.5">
           <QuotaPanel
             cpaRunning={cpaState?.status === 'running'}
             activeProvider={activeProvider}
-            sourceFilter={quotaSourceFilter}
-            onSourceFilterChange={setQuotaSourceFilter}
             showHeader={false}
             compactUserMode
             maxEnabledAuthFiles={features.max_enabled_auth_files}
             allowAutoRotation={features.allow_auto_rotation}
-                onUpgradeVip={handleOpenVipDialog}
-            onOpenOauth={() => setOauthDialogOpen(true)}
+            onUpgradeVip={handleOpenVipDialog}
             onProviderCountsChange={setProviderCounts}
             onNotify={onNotify}
             onError={onError}
@@ -760,21 +801,19 @@ export function UserWorkspace({
       </section>
 
       <dialog className={`modal ${vipDialogOpen ? 'modal-open' : ''}`}>
-        <div className="modal-box max-w-6xl">
+        <div className="modal-box max-w-2xl">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h3 className="text-xl font-bold">开通会员</h3>
-              <p className="mt-3 text-sm text-base-content/70">当前套餐为 <span className="font-semibold">{planLabel}</span>。请选择套餐后完成支付，系统会自动开通对应会员权益。</p>
             </div>
             <button className="btn btn-ghost btn-sm btn-circle" onClick={handleCloseVipDialog}>
               ✕
             </button>
           </div>
-          <div className="mt-4 grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
-            <div className="space-y-4">
-              <div className="grid gap-3">
+          <div className="mt-4 space-y-4">
+              <div className="grid grid-cols-2 gap-2.5">
                 {loadingPaymentProducts ? (
-                  <div className="flex items-center gap-2 text-sm text-base-content/60">
+                  <div className="col-span-2 flex items-center gap-2 text-sm text-base-content/60">
                     <span className="loading loading-spinner loading-xs"></span>
                     正在加载可购买套餐
                   </div>
@@ -785,30 +824,29 @@ export function UserWorkspace({
                   return (
                     <button
                       key={product.id}
-                      className={`rounded-box border p-4 text-left transition ${active ? 'border-primary bg-primary/5 shadow-sm' : 'border-base-300 bg-base-100'} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                      className={`rounded-2xl border p-3 text-left transition ${active ? 'border-primary bg-primary/5 shadow-sm ring-1 ring-primary/15' : 'border-base-300 bg-base-100'} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
                       onClick={() => {
                         if (disabled) return
                         setSelectedProductCode(product.productCode)
                       }}
                       disabled={disabled}
                     >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0 flex-1">
-                          <div className="text-lg font-semibold">{product.displayName}</div>
-                          <div className="mt-1 text-sm text-base-content/60 line-clamp-3">{product.description}</div>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <div className="text-2xl font-bold">¥{(product.priceAmount / 100).toFixed(2)}</div>
-                          <div className="mt-1 text-xs text-base-content/50">月付起</div>
-                        </div>
-                      </div>
+                      <div className="text-lg font-semibold leading-none">{product.displayName}</div>
                     </button>
                   )
                 })}
               </div>
 
               <div className="rounded-box border border-base-300 bg-base-100 p-4 space-y-4">
-                <div className="text-sm font-semibold">购买方案</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm font-semibold">购买方案</div>
+                  {loadingPaymentQuote ? (
+                    <div className="flex items-center gap-1 text-xs text-base-content/55">
+                      <span className="loading loading-spinner loading-xs" />
+                      获取价格中
+                    </div>
+                  ) : null}
+                </div>
                 {showUpgradeModes ? (
                   <div className="space-y-3">
                     <div className="join">
@@ -823,50 +861,48 @@ export function UserWorkspace({
                         className={`join-item btn btn-sm ${selectedPurchaseMode === 'upgrade_replace_month' ? 'btn-primary' : 'btn-outline'}`}
                         onClick={() => setSelectedPurchaseMode('upgrade_replace_month')}
                         disabled={hasPendingPayment}
-                      >
-                        只开 1 个月 Pro Max
-                      </button>
-                    </div>
-                    <p className="text-xs text-base-content/60">
-                      方案 1 会按当前 Pro 剩余月份补差价，升级后到期时间保持不变。方案 2 会放弃当前 Pro 剩余时长，重新开通 1 个月 Pro Max。
-                    </p>
+                        >
+                          只开 1 个月 Pro Max
+                        </button>
+                      </div>
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <div className="join">
+                    <div className="grid grid-cols-3 gap-2">
                       {[1, 6, 12].map((months) => (
                         <button
                           key={months}
-                          className={`join-item btn btn-sm ${selectedBillingMonths === months ? 'btn-primary' : 'btn-outline'}`}
+                          className={`rounded-2xl border p-3 text-left transition ${
+                            selectedBillingMonths === months
+                              ? 'border-primary bg-primary/8 ring-1 ring-primary/20'
+                              : 'border-base-300 bg-base-100'
+                          }`}
                           onClick={() => setSelectedBillingMonths(months as 1 | 6 | 12)}
                           disabled={hasPendingPayment || downgradeBlocked}
                         >
-                          {months === 1 ? '月付' : months === 6 ? '半年付 9 折' : '年付 7 折'}
+                          <div className="text-sm font-semibold">{months === 1 ? '月付' : months === 6 ? '半年付' : '年付'}</div>
+                          <div className="mt-2 min-h-[28px]">
+                            {billingQuotes[months as 1 | 6 | 12] ? (
+                              <div className="text-lg font-bold">
+                                ¥{(billingQuotes[months as 1 | 6 | 12]!.amount / 100).toFixed(2)}
+                              </div>
+                            ) : loadingPaymentQuote ? (
+                              <div className="flex items-center gap-1 text-xs text-base-content/55">
+                                <span className="loading loading-spinner loading-xs" />
+                                加载中
+                              </div>
+                            ) : null}
+                          </div>
                         </button>
                       ))}
                     </div>
                     {downgradeBlocked ? <p className="text-xs text-error">当前已是 Pro Max，暂不支持降级购买 Pro。</p> : null}
                   </div>
                 )}
-
-                <div className="rounded-box bg-base-200/60 p-4">
-                  <div className="text-sm font-semibold text-base-content">当前报价</div>
-                  {loadingPaymentQuote ? (
-                    <div className="mt-3 flex items-center gap-2 text-sm text-base-content/60">
-                      <span className="loading loading-spinner loading-xs"></span>
-                      正在计算价格
-                    </div>
-                  ) : paymentQuote ? (
-                    <div className="mt-3 space-y-2 text-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="font-medium">{paymentQuote.title}</div>
-                        <div className="text-xl font-bold">¥{(paymentQuote.amount / 100).toFixed(2)}</div>
-                      </div>
-                      <div className="text-base-content/65">{paymentQuote.description}</div>
-                    </div>
-                  ) : (
-                    <div className="mt-3 text-sm text-base-content/60">选择套餐后，这里会显示后端计算后的正式支付金额。</div>
-                  )}
+                <div className="rounded-2xl bg-base-200/70 px-3 py-3 text-sm text-base-content/75">
+                  {selectedProduct?.planCode === 'vip2'
+                    ? '支持完整共享号池、自动切换、云端备份。'
+                    : '支持自动切换、个人云同步、共享号池随机 3 个。'}
                 </div>
               </div>
 
@@ -893,93 +929,11 @@ export function UserWorkspace({
                     {creatingPaymentOrder ? <span className="loading loading-spinner loading-xs"></span> : null}
                     {hasPendingPayment ? '当前订单处理中' : '立即支付'}
                   </button>
-                  <button
-                    className="btn btn-outline btn-sm"
-                    onClick={() => window.open(activePayment?.checkout.codeUrl || '#', '_blank', 'noopener,noreferrer')}
-                    disabled={!activePayment?.checkout.codeUrl}
-                  >
-                    打开支付页面
-                  </button>
                 </div>
               </div>
-            </div>
-
-            <div className="space-y-4">
-              <div className="rounded-box border border-base-300 bg-base-100 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-base-content">支付状态</div>
-                    <div className="mt-1 text-xs text-base-content/55">{selectedPaymentProvider === 'wechat' ? '请使用微信扫码完成支付' : '请使用支付宝扫码完成支付'}</div>
-                  </div>
-                  <div className={`badge ${activePayment?.order.status === 'paid' ? 'badge-success' : 'badge-ghost'}`}>{paymentStatusLabel}</div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-base-content/60">
-                  {activePayment?.order.status === 'pending' ? (
-                    <>
-                      <span className={`badge badge-sm ${paymentPolling ? 'badge-info' : 'badge-ghost'}`}>
-                        {paymentPolling ? '轮询中' : '等待轮询'}
-                      </span>
-                      <span>{paymentPollingHint}</span>
-                      {paymentExpiresCountdown ? <span>剩余支付时间：{paymentExpiresCountdown}</span> : null}
-                      {lastPaymentCheckedAt ? <span>最近检查：{lastPaymentCheckedAt}</span> : null}
-                    </>
-                  ) : (
-                    <span>{paymentPollingHint}</span>
-                  )}
-                  <button
-                    className="btn btn-ghost btn-xs ml-auto"
-                    onClick={() => void handleRefreshPaymentOrder()}
-                    disabled={!activePayment?.order.orderNo || refreshingPaymentStatus}
-                  >
-                    {refreshingPaymentStatus ? <span className="loading loading-spinner loading-xs" /> : null}
-                    立即检查
-                  </button>
-                </div>
-                <div className="mt-4 flex min-h-[280px] items-center justify-center rounded-box bg-base-200/60 p-4">
-                  {activePayment?.order.status === 'paid' ? (
-                    <div className="space-y-4 text-center">
-                      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-success/15 text-3xl text-success">
-                        ✓
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-lg font-semibold text-base-content">支付成功</div>
-                        <div className="text-sm text-base-content/65">会员权益已到账，你可以关闭窗口继续使用。</div>
-                      </div>
-                    </div>
-                  ) : activePayment?.order.status === 'closed' || activePayment?.order.status === 'failed' || activePayment?.order.status === 'refunded' ? (
-                    <div className="space-y-4 text-center">
-                      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-warning/15 text-3xl text-warning">
-                        !
-                      </div>
-                      <div className="space-y-1">
-                        <div className="text-lg font-semibold text-base-content">当前订单不可继续支付</div>
-                        <div className="text-sm text-base-content/65">请返回左侧重新创建新的支付订单。</div>
-                      </div>
-                    </div>
-                  ) : paymentQrDataUrl ? (
-                    <img src={paymentQrDataUrl} alt="支付二维码" className="h-64 w-64 rounded-box bg-white p-3" />
-                  ) : (
-                    <div className="space-y-3 text-center text-sm text-base-content/60">
-                      <div>创建订单后，这里会显示对应的支付二维码。</div>
-                      <div>如暂时无法在线支付，可展开下方人工协助通道。</div>
-                    </div>
-                  )}
-                </div>
-                {activePayment ? (
-                  <div className="mt-4 space-y-2 text-xs text-base-content/65">
-                    <div>订单号：{activePayment.order.orderNo}</div>
-                    <div>套餐：{activePayment.product.displayName}</div>
-                    <div>金额：¥{(activePayment.order.amount / 100).toFixed(2)}</div>
-                    <div>购买方式：{activePayment.order.purchaseMode === 'upgrade_diff_all' ? '补全部差价升级' : activePayment.order.purchaseMode === 'upgrade_replace_month' ? '重新开通 1 个月 Pro Max' : activePayment.order.billingMonths === 12 ? '年付' : activePayment.order.billingMonths === 6 ? '半年付' : '月付'}</div>
-                    {activePayment.order.expiresAt ? <div>订单有效期至：{new Date(activePayment.order.expiresAt).toLocaleString('zh-CN', { hour12: false })}</div> : null}
-                    {activePayment.checkout.message ? <div>订单说明：{activePayment.checkout.message}</div> : null}
-                  </div>
-                ) : null}
-              </div>
-
               <div className="rounded-box bg-base-200/60 p-4 text-sm text-base-content/70">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>如需人工协助开通，可使用下方人工通道。</div>
+                  <div>人工协助</div>
                   <button className="btn btn-outline btn-sm" onClick={() => setManualHelpVisible((value) => !value)}>
                     {manualHelpVisible ? '收起人工协助' : '展开人工协助'}
                   </button>
@@ -996,42 +950,116 @@ export function UserWorkspace({
                     <div className="space-y-3">
                       <div>
                         <div className="font-semibold text-base-content">人工协助说明</div>
-                        <div className="mt-1">扫码后说明账号和所需套餐，管理员会在后台协助完成会员开通或虚拟卡处理。</div>
-                      </div>
-                      <div>
-                        <div className="font-semibold text-base-content">适用场景</div>
-                        <div className="mt-1">适用于支付通道异常、需要人工确认，或希望先咨询套餐差异的情况。</div>
+                        <div className="mt-1">扫码后说明账号和所需套餐，管理员会在后台协助处理。</div>
                       </div>
                     </div>
                   </div>
                 ) : null}
               </div>
-            </div>
-          </div>
-          <div className="modal-action">
-            <button className="btn btn-outline" onClick={() => setCardDialogOpen(true)}>
-              购买虚拟卡
-            </button>
-            <button className="btn btn-primary" onClick={handleCloseVipDialog}>
-              知道了
-            </button>
           </div>
         </div>
       </dialog>
 
-      <dialog className={`modal ${vipCloseConfirmOpen ? 'modal-open' : ''}`}>
-        <div className="modal-box max-w-md">
-          <h3 className="text-lg font-bold">确认关闭支付弹窗</h3>
-          <p className="mt-3 text-sm text-base-content/70">
-            当前订单仍在等待支付。关闭后系统仍会继续轮询支付结果，但你将暂时看不到二维码和状态变化。
-          </p>
-          <div className="modal-action">
-            <button className="btn btn-outline" onClick={() => setVipCloseConfirmOpen(false)}>
-              继续支付
+      <dialog className={`modal ${paymentCheckoutOpen ? 'modal-open' : ''}`}>
+        <div className="modal-box max-w-4xl">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-xl font-bold">立即支付</h3>
+              <p className="mt-1 text-sm text-base-content/55">{selectedPaymentProvider === 'wechat' ? '请使用微信扫码完成支付' : '请使用支付宝扫码完成支付'}</p>
+            </div>
+            <button className="btn btn-ghost btn-sm btn-circle" onClick={() => void handleClosePaymentCheckout()} disabled={closingPaymentCheckout}>
+              {closingPaymentCheckout ? <span className="loading loading-spinner loading-xs" /> : '✕'}
             </button>
-            <button className="btn btn-primary" onClick={confirmCloseVipDialog}>
-              确认关闭
-            </button>
+          </div>
+
+          <div className="mt-4 grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+            <div className="rounded-[28px] bg-base-200/70 p-5">
+              <div className="mb-4 text-base font-semibold">{selectedPaymentProvider === 'wechat' ? '微信支付' : '支付宝支付'}</div>
+              <div className="flex min-h-[290px] items-center justify-center rounded-[24px] bg-base-100 p-4">
+                {activePayment?.order.status === 'paid' ? (
+                  <div className="space-y-4 text-center">
+                    <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-success/15 text-3xl text-success">✓</div>
+                    <div className="text-lg font-semibold">支付成功</div>
+                  </div>
+                ) : activePayment?.order.status === 'closed' || activePayment?.order.status === 'failed' || activePayment?.order.status === 'refunded' ? (
+                  <div className="space-y-3 text-center">
+                    <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-warning/15 text-3xl text-warning">!</div>
+                    <div className="text-lg font-semibold">订单不可继续支付</div>
+                  </div>
+                ) : paymentQrDataUrl ? (
+                  <img src={paymentQrDataUrl} alt="支付二维码" className="h-64 w-64 rounded-box bg-white p-3" />
+                ) : (
+                  <div className="text-sm text-base-content/60">正在生成二维码</div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-[28px] border border-base-300 bg-base-100 p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-lg font-semibold">{activePayment?.product.displayName ?? selectedProduct?.displayName ?? '会员套餐'}</div>
+                <div className={`badge ${activePayment?.order.status === 'paid' ? 'badge-success' : 'badge-ghost'}`}>{paymentStatusLabel}</div>
+              </div>
+
+              <div className="mt-5 space-y-4 text-sm">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-base-content/55">购买方案</span>
+                  <span className="font-medium">
+                    {activePayment?.order.purchaseMode === 'upgrade_diff_all'
+                      ? '补全部差价升级'
+                      : activePayment?.order.purchaseMode === 'upgrade_replace_month'
+                        ? '重新开通 1 个月 Pro Max'
+                        : activePayment?.order.billingMonths === 12
+                          ? '年付'
+                          : activePayment?.order.billingMonths === 6
+                            ? '半年付'
+                            : '月付'}
+                  </span>
+                </div>
+                {activePayment?.order.orderNo ? (
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-base-content/55">订单号</span>
+                    <span className="max-w-[15rem] truncate font-medium" title={activePayment.order.orderNo}>
+                      {activePayment.order.orderNo}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="my-5 border-t border-base-200" />
+
+              <div className="space-y-3">
+                <div className="rounded-2xl bg-error/8 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-base-content/60">支付金额</span>
+                    <span className="text-4xl font-black text-error">
+                      ¥{activePayment ? (activePayment.order.amount / 100).toFixed(2) : paymentQuote ? (paymentQuote.amount / 100).toFixed(2) : '--'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-xs text-base-content/60">
+                  {activePayment?.order.status === 'pending' ? (
+                    <>
+                      <span className={`badge badge-sm ${paymentPolling ? 'badge-info' : 'badge-ghost'}`}>
+                        {paymentPolling ? '轮询中' : '等待轮询'}
+                      </span>
+                      {paymentExpiresCountdown ? <span>剩余 {paymentExpiresCountdown}</span> : null}
+                      {lastPaymentCheckedAt ? <span>最近检查 {lastPaymentCheckedAt}</span> : null}
+                    </>
+                  ) : (
+                    <span>{paymentPollingHint}</span>
+                  )}
+                  <button
+                    className="btn btn-ghost btn-xs ml-auto"
+                    onClick={() => void handleRefreshPaymentOrder()}
+                    disabled={!activePayment?.order.orderNo || refreshingPaymentStatus}
+                  >
+                    {refreshingPaymentStatus ? <span className="loading loading-spinner loading-xs" /> : null}
+                    立即检查
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </dialog>
@@ -1132,18 +1160,34 @@ export function UserWorkspace({
         </div>
       </dialog>
 
+      <dialog className={`modal ${openClawIntroOpen ? 'modal-open' : ''}`}>
+        <div className="modal-box max-w-md">
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-xl font-bold">OpenClaw</h3>
+              <p className="mt-2 text-sm leading-6 text-base-content/70">
+                这个按钮会自动把当前本地代理接入 OpenClaw，并写入 provider 和模型配置。
+              </p>
+            </div>
+            <div className="modal-action">
+              <button className="btn btn-outline" onClick={() => setOpenClawIntroOpen(false)}>
+                取消
+              </button>
+              <button className="btn btn-primary" onClick={() => void handleOpenClawSetup()}>
+                继续
+              </button>
+            </div>
+          </div>
+        </div>
+      </dialog>
+
       <dialog className={`modal ${openClawDialogOpen ? 'modal-open' : ''}`}>
         <div className="modal-box max-w-3xl">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h3 className="text-xl font-bold">OpenClaw 接入日志</h3>
-              <p className="mt-1 text-sm text-base-content/60">点击后会自动执行接入流程。建议在完成前不要关闭这个窗口。</p>
             </div>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={runningOpenClawSetup}
-              onClick={() => setOpenClawDialogOpen(false)}
-            >
+            <button className="btn btn-ghost btn-sm" onClick={() => setOpenClawDialogOpen(false)}>
               关闭
             </button>
           </div>
@@ -1167,11 +1211,7 @@ export function UserWorkspace({
                 重新执行
               </button>
             ) : null}
-            <button
-              className="btn btn-primary"
-              disabled={runningOpenClawSetup}
-              onClick={() => setOpenClawDialogOpen(false)}
-            >
+            <button className="btn btn-primary" onClick={() => setOpenClawDialogOpen(false)}>
               知道了
             </button>
           </div>
