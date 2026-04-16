@@ -12,6 +12,7 @@ interface CloudAdminPanelProps {
 type AdminSection = 'overview' | 'users' | 'payments' | 'publish'
 
 export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelProps) {
+  const USERS_PAGE_SIZE = 10
   const releaseInputRef = useRef<HTMLInputElement | null>(null)
   const [section, setSection] = useState<AdminSection>('overview')
   const [users, setUsers] = useState<CloudAdminUserSummary[]>([])
@@ -21,6 +22,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const [paymentOrders, setPaymentOrders] = useState<CloudPaymentOrder[]>([])
   const [paymentOrderStatusFilter, setPaymentOrderStatusFilter] = useState<'all' | 'pending' | 'paid' | 'closed' | 'failed' | 'refunded'>('all')
   const [paymentOrderQuery, setPaymentOrderQuery] = useState('')
+  const [userPage, setUserPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadingRelease, setUploadingRelease] = useState(false)
@@ -273,6 +275,9 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const activeProducts = paymentProducts.filter((item) => item.status === 'active').length
   const pendingOrders = paymentOrders.filter((item) => item.status === 'pending').length
   const recentOrders = paymentOrders.slice(0, 5)
+  const totalUserPages = Math.max(1, Math.ceil(users.length / USERS_PAGE_SIZE))
+  const currentUserPage = Math.min(userPage, totalUserPages)
+  const paginatedUsers = users.slice((currentUserPage - 1) * USERS_PAGE_SIZE, currentUserPage * USERS_PAGE_SIZE)
 
   return (
     <div className="mt-4 flex flex-col gap-6">
@@ -285,12 +290,8 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
       />
       <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
         <div className="flex flex-col gap-4 p-6 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="badge badge-outline badge-primary">Cloud Admin</div>
-            <h2 className="mt-2 text-3xl font-black">云端后台</h2>
-            <p className="mt-2 text-sm text-base-content/60">
-              管理用户套餐、支付商品、共享号池和应用更新发布。
-            </p>
+          <div className="flex items-center gap-3">
+            <h2 className="text-3xl font-black">云端后台</h2>
           </div>
           <button className="btn btn-outline" disabled={loading} onClick={() => void load(true)}>
             {loading ? <span className="loading loading-spinner loading-xs"></span> : null}
@@ -299,17 +300,17 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
         </div>
       </section>
 
-      <div className="tabs tabs-boxed bg-base-200 p-1">
-        <button className={`tab ${section === 'overview' ? 'tab-active' : ''}`} onClick={() => setSection('overview')}>
+      <div className="tabs tabs-boxed bg-base-200 p-1.5">
+        <button className={`tab text-base font-semibold transition-colors ${section === 'overview' ? 'tab-active text-primary' : 'text-base-content/70'}`} onClick={() => setSection('overview')}>
           总览
         </button>
-        <button className={`tab ${section === 'users' ? 'tab-active' : ''}`} onClick={() => setSection('users')}>
+        <button className={`tab text-base font-semibold transition-colors ${section === 'users' ? 'tab-active text-primary' : 'text-base-content/70'}`} onClick={() => setSection('users')}>
           用户
         </button>
-        <button className={`tab ${section === 'payments' ? 'tab-active' : ''}`} onClick={() => setSection('payments')}>
+        <button className={`tab text-base font-semibold transition-colors ${section === 'payments' ? 'tab-active text-primary' : 'text-base-content/70'}`} onClick={() => setSection('payments')}>
           支付
         </button>
-        <button className={`tab ${section === 'publish' ? 'tab-active' : ''}`} onClick={() => setSection('publish')}>
+        <button className={`tab text-base font-semibold transition-colors ${section === 'publish' ? 'tab-active text-primary' : 'text-base-content/70'}`} onClick={() => setSection('publish')}>
           发布
         </button>
       </div>
@@ -387,14 +388,14 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                 <h3 className="text-xl font-bold">更新发布</h3>
                 <p className="mt-1 text-sm text-base-content/60">上传新安装包后，后端会自动刷新 latest.json。</p>
               </div>
-              <div className="grid gap-4 p-6">
-                <label className="form-control">
-                  <span className="label-text mb-2 text-sm font-medium">版本号</span>
-                  <input className="input input-bordered" placeholder="例如 0.1.7" value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} />
+              <div className="grid gap-5 p-6">
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-base-content/70">版本号</span>
+                  <input className="input input-bordered h-12" placeholder="例如 0.1.7" value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} />
                 </label>
-                <label className="form-control">
-                  <span className="label-text mb-2 text-sm font-medium">更新说明</span>
-                  <input className="input input-bordered" placeholder="可选，写到 latest.json 里" value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} />
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-base-content/70">更新说明</span>
+                  <input className="input input-bordered h-12" placeholder="可选，写到 latest.json 里" value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} />
                 </label>
                 <button className="btn btn-secondary" disabled={uploadingRelease} onClick={() => releaseInputRef.current?.click()}>
                   {uploadingRelease ? <span className="loading loading-spinner loading-xs"></span> : null}
@@ -426,7 +427,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                 </tr>
               </thead>
               <tbody>
-                {users.map((item) => (
+                {paginatedUsers.map((item) => (
                   <tr key={item.user.id}>
                     <td>{item.user.id}</td>
                     <td>{item.user.email}</td>
@@ -487,6 +488,27 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-base-300 px-6 py-4">
+            <div className="text-sm text-base-content/60">
+              第 {currentUserPage} / {totalUserPages} 页，共 {users.length} 个用户
+            </div>
+            <div className="join">
+              <button
+                className="btn btn-sm join-item"
+                disabled={currentUserPage <= 1}
+                onClick={() => setUserPage((page) => Math.max(1, page - 1))}
+              >
+                上一页
+              </button>
+              <button
+                className="btn btn-sm join-item"
+                disabled={currentUserPage >= totalUserPages}
+                onClick={() => setUserPage((page) => Math.min(totalUserPages, page + 1))}
+              >
+                下一页
+              </button>
+            </div>
           </div>
         </section>
       ) : null}
@@ -710,14 +732,14 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
               <h3 className="text-xl font-bold">应用更新</h3>
               <p className="mt-1 text-sm text-base-content/60">上传安装包后自动更新下载清单。</p>
             </div>
-            <div className="grid gap-4 p-6">
-              <label className="form-control">
-                <span className="label-text mb-2 text-sm font-medium">版本号</span>
-                <input className="input input-bordered" placeholder="例如 0.1.7" value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} />
+            <div className="grid gap-5 p-6">
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-base-content/70">版本号</span>
+                <input className="input input-bordered h-12" placeholder="例如 0.1.7" value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} />
               </label>
-              <label className="form-control">
-                <span className="label-text mb-2 text-sm font-medium">更新说明</span>
-                <input className="input input-bordered" placeholder="可选，写到 latest.json 里" value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} />
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-base-content/70">更新说明</span>
+                <input className="input input-bordered h-12" placeholder="可选，写到 latest.json 里" value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} />
               </label>
               <button className="btn btn-secondary" disabled={uploadingRelease} onClick={() => releaseInputRef.current?.click()}>
                 {uploadingRelease ? <span className="loading loading-spinner loading-xs"></span> : null}

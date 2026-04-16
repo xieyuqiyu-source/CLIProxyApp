@@ -959,7 +959,7 @@ function App() {
               className={`tab ${adminTab === 'cloud-admin' ? 'tab-active' : ''}`}
               onClick={() => setAdminTab('cloud-admin')}
             >
-              云管理
+              后台管理
             </button>
             <button
               role="tab"
@@ -1669,30 +1669,32 @@ function App() {
       )}
 
       <dialog ref={passwordDialogRef} className="modal">
-        <div className="modal-box">
-          <h3 className="text-lg font-bold">修改密码</h3>
-          <p className="py-2 text-sm text-base-content/60">当前账号：{session?.user.email}</p>
-          <div className="space-y-4">
-            <label className="form-control">
-              <span className="label-text mb-2">当前密码</span>
+        <div className="modal-box max-w-lg">
+          <div className="space-y-1">
+            <h3 className="text-2xl font-black">修改密码</h3>
+            <p className="text-sm text-base-content/60">当前账号：{session?.user.email}</p>
+          </div>
+          <div className="mt-6 space-y-5">
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-base-content/70">当前密码</span>
               <input
                 type="password"
-                className="input input-bordered"
+                className="input input-bordered h-12"
                 value={currentPassword}
                 onChange={(event) => setCurrentPassword(event.target.value)}
               />
             </label>
-            <label className="form-control">
-              <span className="label-text mb-2">新密码</span>
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold text-base-content/70">新密码</span>
               <input
                 type="password"
-                className="input input-bordered"
+                className="input input-bordered h-12"
                 value={nextPassword}
                 onChange={(event) => setNextPassword(event.target.value)}
               />
             </label>
           </div>
-          <div className="modal-action">
+          <div className="modal-action mt-8">
             <form method="dialog">
               <button className="btn">取消</button>
             </form>
