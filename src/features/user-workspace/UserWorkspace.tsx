@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { QuotaPanel } from '../quota/QuotaPanel'
 import { PROVIDER_META, PROVIDER_ORDER } from '../quota/providerMeta'
@@ -96,13 +96,26 @@ function buildQuoteCacheKey(productCode: string, billingMonths: number, purchase
   return `${productCode}:${billingMonths}:${purchaseMode}`
 }
 
+function isDirectQrImageUrl(value: string): boolean {
+  const trimmed = value.trim()
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return false
+  }
+  try {
+    const url = new URL(trimmed)
+    return /qrcode/i.test(url.pathname) || /\.(png|jpg|jpeg|webp|gif)$/i.test(url.pathname)
+  } catch {
+    return false
+  }
+}
+
 export function UserWorkspace({
   plan,
   features,
+  planExpiresAt,
   userKey,
   cloudToken,
   cpaState,
-  loadError,
   normalizingFreeTier,
   onRefreshSession,
   onNotify,
@@ -117,6 +130,7 @@ export function UserWorkspace({
   const [sharedPoolInfoOpen, setSharedPoolInfoOpen] = useState(false)
   const [cardDialogOpen, setCardDialogOpen] = useState(false)
   const [syncingSharedPool, setSyncingSharedPool] = useState(false)
+  const [quotaRefreshToken, setQuotaRefreshToken] = useState(0)
   const [, setSharedCooldownSeconds] = useState(0)
   const [openClawIntroOpen, setOpenClawIntroOpen] = useState(false)
   const [openClawDialogOpen, setOpenClawDialogOpen] = useState(false)
@@ -124,6 +138,7 @@ export function UserWorkspace({
   const [openClawLogs, setOpenClawLogs] = useState<string[]>([])
   const [paymentProducts, setPaymentProducts] = useState<CloudPaymentProduct[]>([])
   const [loadingPaymentProducts, setLoadingPaymentProducts] = useState(false)
+  const [preparingVipDialog, setPreparingVipDialog] = useState(false)
   const [creatingPaymentOrder, setCreatingPaymentOrder] = useState(false)
   const [selectedProductCode, setSelectedProductCode] = useState<string>('')
   const [selectedBillingMonths, setSelectedBillingMonths] = useState<1 | 6 | 12>(1)
@@ -135,7 +150,6 @@ export function UserWorkspace({
   const [activePayment, setActivePayment] = useState<CloudCreatePaymentOrderResponse | null>(null)
   const [paymentCheckoutOpen, setPaymentCheckoutOpen] = useState(false)
   const [paymentQrDataUrl, setPaymentQrDataUrl] = useState<string | null>(null)
-  const [paymentPolling, setPaymentPolling] = useState(false)
   const [paymentPollCountdown, setPaymentPollCountdown] = useState(0)
   const [refreshingPaymentStatus, setRefreshingPaymentStatus] = useState(false)
   const [closingPaymentCheckout, setClosingPaymentCheckout] = useState(false)
@@ -143,7 +157,62 @@ export function UserWorkspace({
   const [manualHelpVisible, setManualHelpVisible] = useState(false)
   const paidNotifiedOrderRef = useRef<string | null>(null)
   const planLabel = useMemo(() => formatPlanLabel(plan.planCode, plan.name), [plan.name, plan.planCode])
+  const formattedPlanExpiresAt = useMemo(() => {
+    if (!planExpiresAt) {
+      return null
+    }
+    const value = new Date(planExpiresAt)
+    if (Number.isNaN(value.getTime())) {
+      return null
+    }
+    return value.toLocaleString('zh-CN', { hour12: false })
+  }, [planExpiresAt])
   const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(userKey.trim().toLowerCase()), [userKey])
+
+  const warmupStandardQuotes = useCallback(
+    async (productCode: string) => {
+      const monthsList: Array<1 | 6 | 12> = [1, 6, 12]
+      const missing = monthsList.filter((months) => !paymentQuoteCache[buildQuoteCacheKey(productCode, months, 'standard')])
+      if (missing.length === 0) {
+        return
+      }
+
+      const responses = await Promise.all(
+        missing.map(async (months) => {
+          const response = await cloudClient.quotePaymentOrder(cloudToken, {
+            product_code: productCode,
+            billing_months: months,
+            purchase_mode: 'standard'
+          })
+          return { months, quote: response.quote }
+        })
+      )
+
+      setPaymentQuoteCache((current) => {
+        const next = { ...current }
+        responses.forEach(({ months, quote }) => {
+          next[buildQuoteCacheKey(productCode, months, 'standard')] = quote
+        })
+        return next
+      })
+    },
+    [cloudToken, paymentQuoteCache]
+  )
+
+  const ensurePaymentProductsLoaded = useCallback(async () => {
+    if (paymentProducts.length > 0) {
+      return paymentProducts
+    }
+    setLoadingPaymentProducts(true)
+    try {
+      const response = await cloudClient.listPaymentProducts(cloudToken)
+      const products = response.products ?? []
+      setPaymentProducts(products)
+      return products
+    } finally {
+      setLoadingPaymentProducts(false)
+    }
+  }, [cloudToken, paymentProducts])
 
   useEffect(() => {
     if (features.shared_pool_mode !== 'sample' || features.shared_pool_refresh_minutes <= 0) {
@@ -206,26 +275,19 @@ export function UserWorkspace({
 
     const loadProducts = async () => {
       try {
-        setLoadingPaymentProducts(true)
-        const response = await cloudClient.listPaymentProducts(cloudToken)
+        const products = await ensurePaymentProductsLoaded()
         if (cancelled) {
           return
         }
-        const products = response.products ?? []
-        setPaymentProducts(products)
         setSelectedProductCode((current) => {
           if (current && products.some((product) => product.productCode === current)) {
             return current
           }
-          return products[0]?.productCode ?? ''
+          return products.find((product) => product.planCode === 'vip1')?.productCode ?? products[0]?.productCode ?? ''
         })
       } catch (error) {
         if (!cancelled) {
           onError(error instanceof Error ? error.message : String(error))
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingPaymentProducts(false)
         }
       }
     }
@@ -234,7 +296,7 @@ export function UserWorkspace({
     return () => {
       cancelled = true
     }
-  }, [cloudToken, onError])
+  }, [ensurePaymentProductsLoaded, onError])
 
   useEffect(() => {
     let cancelled = false
@@ -245,6 +307,12 @@ export function UserWorkspace({
         return
       }
       try {
+        if (isDirectQrImageUrl(activePayment.checkout.codeUrl)) {
+          if (!cancelled) {
+            setPaymentQrDataUrl(activePayment.checkout.codeUrl)
+          }
+          return
+        }
         const dataUrl = await QRCode.toDataURL(activePayment.checkout.codeUrl, {
           margin: 1,
           width: 260
@@ -267,12 +335,10 @@ export function UserWorkspace({
 
   useEffect(() => {
     if (!activePayment?.order?.orderNo) {
-      setPaymentPolling(false)
       setPaymentPollCountdown(0)
       return
     }
     if (activePayment.order.status === 'paid' || activePayment.order.status === 'closed' || activePayment.order.status === 'failed' || activePayment.order.status === 'refunded') {
-      setPaymentPolling(false)
       setPaymentPollCountdown(0)
       if (activePayment.order.status === 'paid' && paidNotifiedOrderRef.current !== activePayment.order.orderNo) {
         paidNotifiedOrderRef.current = activePayment.order.orderNo
@@ -283,7 +349,6 @@ export function UserWorkspace({
     }
 
     let cancelled = false
-    setPaymentPolling(true)
     setPaymentPollCountdown(3)
     const countdownTimer = window.setInterval(() => {
       setPaymentPollCountdown((current) => (current <= 1 ? 3 : current - 1))
@@ -323,7 +388,6 @@ export function UserWorkspace({
 
     return () => {
       cancelled = true
-      setPaymentPolling(false)
       setPaymentPollCountdown(0)
       window.clearInterval(timer)
       window.clearInterval(countdownTimer)
@@ -429,42 +493,17 @@ export function UserWorkspace({
     if (!vipDialogOpen || !selectedProductCode || showUpgradeModes) {
       return
     }
-    let cancelled = false
 
     const warmupQuotes = async () => {
-      const monthsList: Array<1 | 6 | 12> = [1, 6, 12]
-      const missing = monthsList.filter((months) => !paymentQuoteCache[buildQuoteCacheKey(selectedProductCode, months, 'standard')])
-      if (missing.length === 0) {
-        return
-      }
-
       try {
-        await Promise.all(
-          missing.map(async (months) => {
-            const response = await cloudClient.quotePaymentOrder(cloudToken, {
-              product_code: selectedProductCode,
-              billing_months: months,
-              purchase_mode: 'standard'
-            })
-            if (cancelled) {
-              return
-            }
-            setPaymentQuoteCache((current) => ({
-              ...current,
-              [buildQuoteCacheKey(selectedProductCode, months, 'standard')]: response.quote
-            }))
-          })
-        )
+        await warmupStandardQuotes(selectedProductCode)
       } catch {
         // keep current quote flow working even if warmup partially fails
       }
     }
 
     void warmupQuotes()
-    return () => {
-      cancelled = true
-    }
-  }, [cloudToken, paymentQuoteCache, selectedProductCode, showUpgradeModes, vipDialogOpen])
+  }, [selectedProductCode, showUpgradeModes, vipDialogOpen, warmupStandardQuotes])
 
   const hasPendingPayment = activePayment?.order.status === 'pending'
   const mobileProviderOrder: (QuotaProvider | 'all')[] = ['all', 'codex', 'claude', 'gemini-cli', 'antigravity', 'kimi']
@@ -481,21 +520,28 @@ export function UserWorkspace({
     return `${minutes}:${String(seconds).padStart(2, '0')}`
   }, [activePayment, paymentPollCountdown, lastPaymentCheckedAt])
 
+  const paymentExpiredLocally = useMemo(() => {
+    if (!activePayment?.order.expiresAt || activePayment.order.status !== 'pending') {
+      return false
+    }
+    return new Date(activePayment.order.expiresAt).getTime() <= Date.now()
+  }, [activePayment, paymentPollCountdown, lastPaymentCheckedAt])
+
   const paymentPollingHint = useMemo(() => {
     if (!activePayment) {
-      return '创建订单后将自动检查支付结果。'
+      return '创建订单后会显示微信支付二维码。'
     }
     if (activePayment.order.status === 'paid') {
-      return '支付已完成，会员权益即将生效。'
+      return '支付已完成，会员权益已经开通。'
     }
-    if (activePayment.order.status === 'closed' || activePayment.order.status === 'failed' || activePayment.order.status === 'refunded') {
-      return '当前订单已结束，请重新创建新的支付订单。'
+    if (paymentExpiredLocally || activePayment.order.status === 'closed' || activePayment.order.status === 'failed' || activePayment.order.status === 'refunded') {
+      return '当前订单已失效，请返回重新发起支付。'
     }
-    if (paymentPolling) {
-      return `系统正在自动确认支付结果，${paymentPollCountdown} 秒后再次查询。`
+    if (paymentExpiresCountdown) {
+      return `支付剩余时间 ${paymentExpiresCountdown}`
     }
-    return '系统正在准备检查支付状态。'
-  }, [activePayment, paymentPollCountdown, paymentPolling])
+    return '正在确认支付状态。'
+  }, [activePayment, paymentExpiredLocally, paymentExpiresCountdown])
 
   const handleRefreshPaymentOrder = async () => {
     if (!activePayment?.order.orderNo) {
@@ -543,14 +589,18 @@ export function UserWorkspace({
         purchase_mode: selectedPurchaseMode
       })
       paidNotifiedOrderRef.current = null
-      setActivePayment(response)
-      setPaymentCheckoutOpen(true)
-      setLastPaymentCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }))
-      setPaymentPollCountdown(3)
       if (!response.checkout.paymentEnabled) {
         onError(response.checkout.message || '当前支付通道未启用')
         return
       }
+      if (!response.checkout.codeUrl) {
+        onError('支付通道未返回二维码地址')
+        return
+      }
+      setActivePayment(response)
+      setPaymentCheckoutOpen(true)
+      setLastPaymentCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour12: false }))
+      setPaymentPollCountdown(3)
       onNotify('已创建虎皮椒支付订单')
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
@@ -559,11 +609,31 @@ export function UserWorkspace({
     }
   }
 
-  const handleOpenVipDialog = () => {
-    setManualHelpVisible(false)
-    setSelectedBillingMonths(1)
-    setPaymentCheckoutOpen(false)
-    setVipDialogOpen(true)
+  const handleOpenVipDialog = async () => {
+    try {
+      setPreparingVipDialog(true)
+      setManualHelpVisible(false)
+      setSelectedBillingMonths(1)
+      setPaymentCheckoutOpen(false)
+      onError(null)
+
+      const products = await ensurePaymentProductsLoaded()
+      const defaultProductCode =
+        products.find((product) => product.planCode === 'vip1')?.productCode ?? products[0]?.productCode ?? ''
+
+      if (!defaultProductCode) {
+        onError('当前没有可购买套餐')
+        return
+      }
+
+      setSelectedProductCode(defaultProductCode)
+      await warmupStandardQuotes(defaultProductCode)
+      setVipDialogOpen(true)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setPreparingVipDialog(false)
+    }
   }
 
   const handleCloseVipDialog = () => {
@@ -651,6 +721,7 @@ export function UserWorkspace({
       if (effectiveFeatures.shared_pool_mode === 'sample' && effectiveFeatures.shared_pool_refresh_minutes > 0) {
         setSharedCooldownSeconds(effectiveFeatures.shared_pool_refresh_minutes * 60)
       }
+      setQuotaRefreshToken((current) => current + 1)
       onNotify(`已同步 ${sharedFiles.length} 个共享认证文件到本地`)
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
@@ -695,6 +766,11 @@ export function UserWorkspace({
                 </div>
                 <div className="badge badge-outline badge-xs px-2">{planLabel}</div>
               </div>
+              {formattedPlanExpiresAt ? (
+                <div className="mt-1 text-[11px] text-base-content/55">
+                  到期时间 {formattedPlanExpiresAt}
+                </div>
+              ) : null}
             </div>
             <button className="btn btn-ghost btn-sm btn-square" onClick={() => setSharedPoolInfoOpen(true)} title="共享号池说明">
               <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
@@ -720,7 +796,8 @@ export function UserWorkspace({
                 {runningOpenClawSetup ? <span className="loading loading-spinner loading-xs" /> : 'OpenClaw'}
               </button>
 
-              <button className="btn btn-primary h-11 rounded-2xl px-0" onClick={handleOpenVipDialog}>
+              <button className="btn btn-primary h-11 rounded-2xl px-0" onClick={() => void handleOpenVipDialog()} disabled={preparingVipDialog}>
+                {preparingVipDialog ? <span className="loading loading-spinner loading-xs" /> : null}
                 开通会员
               </button>
             </div>
@@ -741,11 +818,6 @@ export function UserWorkspace({
             </div>
           ) : null}
 
-          {loadError ? (
-            <div className="alert alert-error py-2 text-sm">
-              <span>{loadError}</span>
-            </div>
-          ) : null}
         </div>
       </section>
 
@@ -788,6 +860,7 @@ export function UserWorkspace({
           <QuotaPanel
             cpaRunning={cpaState?.status === 'running'}
             activeProvider={activeProvider}
+            refreshToken={quotaRefreshToken}
             showHeader={false}
             compactUserMode
             maxEnabledAuthFiles={features.max_enabled_auth_files}
@@ -908,15 +981,21 @@ export function UserWorkspace({
 
               <div className="rounded-box border border-base-300 bg-base-100 p-4">
                 <div className="text-sm font-semibold">支付方式</div>
-                <div className="mt-3">
-                  <div className="inline-flex rounded-2xl border border-base-300 bg-base-100 px-3 py-2 text-sm font-medium text-base-content/75">
-                    虎皮椒支付
-                  </div>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button className="btn btn-primary btn-sm" disabled={creatingPaymentOrder || !selectedProduct || hasPendingPayment || !paymentQuote || downgradeBlocked} onClick={() => void handleCreatePaymentOrder()}>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={creatingPaymentOrder || !selectedProduct || hasPendingPayment || !paymentQuote || downgradeBlocked}
+                    onClick={() => void handleCreatePaymentOrder()}
+                  >
                     {creatingPaymentOrder ? <span className="loading loading-spinner loading-xs"></span> : null}
-                    {hasPendingPayment ? '当前订单处理中' : '立即支付'}
+                    {hasPendingPayment ? '当前订单处理中' : '微信支付'}
+                  </button>
+                  <button
+                    className="btn btn-disabled btn-sm"
+                    disabled
+                    title="正在开通中..."
+                  >
+                    支付宝支付
                   </button>
                 </div>
               </div>
@@ -954,7 +1033,7 @@ export function UserWorkspace({
           <div className="flex items-start justify-between gap-4">
             <div>
               <h3 className="text-xl font-bold">立即支付</h3>
-              <p className="mt-1 text-sm text-base-content/55">请使用微信或支付宝扫码完成支付</p>
+              <p className="mt-1 text-sm text-base-content/55">请使用微信扫码完成支付</p>
             </div>
             <button className="btn btn-ghost btn-sm btn-circle" onClick={() => void handleClosePaymentCheckout()} disabled={closingPaymentCheckout}>
               {closingPaymentCheckout ? <span className="loading loading-spinner loading-xs" /> : '✕'}
@@ -962,23 +1041,34 @@ export function UserWorkspace({
           </div>
 
           <div className="mt-4 grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
-            <div className="rounded-[28px] bg-base-200/70 p-5">
-              <div className="mb-4 text-base font-semibold">虎皮椒支付</div>
-              <div className="flex min-h-[290px] items-center justify-center rounded-[24px] bg-base-100 p-4">
+            <div className="rounded-[28px] border border-success/20 bg-success/5 p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold text-success">微信支付</div>
+                  <div className="mt-1 text-xs text-base-content/55">请使用微信扫一扫完成付款</div>
+                </div>
+                <div className="badge badge-success badge-outline">微信</div>
+              </div>
+              <div className="flex min-h-[290px] items-center justify-center rounded-[24px] bg-base-100 p-4 shadow-sm">
                 {activePayment?.order.status === 'paid' ? (
                   <div className="space-y-4 text-center">
                     <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-success/15 text-3xl text-success">✓</div>
                     <div className="text-lg font-semibold">支付成功</div>
+                    <div className="text-sm text-base-content/60">会员权益已经到账</div>
                   </div>
-                ) : activePayment?.order.status === 'closed' || activePayment?.order.status === 'failed' || activePayment?.order.status === 'refunded' ? (
+                ) : paymentExpiredLocally || activePayment?.order.status === 'closed' || activePayment?.order.status === 'failed' || activePayment?.order.status === 'refunded' ? (
                   <div className="space-y-3 text-center">
                     <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-warning/15 text-3xl text-warning">!</div>
-                    <div className="text-lg font-semibold">订单不可继续支付</div>
+                    <div className="text-lg font-semibold">订单已失效</div>
+                    <div className="text-sm text-base-content/60">请关闭窗口后重新发起支付</div>
                   </div>
                 ) : paymentQrDataUrl ? (
                   <img src={paymentQrDataUrl} alt="支付二维码" className="h-64 w-64 rounded-box bg-white p-3" />
                 ) : (
-                  <div className="text-sm text-base-content/60">正在生成二维码</div>
+                  <div className="space-y-2 text-center">
+                    <span className="loading loading-spinner loading-md text-success"></span>
+                    <div className="text-sm text-base-content/60">正在生成微信支付二维码</div>
+                  </div>
                 )}
               </div>
             </div>
@@ -1027,12 +1117,10 @@ export function UserWorkspace({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 text-xs text-base-content/60">
-                  {activePayment?.order.status === 'pending' ? (
+                  {activePayment?.order.status === 'pending' && !paymentExpiredLocally ? (
                     <>
-                      <span className={`badge badge-sm ${paymentPolling ? 'badge-info' : 'badge-ghost'}`}>
-                        {paymentPolling ? '轮询中' : '等待轮询'}
-                      </span>
-                      {paymentExpiresCountdown ? <span>剩余 {paymentExpiresCountdown}</span> : null}
+                      <span className="badge badge-sm badge-success">支付剩余时间</span>
+                      {paymentExpiresCountdown ? <span className="font-medium text-base-content">{paymentExpiresCountdown}</span> : null}
                       {lastPaymentCheckedAt ? <span>最近检查 {lastPaymentCheckedAt}</span> : null}
                     </>
                   ) : (

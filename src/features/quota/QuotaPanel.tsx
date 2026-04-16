@@ -421,6 +421,7 @@ export interface QuotaPanelProps {
   cpaRunning: boolean
   onNotify: (message: string) => void
   onError: (message: string | null) => void
+  refreshToken?: number
   activeProvider?: QuotaProvider | 'all'
   sourceFilter?: 'all' | 'shared' | 'personal'
   onSourceFilterChange?: (value: 'all' | 'shared' | 'personal') => void
@@ -1042,6 +1043,7 @@ export function QuotaPanel({
   cpaRunning,
   onNotify,
   onError,
+  refreshToken = 0,
   activeProvider = 'all',
   sourceFilter = 'all',
   showHeader = true,
@@ -1326,7 +1328,7 @@ export function QuotaPanel({
     return () => {
       cancelled = true
     }
-  }, [cpaRunning])
+  }, [cpaRunning, refreshToken])
 
   useEffect(() => {
     if (!cpaRunning) {
@@ -1452,7 +1454,7 @@ export function QuotaPanel({
           {providerFiles.length === 0 ? (
             <div className="px-6 py-12 text-center text-base-content/55">当前没有可用的 {meta?.label ?? '该供应商'} 认证文件。</div>
           ) : (
-            <div className={`grid gap-2 ${compactUserMode ? 'p-1.5 xl:grid-cols-4' : 'p-6 xl:grid-cols-2'}`}>
+            <div className={`grid gap-2 ${compactUserMode ? 'grid-cols-1 p-1.5' : 'p-6 xl:grid-cols-2'}`}>
               {providerFiles.map((file) => {
                 const state = states[file.name] ?? { status: 'idle' }
                 const data = state.data
