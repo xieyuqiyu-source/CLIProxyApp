@@ -141,7 +141,6 @@ export function UserWorkspace({
   const [creatingPaymentOrder, setCreatingPaymentOrder] = useState(false)
   const [selectedProductCode, setSelectedProductCode] = useState<string>('')
   const [selectedBillingMonths, setSelectedBillingMonths] = useState<1 | 6 | 12>(1)
-  const [selectedPurchaseMode, setSelectedPurchaseMode] = useState<CloudPaymentPurchaseMode>('standard')
   const [paymentQuote, setPaymentQuote] = useState<CloudPaymentQuote | null>(null)
   const [loadingPaymentQuote, setLoadingPaymentQuote] = useState(false)
   const [paymentQuoteCache, setPaymentQuoteCache] = useState<Record<string, CloudPaymentQuote>>({})
@@ -398,7 +397,7 @@ export function UserWorkspace({
     [paymentProducts, selectedProductCode]
   )
 
-  const showUpgradeModes = plan.planCode === 'vip1' && selectedProduct?.planCode === 'vip2'
+  const upgradingToProMax = plan.planCode === 'vip1' && selectedProduct?.planCode === 'vip2'
   const downgradeBlocked = plan.planCode === 'vip2' && selectedProduct?.planCode === 'vip1'
   const billingQuotes = useMemo(() => {
     if (!selectedProductCode) {
@@ -429,18 +428,6 @@ export function UserWorkspace({
   }, [activePayment])
 
   useEffect(() => {
-    if (!selectedProduct) {
-      return
-    }
-    if (plan.planCode === 'vip1' && selectedProduct.planCode === 'vip2') {
-      setSelectedPurchaseMode((current) => (current === 'upgrade_replace_month' ? current : 'upgrade_diff_all'))
-      setSelectedBillingMonths(1)
-      return
-    }
-    setSelectedPurchaseMode('standard')
-  }, [plan.planCode, selectedProduct])
-
-  useEffect(() => {
     if (!vipDialogOpen || !selectedProductCode) {
       return
     }
@@ -448,8 +435,8 @@ export function UserWorkspace({
     const loadQuote = async () => {
       const quoteKey = buildQuoteCacheKey(
         selectedProductCode,
-        selectedPurchaseMode === 'standard' ? selectedBillingMonths : 1,
-        selectedPurchaseMode
+        selectedBillingMonths,
+        'standard'
       )
       const cached = paymentQuoteCache[quoteKey]
       if (cached) {
@@ -460,8 +447,8 @@ export function UserWorkspace({
         setLoadingPaymentQuote(true)
         const response = await cloudClient.quotePaymentOrder(cloudToken, {
           product_code: selectedProductCode,
-          billing_months: selectedPurchaseMode === 'standard' ? selectedBillingMonths : 1,
-          purchase_mode: selectedPurchaseMode
+          billing_months: selectedBillingMonths,
+          purchase_mode: 'standard'
         })
         if (cancelled) {
           return
@@ -486,10 +473,10 @@ export function UserWorkspace({
     return () => {
       cancelled = true
     }
-  }, [cloudToken, onError, paymentQuoteCache, selectedBillingMonths, selectedProductCode, selectedPurchaseMode, vipDialogOpen])
+  }, [cloudToken, onError, paymentQuoteCache, selectedBillingMonths, selectedProductCode, vipDialogOpen])
 
   useEffect(() => {
-    if (!vipDialogOpen || !selectedProductCode || showUpgradeModes) {
+    if (!vipDialogOpen || !selectedProductCode) {
       return
     }
 
@@ -502,7 +489,7 @@ export function UserWorkspace({
     }
 
     void warmupQuotes()
-  }, [selectedProductCode, showUpgradeModes, vipDialogOpen, warmupStandardQuotes])
+  }, [selectedProductCode, vipDialogOpen, warmupStandardQuotes])
 
   const hasPendingPayment = activePayment?.order.status === 'pending'
   const mobileProviderOrder: (QuotaProvider | 'all')[] = ['all', 'codex', 'claude', 'gemini-cli', 'antigravity', 'kimi']
@@ -584,8 +571,8 @@ export function UserWorkspace({
       const response = await cloudClient.createPaymentOrder(cloudToken, {
         product_code: selectedProductCode,
         provider: selectedPaymentProvider,
-        billing_months: selectedPurchaseMode === 'standard' ? selectedBillingMonths : 1,
-        purchase_mode: selectedPurchaseMode
+        billing_months: selectedBillingMonths,
+        purchase_mode: 'standard'
       })
       paidNotifiedOrderRef.current = null
       if (!response.checkout.paymentEnabled) {
@@ -617,8 +604,12 @@ export function UserWorkspace({
       onError(null)
 
       const products = await ensurePaymentProductsLoaded()
+      const preferredPlanCode = plan.planCode === 'vip2' ? 'vip2' : 'vip1'
       const defaultProductCode =
-        products.find((product) => product.planCode === 'vip1')?.productCode ?? products[0]?.productCode ?? ''
+        products.find((product) => product.planCode === preferredPlanCode)?.productCode ??
+        products.find((product) => product.planCode === 'vip1')?.productCode ??
+        products[0]?.productCode ??
+        ''
 
       if (!defaultProductCode) {
         onError('当前没有可购买套餐')
@@ -912,58 +903,42 @@ export function UserWorkspace({
                     </div>
                   ) : null}
                 </div>
-                {showUpgradeModes ? (
-                  <div className="space-y-3">
-                    <div className="join">
+                <div className="space-y-3">
+                  <div className="grid grid-cols-3 gap-2">
+                    {[1, 6, 12].map((months) => (
                       <button
-                        className={`join-item btn btn-sm ${selectedPurchaseMode === 'upgrade_diff_all' ? 'btn-primary' : 'btn-outline'}`}
-                        onClick={() => setSelectedPurchaseMode('upgrade_diff_all')}
-                        disabled={hasPendingPayment}
+                        key={months}
+                        className={`rounded-2xl border p-3 text-left transition ${
+                          selectedBillingMonths === months
+                            ? 'border-primary bg-primary/8 ring-1 ring-primary/20'
+                            : 'border-base-300 bg-base-100'
+                        }`}
+                        onClick={() => setSelectedBillingMonths(months as 1 | 6 | 12)}
+                        disabled={hasPendingPayment || downgradeBlocked}
                       >
-                        补全部差价升级
+                        <div className="text-sm font-semibold">{months === 1 ? '月付' : months === 6 ? '半年付' : '年付'}</div>
+                        <div className="mt-2 min-h-[28px]">
+                          {billingQuotes[months as 1 | 6 | 12] ? (
+                            <div className="text-lg font-bold">
+                              ¥{(billingQuotes[months as 1 | 6 | 12]!.amount / 100).toFixed(2)}
+                            </div>
+                          ) : loadingPaymentQuote ? (
+                            <div className="flex items-center gap-1 text-xs text-base-content/55">
+                              <span className="loading loading-spinner loading-xs" />
+                              加载中
+                            </div>
+                          ) : null}
+                        </div>
                       </button>
-                      <button
-                        className={`join-item btn btn-sm ${selectedPurchaseMode === 'upgrade_replace_month' ? 'btn-primary' : 'btn-outline'}`}
-                        onClick={() => setSelectedPurchaseMode('upgrade_replace_month')}
-                        disabled={hasPendingPayment}
-                        >
-                          只开 1 个月 Pro Max
-                        </button>
-                      </div>
+                    ))}
                   </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-3 gap-2">
-                      {[1, 6, 12].map((months) => (
-                        <button
-                          key={months}
-                          className={`rounded-2xl border p-3 text-left transition ${
-                            selectedBillingMonths === months
-                              ? 'border-primary bg-primary/8 ring-1 ring-primary/20'
-                              : 'border-base-300 bg-base-100'
-                          }`}
-                          onClick={() => setSelectedBillingMonths(months as 1 | 6 | 12)}
-                          disabled={hasPendingPayment || downgradeBlocked}
-                        >
-                          <div className="text-sm font-semibold">{months === 1 ? '月付' : months === 6 ? '半年付' : '年付'}</div>
-                          <div className="mt-2 min-h-[28px]">
-                            {billingQuotes[months as 1 | 6 | 12] ? (
-                              <div className="text-lg font-bold">
-                                ¥{(billingQuotes[months as 1 | 6 | 12]!.amount / 100).toFixed(2)}
-                              </div>
-                            ) : loadingPaymentQuote ? (
-                              <div className="flex items-center gap-1 text-xs text-base-content/55">
-                                <span className="loading loading-spinner loading-xs" />
-                                加载中
-                              </div>
-                            ) : null}
-                          </div>
-                        </button>
-                      ))}
+                  {upgradingToProMax ? (
+                    <div className="rounded-2xl border border-error/40 bg-error/10 px-3 py-3 text-xs leading-6 text-error">
+                      重新升级订阅会覆盖旧订阅，确定操作吗？如有费用疑问请添加人工协助。
                     </div>
-                    {downgradeBlocked ? <p className="text-xs text-error">当前已是 Pro Max，暂不支持降级购买 Pro。</p> : null}
-                  </div>
-                )}
+                  ) : null}
+                  {downgradeBlocked ? <p className="text-xs text-error">您当前已是 ProMax 用户。</p> : null}
+                </div>
                 <div className="rounded-2xl bg-base-200/70 px-3 py-3 text-sm text-base-content/75">
                   {selectedProduct?.planCode === 'vip2'
                     ? '支持完整共享号池、自动切换、云端备份。'
@@ -1075,15 +1050,11 @@ export function UserWorkspace({
                 <div className="flex items-center justify-between gap-4">
                   <span className="text-base-content/55">购买方案</span>
                   <span className="font-medium">
-                    {activePayment?.order.purchaseMode === 'upgrade_diff_all'
-                      ? '补全部差价升级'
-                      : activePayment?.order.purchaseMode === 'upgrade_replace_month'
-                        ? '重新开通 1 个月 Pro Max'
-                        : activePayment?.order.billingMonths === 12
-                          ? '年付'
-                          : activePayment?.order.billingMonths === 6
-                            ? '半年付'
-                            : '月付'}
+                    {activePayment?.order.billingMonths === 12
+                      ? '年付'
+                      : activePayment?.order.billingMonths === 6
+                        ? '半年付'
+                        : '月付'}
                   </span>
                 </div>
                 {activePayment?.order.orderNo ? (
