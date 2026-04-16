@@ -128,7 +128,6 @@ export function UserWorkspace({
   const [vipDialogOpen, setVipDialogOpen] = useState(false)
   const [oauthDialogOpen, setOauthDialogOpen] = useState(false)
   const [sharedPoolInfoOpen, setSharedPoolInfoOpen] = useState(false)
-  const [cardDialogOpen, setCardDialogOpen] = useState(false)
   const [syncingSharedPool, setSyncingSharedPool] = useState(false)
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0)
   const [, setSharedCooldownSeconds] = useState(0)
@@ -802,14 +801,6 @@ export function UserWorkspace({
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <button className="btn btn-outline btn-sm rounded-2xl" onClick={() => setOauthDialogOpen(true)}>
-                登录自己账号
-              </button>
-              <button className="btn btn-outline btn-sm rounded-2xl" onClick={() => setCardDialogOpen(true)}>
-                购买虚拟卡
-              </button>
-            </div>
           </div>
 
           {normalizingFreeTier ? (
@@ -866,6 +857,7 @@ export function UserWorkspace({
             maxEnabledAuthFiles={features.max_enabled_auth_files}
             allowAutoRotation={features.allow_auto_rotation}
             onUpgradeVip={handleOpenVipDialog}
+            onOpenOauth={() => setOauthDialogOpen(true)}
             onProviderCountsChange={setProviderCounts}
             onNotify={onNotify}
             onError={onError}
@@ -1141,50 +1133,6 @@ export function UserWorkspace({
         </div>
       </dialog>
 
-      <dialog className={`modal ${cardDialogOpen ? 'modal-open' : ''}`}>
-        <div className="modal-box max-w-2xl">
-          <h3 className="text-xl font-bold">购买虚拟卡</h3>
-          <div className="mt-4 space-y-4 text-sm text-base-content/70">
-            <div className="rounded-box bg-base-200/60 p-4">
-              <div className="text-base font-semibold text-base-content">发放形式</div>
-              <div className="mt-1">虚拟卡以卡密形式发放。</div>
-            </div>
-            <div className="rounded-box bg-base-200/60 p-4">
-              <div className="text-base font-semibold text-base-content">价格</div>
-              <div className="mt-1">10 元一张。</div>
-            </div>
-            <div className="rounded-box bg-base-200/60 p-4">
-              <div className="text-base font-semibold text-base-content">用途</div>
-              <div className="mt-1">可开通企业版 Codex Team，试用一个月期限。</div>
-            </div>
-            <div className="rounded-box bg-warning/10 p-4 text-warning-content">
-              <div className="font-semibold">风险说明</div>
-              <div className="mt-1 text-sm text-base-content/80">
-                近期封的比较多，建议按需购买。节点干净可以持续使用一个月，节点不干净有概率 3-5 天封。
-              </div>
-            </div>
-            <div className="rounded-box border border-base-300 bg-base-100 p-4">
-              <div className="font-semibold text-base-content">购买方式</div>
-              <div className="mt-2">当前同样走人工处理。你可以先通过“开通会员”弹窗中的二维码联系，说明需要购买虚拟卡。</div>
-            </div>
-          </div>
-          <div className="modal-action">
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                setCardDialogOpen(false)
-                setVipDialogOpen(true)
-              }}
-            >
-              去扫码联系
-            </button>
-            <button className="btn btn-ghost" onClick={() => setCardDialogOpen(false)}>
-              关闭
-            </button>
-          </div>
-        </div>
-      </dialog>
-
       <dialog className={`modal ${sharedPoolInfoOpen ? 'modal-open' : ''}`}>
         <div className="modal-box max-w-xl">
           <h3 className="text-xl font-bold">共享号池说明</h3>
@@ -1213,17 +1161,17 @@ export function UserWorkspace({
       </dialog>
 
       <dialog className={`modal ${oauthDialogOpen ? 'modal-open' : ''}`}>
-        <div className="modal-box max-w-4xl">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h3 className="text-xl font-bold">登录自己账号</h3>
-              <p className="text-sm text-base-content/60">直接在当前用户页内登录自己的账号。</p>
+        <div className="modal-box w-[min(92vw,420px)] max-w-[420px] p-0">
+          <div className="flex items-center justify-between gap-3 border-b border-base-200 px-4 py-4">
+            <div className="min-w-0">
+              <h3 className="text-lg font-bold">登录账号</h3>
+              <p className="mt-1 text-xs text-base-content/60">在当前窗口完成自己的账号授权。</p>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => setOauthDialogOpen(false)}>
-              关闭
+            <button className="btn btn-ghost btn-sm btn-circle shrink-0" onClick={() => setOauthDialogOpen(false)}>
+              ✕
             </button>
           </div>
-          <div className="max-h-[70vh] overflow-auto pr-1">
+          <div className="max-h-[78vh] overflow-auto px-4 py-4">
             <OAuthPanel
               canManage={false}
               cpaRunning={cpaState?.status === 'running'}

@@ -1051,6 +1051,7 @@ export function QuotaPanel({
   maxEnabledAuthFiles,
   allowAutoRotation,
   onUpgradeVip,
+  onOpenOauth,
   onProviderCountsChange
 }: QuotaPanelProps) {
   const [files, setFiles] = useState<AuthFileItem[]>([])
@@ -1396,12 +1397,21 @@ export function QuotaPanel({
                 </svg>
               )}
             </button>
+            {compactUserMode ? (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={onOpenOauth}
+                disabled={!cpaRunning}
+              >
+                登录账号
+              </button>
+            ) : null}
             <button
               className="btn btn-outline btn-sm"
               onClick={() => void refreshAll()}
               disabled={!cpaRunning || visibleFiles.length === 0}
             >
-              刷新当前配额
+              刷新配额
             </button>
             {compactUserMode ? (
               <>

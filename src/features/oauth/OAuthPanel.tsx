@@ -405,7 +405,7 @@ export function OAuthPanel({
   }
 
   return (
-    <div className="mt-4 flex flex-col gap-6">
+    <div className={`${embeddedMode ? 'mt-0 flex flex-col gap-3' : 'mt-4 flex flex-col gap-6'}`}>
       {!embeddedMode ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -426,27 +426,27 @@ export function OAuthPanel({
         </div>
       )}
 
-      <div className={`grid gap-4 ${embeddedMode ? 'grid-cols-1' : 'xl:grid-cols-2'}`}>
+      <div className={`grid gap-3 ${embeddedMode ? 'grid-cols-1' : 'xl:grid-cols-2'}`}>
         {filteredProviders.map((provider) => {
           const state = states[provider.id] || {}
 
           return (
             <div
               key={provider.id}
-              className={embeddedMode ? 'rounded-box border border-base-300 bg-base-100 shadow-sm' : 'card border border-base-300 bg-base-100 shadow-sm'}
+              className={embeddedMode ? 'rounded-[20px] border border-base-300 bg-base-100 shadow-sm' : 'card border border-base-300 bg-base-100 shadow-sm'}
             >
-              <div className="card-body gap-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-center gap-4">
-                    <div className={`h-14 w-14 rounded-2xl bg-gradient-to-br ${provider.accent} flex items-center justify-center shadow-md`}>
+              <div className={`${embeddedMode ? 'p-3' : 'card-body gap-4'}`}>
+                <div className={`flex ${embeddedMode ? 'items-center justify-between gap-3' : 'items-start justify-between gap-4'}`}>
+                  <div className={`flex items-center ${embeddedMode ? 'gap-3 min-w-0' : 'gap-4'}`}>
+                    <div className={`${embeddedMode ? 'h-10 w-10 rounded-xl' : 'h-14 w-14 rounded-2xl'} bg-gradient-to-br ${provider.accent} flex shrink-0 items-center justify-center shadow-md`}>
                       <ProviderIcon id={provider.id} className="w-8 h-8 text-white" />
                     </div>
-                    <div>
-                      <h3 className="card-title">{provider.name}</h3>
-                      <p className="text-sm text-base-content/60">{provider.subtitle}</p>
+                    <div className="min-w-0">
+                      <h3 className={`${embeddedMode ? 'truncate text-base font-bold' : 'card-title'}`}>{provider.name}</h3>
+                      <p className={`${embeddedMode ? 'mt-0.5 text-xs text-base-content/60' : 'text-sm text-base-content/60'}`}>{provider.subtitle}</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className={`flex items-center ${embeddedMode ? 'gap-1.5' : 'gap-2'} shrink-0`}>
                     {provider.id === 'codex' && canManage && (
                       <button
                         className="btn btn-xs btn-outline"
@@ -461,11 +461,11 @@ export function OAuthPanel({
                 </div>
 
                 {provider.projectIdSupported && (
-                  <fieldset className="fieldset">
-                    <legend className="fieldset-legend text-sm font-medium">Gemini Project ID</legend>
+                  <fieldset className={`fieldset ${embeddedMode ? 'mt-3' : ''}`}>
+                    <legend className="fieldset-legend text-xs font-medium">Gemini Project ID</legend>
                     <input
                       type="text"
-                      className="input w-full"
+                      className={`input input-bordered w-full ${embeddedMode ? 'input-sm rounded-xl' : ''}`}
                       placeholder="留空自动选择，或填写 ALL"
                       value={state.projectId || ''}
                       disabled={state.polling}
@@ -478,9 +478,9 @@ export function OAuthPanel({
                   </fieldset>
                 )}
 
-                <div className="flex flex-wrap gap-2">
+                <div className={`flex flex-wrap ${embeddedMode ? 'mt-3 gap-2' : 'gap-2'}`}>
                   <button
-                    className="btn btn-primary btn-sm"
+                    className={`btn btn-primary btn-sm ${embeddedMode ? 'flex-1 rounded-xl' : ''}`}
                     disabled={!cpaRunning || state.polling}
                     onClick={() => void handleStartAuth(provider)}
                   >
@@ -488,14 +488,14 @@ export function OAuthPanel({
                     发起授权
                   </button>
                   <button
-                    className="btn btn-outline btn-sm"
+                    className={`btn btn-outline btn-sm ${embeddedMode ? 'rounded-xl' : ''}`}
                     disabled={!state.url}
                     onClick={() => state.url && void handleCopy(state.url, `${provider.name} 链接已复制`)}
                   >
                     复制链接
                   </button>
                   <button
-                    className="btn btn-outline btn-sm"
+                    className={`btn btn-outline btn-sm ${embeddedMode ? 'rounded-xl' : ''}`}
                     disabled={!state.url}
                     onClick={() => state.url && void openExternalHref(state.url)}
                   >
@@ -504,22 +504,22 @@ export function OAuthPanel({
                 </div>
 
                 {state.url && (
-                  <div className="rounded-box border border-base-300 bg-base-200/60 p-3">
+                  <div className={`rounded-box border border-base-300 bg-base-200/60 ${embeddedMode ? 'mt-3 p-2.5' : 'p-3'}`}>
                     <div className="text-xs uppercase tracking-[0.2em] text-base-content/50">Auth URL</div>
                     <div className="mt-2 break-all font-mono text-xs">{state.url}</div>
                   </div>
                 )}
 
                 {provider.callbackSupported && (
-                  <div className="rounded-box border border-dashed border-base-300 p-4">
+                  <div className={`rounded-box border border-dashed border-base-300 ${embeddedMode ? 'mt-3 p-3' : 'p-4'}`}>
                     <div className="mb-2 text-sm font-semibold">回调补提交通道</div>
-                    <p className="mb-3 text-xs text-base-content/60">
+                    <p className="mb-3 text-xs leading-5 text-base-content/60">
                       某些浏览器流程回跳不到本地时，把完整回调 URL 粘贴到这里。
                     </p>
-                    <div className="flex flex-col gap-3 lg:flex-row">
+                    <div className="flex flex-col gap-3">
                       <input
                         type="text"
-                        className="input flex-1"
+                        className={`input input-bordered w-full ${embeddedMode ? 'input-sm rounded-xl' : ''}`}
                         placeholder="https://callback?...code=...&state=..."
                         value={state.callbackUrl || ''}
                         onChange={(event) =>
@@ -531,7 +531,7 @@ export function OAuthPanel({
                         }
                       />
                       <button
-                        className="btn btn-secondary"
+                        className={`btn btn-secondary ${embeddedMode ? 'btn-sm rounded-xl' : ''}`}
                         disabled={!cpaRunning || state.callbackSubmitting}
                         onClick={() => void handleSubmitCallback(provider)}
                       >
