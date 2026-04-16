@@ -141,7 +141,7 @@ export interface CloudPaymentOrder {
   billingMonths: number
   durationDays: number
   planCode: string
-  paymentProvider: 'wechat' | 'alipay'
+  paymentProvider: 'xunhu'
   amount: number
   currency: string
   status: 'pending' | 'paid' | 'closed' | 'failed' | 'refunded'
@@ -154,7 +154,7 @@ export interface CloudPaymentOrder {
 }
 
 export interface CloudPaymentCheckout {
-  provider: 'wechat' | 'alipay'
+  provider: 'xunhu'
   paymentEnabled: boolean
   codeUrl?: string
   providerOrderId?: string

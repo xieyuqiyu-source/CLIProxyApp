@@ -124,6 +124,7 @@ function App() {
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [errorToastMessage, setErrorToastMessage] = useState<string | null>(null)
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [adminTab, setAdminTab] = useState<AdminTab>('overview')
@@ -131,6 +132,7 @@ function App() {
   const [normalizingFreeTier, setNormalizingFreeTier] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const cpmFrameRef = useRef<HTMLIFrameElement | null>(null)
+  const errorToastTimerRef = useRef<number | null>(null)
 
   const statusTone = useMemo(() => {
     switch (cpaState?.status) {
@@ -202,10 +204,10 @@ function App() {
       setManagementInfo(nextManagementInfo)
       setRecentLogs(nextRecentLogs || '当前还没有日志。')
       setSettings(nextCpaState.bootstrap)
-      setLoadError(null)
+      handleLoadError(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setLoadError(message)
+      handleLoadError(message)
     }
   }
 
@@ -227,7 +229,7 @@ function App() {
     } catch (error) {
       if (!silent) {
         const message = error instanceof Error ? error.message : String(error)
-        setLoadError(message)
+        handleLoadError(message)
       }
     } finally {
       setCheckingUpdate(false)
@@ -307,7 +309,7 @@ function App() {
       } catch (error) {
         if (!cancelled) {
           const message = error instanceof Error ? error.message : String(error)
-          setLoadError(message)
+          handleLoadError(message)
         }
       } finally {
         if (!cancelled) {
@@ -349,7 +351,7 @@ function App() {
       } catch (error) {
         if (!cancelled) {
           const message = error instanceof Error ? error.message : String(error)
-          setLoadError(message)
+          handleLoadError(message)
         }
       }
     })()
@@ -370,7 +372,7 @@ function App() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setLoadError(message)
+      handleLoadError(message)
     } finally {
       setPendingAction(null)
     }
@@ -412,7 +414,7 @@ function App() {
   const savePort = async () => {
     const normalizedPort = Number(settings.apiPort)
     if (!Number.isInteger(normalizedPort) || normalizedPort < 1 || normalizedPort > 65535) {
-      setLoadError('端口必须是 1 到 65535 之间的整数。')
+      handleLoadError('端口必须是 1 到 65535 之间的整数。')
       return
     }
 
@@ -491,7 +493,7 @@ function App() {
       return
     }
     if (!currentPassword.trim() || !nextPassword.trim()) {
-      setLoadError('请输入当前密码和新密码。')
+      handleLoadError('请输入当前密码和新密码。')
       return
     }
     try {
@@ -499,12 +501,12 @@ function App() {
       await cloudClient.changePassword(session.token, currentPassword, nextPassword)
       setCurrentPassword('')
       setNextPassword('')
-      setLoadError(null)
+      handleLoadError(null)
       showToast('密码修改成功，请使用新密码继续登录')
       passwordDialogRef.current?.close()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setLoadError(message)
+      handleLoadError(message)
     } finally {
       setPendingAction(null)
     }
@@ -513,6 +515,26 @@ function App() {
   const showToast = (message: string) => {
     setToastMessage(message)
     window.setTimeout(() => setToastMessage(null), 2500)
+  }
+
+  const handleLoadError = (message: string | null) => {
+    setLoadError(message)
+    if (!message) {
+      setErrorToastMessage(null)
+      if (errorToastTimerRef.current !== null) {
+        window.clearTimeout(errorToastTimerRef.current)
+        errorToastTimerRef.current = null
+      }
+      return
+    }
+    setErrorToastMessage(message)
+    if (errorToastTimerRef.current !== null) {
+      window.clearTimeout(errorToastTimerRef.current)
+    }
+    errorToastTimerRef.current = window.setTimeout(() => {
+      setErrorToastMessage(null)
+      errorToastTimerRef.current = null
+    }, 3000)
   }
 
   const summarizeImportResult = (result: ImportAuthFilesResult) => {
@@ -580,7 +602,7 @@ function App() {
 
     try {
       setPendingAction('import-auth-files')
-      setLoadError(null)
+      handleLoadError(null)
 
       const payload = await Promise.all(
         Array.from(selectedFiles).map(async (file) => ({
@@ -594,7 +616,7 @@ function App() {
       showToast(summarizeImportResult(result))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setLoadError(message)
+      handleLoadError(message)
     } finally {
       event.target.value = ''
       setPendingAction(null)
@@ -604,7 +626,7 @@ function App() {
   const handleExportAuthFiles = async () => {
     try {
       setPendingAction('export-auth-files')
-      setLoadError(null)
+      handleLoadError(null)
       const archive = await cpaRuntime.exportAuthFilesArchive()
       if (!archive.savedPath) {
         return
@@ -612,7 +634,7 @@ function App() {
       showToast(`已导出 ${archive.fileCount} 个认证文件`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      setLoadError(message)
+      handleLoadError(message)
     } finally {
       setPendingAction(null)
     }
@@ -1204,7 +1226,7 @@ function App() {
               canManage={true}
               cpaRunning={cpaState?.status === 'running'}
               onNotify={showToast}
-              onError={setLoadError}
+              onError={handleLoadError}
             />
           ) : adminTab === 'auth-files' ? (
             <AuthFilesPanel
@@ -1217,7 +1239,7 @@ function App() {
               allowPersonalCloudSync={session.features.allow_personal_cloud_sync}
               allowSharedPool={session.features.allow_shared_pool}
               onNotify={showToast}
-              onError={setLoadError}
+              onError={handleLoadError}
               onImportClick={() => importInputRef.current?.click()}
               onExportClick={() => void handleExportAuthFiles()}
               onOpenConfigDir={() => void cpaRuntime.openConfigDir()}
@@ -1226,13 +1248,13 @@ function App() {
             <QuotaPanel
               cpaRunning={cpaState?.status === 'running'}
               onNotify={showToast}
-              onError={setLoadError}
+              onError={handleLoadError}
             />
           ) : adminTab === 'cloud-admin' ? (
             <CloudAdminPanel
               token={session.token}
               onNotify={showToast}
-              onError={setLoadError}
+              onError={handleLoadError}
             />
           ) : (
             <div className="mt-4">
@@ -1287,7 +1309,7 @@ function App() {
           onStop={() => runAction('stop', () => cpaRuntime.stop(), '停止指令已发送')}
           onRefresh={() => runAction('refresh', refresh, '状态刷新完毕')}
           onNotify={showToast}
-          onError={setLoadError}
+          onError={handleLoadError}
         />
       ) : (
         <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
@@ -1575,7 +1597,7 @@ function App() {
               canManage={false}
               cpaRunning={cpaState?.status === 'running'}
               onNotify={showToast}
-              onError={setLoadError}
+              onError={handleLoadError}
             />
           )}
 
@@ -1601,7 +1623,7 @@ function App() {
               allowPersonalCloudSync={session.features.allow_personal_cloud_sync}
               allowSharedPool={session.features.allow_shared_pool}
               onNotify={showToast}
-              onError={setLoadError}
+              onError={handleLoadError}
               onImportClick={() => importInputRef.current?.click()}
               onExportClick={() => void handleExportAuthFiles()}
               onOpenConfigDir={() => void cpaRuntime.openConfigDir()}
@@ -1612,7 +1634,7 @@ function App() {
             <QuotaPanel
               cpaRunning={cpaState?.status === 'running'}
               onNotify={showToast}
-              onError={setLoadError}
+              onError={handleLoadError}
             />
           )}
 
@@ -1631,9 +1653,17 @@ function App() {
 
       {/* GLOBAL TOAST HANDLER */}
       {toastMessage && (
-        <div className="toast toast-top toast-center z-[100]">
+        <div className="toast toast-top toast-center z-[1100]">
           <div className="alert alert-success shadow-lg">
             <span>{toastMessage}</span>
+          </div>
+        </div>
+      )}
+
+      {errorToastMessage && (
+        <div className="toast toast-top toast-center z-[1200] top-3">
+          <div className="alert alert-error shadow-2xl">
+            <span>{errorToastMessage}</span>
           </div>
         </div>
       )}

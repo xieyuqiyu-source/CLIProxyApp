@@ -131,7 +131,7 @@ export function UserWorkspace({
   const [paymentQuote, setPaymentQuote] = useState<CloudPaymentQuote | null>(null)
   const [loadingPaymentQuote, setLoadingPaymentQuote] = useState(false)
   const [paymentQuoteCache, setPaymentQuoteCache] = useState<Record<string, CloudPaymentQuote>>({})
-  const [selectedPaymentProvider, setSelectedPaymentProvider] = useState<'wechat' | 'alipay'>('wechat')
+  const selectedPaymentProvider: 'xunhu' = 'xunhu'
   const [activePayment, setActivePayment] = useState<CloudCreatePaymentOrderResponse | null>(null)
   const [paymentCheckoutOpen, setPaymentCheckoutOpen] = useState(false)
   const [paymentQrDataUrl, setPaymentQrDataUrl] = useState<string | null>(null)
@@ -551,7 +551,7 @@ export function UserWorkspace({
         onError(response.checkout.message || '当前支付通道未启用')
         return
       }
-      onNotify(`已创建${selectedPaymentProvider === 'wechat' ? '微信' : '支付宝'}支付订单`)
+      onNotify('已创建虎皮椒支付订单')
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -908,21 +908,10 @@ export function UserWorkspace({
 
               <div className="rounded-box border border-base-300 bg-base-100 p-4">
                 <div className="text-sm font-semibold">支付方式</div>
-                <div className="mt-3 join">
-                  <button
-                    className={`join-item btn btn-sm ${selectedPaymentProvider === 'wechat' ? 'btn-success' : 'btn-outline'}`}
-                    onClick={() => setSelectedPaymentProvider('wechat')}
-                    disabled={hasPendingPayment}
-                  >
-                    微信支付
-                  </button>
-                  <button
-                    className={`join-item btn btn-sm ${selectedPaymentProvider === 'alipay' ? 'btn-primary' : 'btn-outline'}`}
-                    onClick={() => setSelectedPaymentProvider('alipay')}
-                    disabled={hasPendingPayment}
-                  >
-                    支付宝
-                  </button>
+                <div className="mt-3">
+                  <div className="inline-flex rounded-2xl border border-base-300 bg-base-100 px-3 py-2 text-sm font-medium text-base-content/75">
+                    虎皮椒支付
+                  </div>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   <button className="btn btn-primary btn-sm" disabled={creatingPaymentOrder || !selectedProduct || hasPendingPayment || !paymentQuote || downgradeBlocked} onClick={() => void handleCreatePaymentOrder()}>
@@ -965,7 +954,7 @@ export function UserWorkspace({
           <div className="flex items-start justify-between gap-4">
             <div>
               <h3 className="text-xl font-bold">立即支付</h3>
-              <p className="mt-1 text-sm text-base-content/55">{selectedPaymentProvider === 'wechat' ? '请使用微信扫码完成支付' : '请使用支付宝扫码完成支付'}</p>
+              <p className="mt-1 text-sm text-base-content/55">请使用微信或支付宝扫码完成支付</p>
             </div>
             <button className="btn btn-ghost btn-sm btn-circle" onClick={() => void handleClosePaymentCheckout()} disabled={closingPaymentCheckout}>
               {closingPaymentCheckout ? <span className="loading loading-spinner loading-xs" /> : '✕'}
@@ -974,7 +963,7 @@ export function UserWorkspace({
 
           <div className="mt-4 grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
             <div className="rounded-[28px] bg-base-200/70 p-5">
-              <div className="mb-4 text-base font-semibold">{selectedPaymentProvider === 'wechat' ? '微信支付' : '支付宝支付'}</div>
+              <div className="mb-4 text-base font-semibold">虎皮椒支付</div>
               <div className="flex min-h-[290px] items-center justify-center rounded-[24px] bg-base-100 p-4">
                 {activePayment?.order.status === 'paid' ? (
                   <div className="space-y-4 text-center">

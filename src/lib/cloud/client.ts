@@ -253,7 +253,7 @@ export const cloudClient = {
     token: string,
     payload: {
       product_code: string
-      provider: 'wechat' | 'alipay'
+      provider: 'xunhu'
       billing_months: number
       purchase_mode: 'standard' | 'upgrade_diff_all' | 'upgrade_replace_month'
     }
