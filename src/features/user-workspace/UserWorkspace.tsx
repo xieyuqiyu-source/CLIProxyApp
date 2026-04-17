@@ -126,7 +126,6 @@ export function UserWorkspace({
   const providerTabsContainerRef = useRef<HTMLDivElement | null>(null)
   const providerTabRefs = useRef(new Map<string, HTMLButtonElement>())
   const [activeProvider, setActiveProvider] = useState<QuotaProvider | 'all'>('all')
-  const [providerCounts, setProviderCounts] = useState<Partial<Record<QuotaProvider, number>>>({})
   const [vipDialogOpen, setVipDialogOpen] = useState(false)
   const [oauthDialogOpen, setOauthDialogOpen] = useState(false)
   const [openAICompatDialogOpen, setOpenAICompatDialogOpen] = useState(false)
@@ -792,115 +791,101 @@ export function UserWorkspace({
 
   return (
     <main className="mx-auto flex w-full max-w-[390px] flex-col gap-3 px-3 py-3">
-      <section className="rounded-[24px] border border-base-300 bg-base-100 shadow-sm">
-        <div className="flex flex-col gap-4 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <div className="truncate text-sm font-black">{userKey}</div>
-                <div className={`badge badge-xs px-2 ${getStatusTone(cpaState?.status)}`}>
-                  {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
-                </div>
-                <div className="badge badge-outline badge-xs px-2">{planLabel}</div>
-              </div>
-              {formattedPlanExpiresAt ? (
-                <div className="mt-1 text-[11px] text-base-content/55">
-                  到期时间 {formattedPlanExpiresAt}
-                </div>
-              ) : null}
+      <div className="w-full bg-base-100 rounded-2xl p-4 mb-4 shadow-sm">
+        <div className="flex justify-between items-center text-sm font-bold mb-2">
+          <span className="truncate mr-2">{userKey}</span>
+          <div className="flex gap-2 shrink-0">
+            <div className={`badge badge-outline badge-sm ${getStatusTone(cpaState?.status)}`}>
+              {statusLabelMap[cpaState?.status ?? 'stopped'] ?? '未知'}
             </div>
-            <button className="btn btn-ghost btn-sm btn-square" onClick={() => setSharedPoolInfoOpen(true)} title="共享号池说明">
-              <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
-            </button>
-          </div>
-
-          <div className="grid gap-2">
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                className={`btn h-11 rounded-2xl px-0 ${features.allow_shared_pool ? 'btn-accent' : 'btn-outline'}`}
-                onClick={() => void handleSharedPoolAction()}
-                disabled={syncingSharedPool}
-              >
-                <span className="truncate">获取账号</span>
-                {syncingSharedPool ? <span className="loading loading-spinner loading-xs" /> : null}
-              </button>
-
-              <button
-                className="btn btn-secondary h-11 rounded-2xl px-0"
-                disabled={runningOpenClawSetup}
-                onClick={() => setOpenClawIntroOpen(true)}
-              >
-                {runningOpenClawSetup ? <span className="loading loading-spinner loading-xs" /> : 'OpenClaw'}
-              </button>
-
-              <button className="btn btn-primary h-11 rounded-2xl px-0" onClick={() => void handleOpenVipDialog()} disabled={preparingVipDialog}>
-                {preparingVipDialog ? <span className="loading loading-spinner loading-xs" /> : null}
-                开通会员
-              </button>
-
-              <button
-                className="btn btn-outline h-11 rounded-2xl px-0"
-                onClick={() => setOpenAICompatDialogOpen(true)}
-              >
-                OpenAI兼容
-              </button>
-
-              <button
-                className="btn btn-outline h-11 rounded-2xl px-0"
-                onClick={() => setCodexConfigDialogOpen(true)}
-              >
-                Codex配置
-              </button>
-            </div>
-
-          </div>
-
-          {normalizingFreeTier ? (
-            <div className="alert alert-warning py-2 text-sm">
-              <span>正在按免费版规则整理认证文件。</span>
-            </div>
-          ) : null}
-
-        </div>
-      </section>
-
-      <section className="rounded-[24px] border border-base-300 bg-base-100 shadow-sm">
-        <div className="border-b border-base-200 px-2.5 py-2.5">
-          <div ref={providerTabsContainerRef} className="-mx-1 overflow-x-auto scrollbar-none">
-            <div className="tabs tabs-box tabs-sm inline-flex min-w-full flex-nowrap gap-1 bg-transparent px-1">
-              {mobileProviderOrder.map((provider) => {
-                const active = provider === activeProvider
-                const label = provider === 'all' ? '全部' : PROVIDER_META[provider].label
-                const count =
-                  provider === 'all'
-                    ? Object.values(providerCounts).reduce((sum, value) => sum + (value ?? 0), 0)
-                    : (providerCounts[provider] ?? 0)
-                return (
-                  <button
-                    key={provider}
-                    ref={(node) => {
-                      if (node) {
-                        providerTabRefs.current.set(provider, node)
-                      } else {
-                        providerTabRefs.current.delete(provider)
-                      }
-                    }}
-                    className={`tab h-9 min-w-fit whitespace-nowrap rounded-full px-3 text-xs font-medium ${active ? 'tab-active bg-primary text-primary-content' : ''}`}
-                    onClick={() => setActiveProvider(provider)}
-                  >
-                    {label}
-                    <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${active ? 'bg-primary-content/15 text-primary-content' : 'bg-base-300 text-base-content/65'}`}>
-                      {count}
-                    </span>
-                  </button>
-                )
-              })}
+            <div className={`badge badge-sm border-none font-bold ${
+              planLabel.toLowerCase().includes('max') ? 'bg-warning text-warning-content' : 
+              planLabel.toLowerCase().includes('pro') ? 'bg-primary text-primary-content' : 
+              'bg-info text-info-content'
+            }`}>
+              {planLabel}
             </div>
           </div>
         </div>
+        {formattedPlanExpiresAt ? (
+          <p className="text-xs text-base-content/60 mt-1">到期时间 {formattedPlanExpiresAt}</p>
+        ) : null}
+      </div>
 
-        <div className="px-2 pb-2 pt-1.5">
-          <QuotaPanel
+      <div className="grid grid-cols-3 gap-2 w-full mb-2 px-4">
+        <button
+          className={`btn btn-xs h-8 rounded-lg border-none shadow-sm ${features.allow_shared_pool ? 'btn-success text-success-content' : 'btn-outline'}`}
+          onClick={() => void handleSharedPoolAction()}
+          disabled={syncingSharedPool}
+        >
+          获取账号
+        </button>
+
+        <button
+          className="btn btn-neutral btn-xs h-8 rounded-lg border-none shadow-sm"
+          disabled={runningOpenClawSetup}
+          onClick={() => setOpenClawIntroOpen(true)}
+        >
+          OpenClaw
+        </button>
+
+        <button 
+          className="btn btn-primary btn-xs h-8 rounded-lg border-none shadow-sm" 
+          onClick={() => void handleOpenVipDialog()} 
+          disabled={preparingVipDialog}
+        >
+          开通会员
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 w-full mb-6 px-4">
+        <button
+          className="btn btn-neutral btn-xs h-8 rounded-lg border-none shadow-sm"
+          onClick={() => setOpenAICompatDialogOpen(true)}
+        >
+          OpenAI兼容
+        </button>
+        <button
+          className="btn btn-neutral btn-xs h-8 rounded-lg border-none shadow-sm"
+          onClick={() => setCodexConfigDialogOpen(true)}
+        >
+          Codex配置
+        </button>
+      </div>
+
+      {normalizingFreeTier ? (
+        <div className="alert alert-warning py-2 text-sm mx-4 mb-4 w-auto">
+          <span>正在按免费版规则整理认证文件。</span>
+        </div>
+      ) : null}
+
+      <div className="w-full px-4 mb-4">
+        <div ref={providerTabsContainerRef} className="overflow-x-auto scrollbar-none flex gap-2 w-full">
+          {mobileProviderOrder.map((provider) => {
+            const active = provider === activeProvider
+            const label = provider === 'all' ? '全部' : PROVIDER_META[provider].label
+            return (
+              <button
+                key={provider}
+                ref={(node) => {
+                  if (node) {
+                    providerTabRefs.current.set(provider, node)
+                  } else {
+                    providerTabRefs.current.delete(provider)
+                  }
+                }}
+                className={`text-sm whitespace-nowrap transition-colors outline-none px-3 py-1.5 rounded-full ${active ? 'bg-base-content/10 text-base-content font-bold' : 'text-base-content/50 hover:text-base-content/80'}`}
+                onClick={() => setActiveProvider(provider)}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3 w-full pb-8 px-4">
+        <QuotaPanel
             cpaRunning={cpaState?.status === 'running'}
             activeProvider={activeProvider}
             refreshToken={quotaRefreshToken}
@@ -910,12 +895,10 @@ export function UserWorkspace({
             allowAutoRotation={features.allow_auto_rotation}
             onUpgradeVip={handleOpenVipDialog}
             onOpenOauth={() => setOauthDialogOpen(true)}
-            onProviderCountsChange={setProviderCounts}
             onNotify={onNotify}
             onError={onError}
           />
-        </div>
-      </section>
+      </div>
 
       <dialog className={`modal ${vipDialogOpen ? 'modal-open' : ''}`}>
         <div className="modal-box max-w-2xl">

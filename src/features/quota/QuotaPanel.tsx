@@ -1485,8 +1485,8 @@ export function QuotaPanel({
                     className={`rounded-box border shadow-sm transition-all ${
                       compactUserMode
                         ? shared
-                          ? 'rounded-[24px] border-warning/30 bg-warning/10'
-                          : 'rounded-[24px] border-success/30 bg-success/10'
+                          ? 'rounded-2xl border-warning/30 bg-warning/10'
+                          : 'rounded-2xl border-success/30 bg-success/10'
                         : enabled
                           ? 'border-success/40 bg-success/10 ring-1 ring-success/20'
                           : 'border-base-300 bg-base-100'
@@ -1494,15 +1494,15 @@ export function QuotaPanel({
                     onClick={() => void enableFile(file)}
                   >
                     {compactUserMode ? (
-                      <div className="space-y-2.5 p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <div className={`text-lg ${shared ? 'text-warning' : 'text-success'}`}>◉</div>
-                            <div className="truncate text-[15px] font-bold text-base-content">
+                      <div className="space-y-1.5 p-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <div className={`text-base ${shared ? 'text-warning' : 'text-success'}`}>◉</div>
+                            <div className="truncate text-sm font-semibold text-base-content">
                               {shared ? '共享账号' : '账号数据'}
                             </div>
                           </div>
-                          <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-0.5">
                             <button
                               className={`btn btn-ghost btn-xs btn-square ${state.status === 'loading' ? 'btn-disabled' : ''}`}
                               onClick={(event) => {
@@ -1513,9 +1513,9 @@ export function QuotaPanel({
                               title="刷新"
                             >
                               {state.status === 'loading' ? (
-                                <span className="loading loading-spinner loading-xs" />
+                                <span className="loading loading-spinner loading-[10px]" />
                               ) : (
-                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                   <path d="M21 2v6h-6" />
                                   <path d="M3 12a9 9 0 0 1 15.55-6.36L21 8" />
                                   <path d="M3 22v-6h6" />
@@ -1533,9 +1533,9 @@ export function QuotaPanel({
                               title="删除"
                             >
                               {deletingAuthName === file.name ? (
-                                <span className="loading loading-spinner loading-xs" />
+                                <span className="loading loading-spinner loading-[10px]" />
                               ) : (
-                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                   <path d="M3 6h18" />
                                   <path d="M8 6V4h8v2" />
                                   <path d="M19 6l-1 14H6L5 6" />
@@ -1545,28 +1545,28 @@ export function QuotaPanel({
                           </div>
                         </div>
 
-                        <div className="grid gap-2 text-[13px]">
-                          <div className="flex items-center justify-between gap-3">
+                        <div className="grid gap-1.5 text-xs">
+                          <div className="flex items-center justify-between gap-2">
                             <span className="text-base-content/55">当前账号</span>
-                            <span className="max-w-[11.5rem] truncate font-semibold text-base-content" title={file.name}>
+                            <span className="max-w-[12rem] truncate font-medium text-base-content" title={file.name}>
                               {file.name}
                             </span>
                           </div>
-                          <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center justify-between gap-2">
                             <span className="text-base-content/55">状态</span>
-                            <span className={`font-semibold ${compactStatusClass}`}>{compactStatusLabel}</span>
+                            <span className={`font-medium ${compactStatusClass}`}>{compactStatusLabel}</span>
                           </div>
-                          <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center justify-between gap-2">
                             <span className="text-base-content/55">类型</span>
-                            <span className="badge badge-primary badge-sm border-0 font-medium">
+                            <span className="badge badge-primary badge-sm border-0 font-normal px-2 h-4 text-[10px]">
                               {getCompactPlanLabel(data, resolvedProvider)}
                             </span>
                           </div>
                         </div>
 
-                        <div className="space-y-3">
+                        <div className="space-y-2 pt-1">
                           {state.status === 'error' ? (
-                            <div className="alert alert-error py-2 text-[12px]">
+                            <div className="alert alert-error py-1.5 px-2.5 text-[11px] rounded-lg">
                               <span>{state.error}</span>
                             </div>
                           ) : null}
@@ -1575,26 +1575,26 @@ export function QuotaPanel({
                             compactMetrics.map((metric) => {
                               const percentValue = parsePercentDisplay(metric.value)
                               return (
-                                <div key={metric.id} className="space-y-1.5">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <div className="min-w-0 text-[13px] font-semibold text-base-content/80">
+                                <div key={metric.id} className="space-y-1">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="min-w-0 text-xs font-medium text-base-content/80">
                                       {metric.label.includes('5') ? '5h' : '1week'}
                                     </div>
-                                    <div className="flex shrink-0 items-center gap-2">
-                                      <div className={`text-[13px] font-bold ${getMetricToneClass(metric.tone)}`}>
+                                    <div className="flex shrink-0 items-center gap-1.5">
+                                      <div className={`text-xs font-semibold ${getMetricToneClass(metric.tone)}`}>
                                         {metric.value}
                                       </div>
-                                      <div className="text-[11px] text-base-content/45">{getMetricResetText(metric.hint)}</div>
+                                      <div className="text-[10px] text-base-content/45">{getMetricResetText(metric.hint)}</div>
                                     </div>
                                   </div>
                                   {percentValue !== null ? (
                                     <progress
-                                      className={`progress ${metric.tone === 'error' ? 'progress-error' : metric.tone === 'warning' ? 'progress-warning' : metric.tone === 'info' ? 'progress-info' : 'progress-success'} h-2 w-full`}
+                                      className={`progress ${metric.tone === 'error' ? 'progress-error' : metric.tone === 'warning' ? 'progress-warning' : metric.tone === 'info' ? 'progress-info' : 'progress-success'} h-1.5 w-full bg-base-content/10`}
                                       value={percentValue}
                                       max="100"
                                     />
                                   ) : (
-                                    <div className="rounded-full bg-base-200 px-2.5 py-1 text-[12px] font-medium text-base-content/60">
+                                    <div className="rounded-full bg-base-200 px-2 py-0.5 text-[10px] font-normal text-base-content/60">
                                       {metric.value}
                                     </div>
                                   )}
@@ -1602,13 +1602,13 @@ export function QuotaPanel({
                               )
                             })
                           ) : state.status === 'loading' ? (
-                            <div className="flex items-center gap-2 rounded-box bg-base-200/70 px-2.5 py-2.5">
-                              <span className="loading loading-spinner loading-sm" />
-                              <span className="text-[13px] text-base-content/70">正在查询最新配额...</span>
+                            <div className="flex items-center gap-1.5 rounded-lg bg-base-200/70 px-2 py-1.5">
+                              <span className="loading loading-spinner loading-[10px]" />
+                              <span className="text-[11px] text-base-content/70">正在查询最新配额...</span>
                             </div>
                           ) : (
-                            <div className="rounded-box border border-dashed border-base-300 px-2.5 py-3 text-[12px] text-base-content/55">
-                              点击卡片即可启用并自动刷新配额。
+                            <div className="rounded-lg border border-dashed border-base-300 px-2 py-2 text-[11px] text-base-content/55 text-center">
+                              点击卡片即可启用并自动刷新配额
                             </div>
                           )}
                         </div>

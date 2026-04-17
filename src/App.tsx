@@ -39,34 +39,6 @@ const THEME_KEY = 'cpapp-theme'
 const THEMES = ['light', 'dark', 'synthwave', 'cyberpunk'] as const
 type Theme = typeof THEMES[number]
 
-function ThemeDropdown({ theme, onChange }: { theme: Theme; onChange: (theme: Theme) => void }) {
-  return (
-    <div className="dropdown dropdown-end">
-      <div tabIndex={0} role="button" className="btn btn-sm btn-ghost">
-        主题
-        <svg width="12px" height="12px" className="inline-block h-2 w-2 fill-current opacity-60" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2048 2048">
-          <path d="M1799 349l242 241-1017 1017L7 590l242-241 775 775 775-775z"></path>
-        </svg>
-      </div>
-      <ul tabIndex={0} className="dropdown-content menu bg-base-200 rounded-box z-[1] w-52 p-2 shadow">
-        {THEMES.map((t) => (
-          <li key={t}>
-            <input
-              type="radio"
-              name="theme-dropdown"
-              className="theme-controller btn btn-sm btn-block btn-ghost justify-start"
-              aria-label={t}
-              value={t}
-              checked={theme === t}
-              onChange={() => onChange(t)}
-            />
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
-
 const createEmptySettings = (): BootstrapSettings => ({
   apiPort: 8317,
   autoStart: true,
@@ -803,8 +775,22 @@ function App() {
         <div className="navbar h-16 border-b border-base-300 bg-base-100 px-6 shadow-sm">
           <div className="flex-1">
             <div className="flex items-center gap-3">
-              <div className="text-2xl font-black tracking-tight">CPM 管理入口</div>
-              <ThemeDropdown theme={theme} onChange={setTheme} />
+              <div 
+                className="flex items-center gap-2 text-2xl font-black tracking-tight cursor-pointer select-none hover:opacity-80 transition-opacity"
+                onClick={() => {
+                  const currentIndex = THEMES.indexOf(theme)
+                  const nextIndex = (currentIndex + 1) % THEMES.length
+                  setTheme(THEMES[nextIndex])
+                }}
+                title="点击切换主题"
+              >
+                <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-content shadow-sm">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                  </svg>
+                </div>
+                CPM 管理入口
+              </div>
               {canUseDeveloperSwitch ? (
                 <div className="join join-horizontal">
                   <button
@@ -866,36 +852,46 @@ function App() {
           </div>
         </div>
       ) : (
-        <div className="border-b border-base-300 bg-base-100 shadow-sm">
-          <div className="mx-auto flex h-14 w-full max-w-[420px] items-center justify-between px-4">
-            <div className="min-w-0">
-              <div className="text-sm font-black tracking-wide">CPAPP</div>
-              <div className="truncate text-[11px] text-base-content/55">{session.user.email}</div>
+        <div className="w-full flex justify-between items-center pt-2 px-4" >
+          <div 
+            className="flex items-center gap-2 font-bold text-sm cursor-pointer select-none hover:opacity-80 transition-opacity" 
+            onClick={() => {
+              const currentIndex = THEMES.indexOf(theme)
+              const nextIndex = (currentIndex + 1) % THEMES.length
+              setTheme(THEMES[nextIndex])
+            }}
+            title="点击切换主题"
+          >
+            <div className="w-4 h-4 rounded-md bg-primary flex items-center justify-center text-primary-content shadow-sm">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+              </svg>
             </div>
-            <div className="flex items-center gap-2">
-              {canUseDeveloperSwitch ? (
-                <div className="join join-horizontal">
-                  <button
-                    className={`join-item btn btn-xs ${developerSurfaceMode === 'user' ? 'btn-primary' : 'btn-outline'}`}
-                    onClick={() => setDeveloperSurfaceMode('user')}
-                  >
-                    User
-                  </button>
-                  <button
-                    className={`join-item btn btn-xs ${developerSurfaceMode === 'admin' ? 'btn-primary' : 'btn-outline'}`}
-                    onClick={() => setDeveloperSurfaceMode('admin')}
-                  >
-                    Admin
-                  </button>
-                </div>
-              ) : null}
-              <ThemeDropdown theme={theme} onChange={setTheme} />
-              <button
-                className="btn btn-ghost btn-sm btn-square"
-                disabled={checkingUpdate}
-                onClick={() => void checkForUpdates(false)}
-                title="检查更新"
-              >
+            CPSwitch
+          </div>
+          <div className="flex items-center gap-1">
+            {canUseDeveloperSwitch ? (
+              <div className="join join-horizontal">
+                <button
+                  className={`join-item btn btn-xs ${developerSurfaceMode === 'user' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setDeveloperSurfaceMode('user')}
+                >
+                  User
+                </button>
+                <button
+                  className={`join-item btn btn-xs ${developerSurfaceMode === 'admin' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setDeveloperSurfaceMode('admin')}
+                >
+                  Admin
+                </button>
+              </div>
+            ) : null}
+            <button
+              className="btn btn-ghost btn-sm btn-square"
+              disabled={checkingUpdate}
+              onClick={() => void checkForUpdates(false)}
+              title="检查更新"
+            >
                 {checkingUpdate ? (
                   <span className="loading loading-spinner loading-xs"></span>
                 ) : (
@@ -910,13 +906,12 @@ function App() {
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
               </button>
               <button
-                className="btn btn-ghost btn-sm btn-square text-error"
-                onClick={logout}
-                title="退出登录"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
-              </button>
-            </div>
+              className="btn btn-ghost btn-sm btn-square text-error"
+              onClick={logout}
+              title="退出登录"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+            </button>
           </div>
         </div>
       )}
