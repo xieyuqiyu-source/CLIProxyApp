@@ -145,11 +145,47 @@ pub struct OpenClawSetupResult {
     pub alias: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexConfigState {
+    pub config_path: String,
+    pub exists: bool,
+    pub current_model: Option<String>,
+    pub current_base_url: Option<String>,
+    pub available_models: Vec<String>,
+    pub can_restore_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexConfigUpdateResult {
+    pub config_path: String,
+    pub model: String,
+    pub base_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexConfigRestoreResult {
+    pub config_path: String,
+    pub restored: bool,
+}
+
 #[derive(Debug, Clone)]
 struct CommandSpec {
     program: PathBuf,
     args: Vec<String>,
     display: String,
+}
+
+const OPENCLAW_CLI_CACHE_FILE: &str = "openclaw-cli-path.txt";
+const CODEX_CONFIG_BACKUP_FILE: &str = "codex-config-backup.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexConfigBackup {
+    existed: bool,
+    content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1042,6 +1078,94 @@ pub fn setup_openclaw_provider(app: &AppHandle) -> Result<OpenClawSetupResult, S
     })
 }
 
+pub fn get_codex_config_state(app: &AppHandle) -> Result<CodexConfigState, String> {
+    let ctx = load_runtime_context(app)?;
+    let config_path = resolve_codex_config_path()?;
+    let exists = config_path.exists();
+    let (current_model, current_base_url) = if exists {
+        read_codex_config_values(&config_path)?
+    } else {
+        (None, None)
+    };
+    let api_host = if ctx.bootstrap.host == "0.0.0.0" {
+        "127.0.0.1".to_string()
+    } else {
+        ctx.bootstrap.host.clone()
+    };
+    let base_url = format!("http://{}:{}/v1", api_host, ctx.bootstrap.api_port);
+    let available_models = fetch_openclaw_models(&base_url, &ctx.bootstrap.management_key)?;
+
+    Ok(CodexConfigState {
+        config_path: config_path.display().to_string(),
+        exists,
+        current_model,
+        current_base_url,
+        available_models,
+        can_restore_default: codex_backup_path(app)?.exists(),
+    })
+}
+
+pub fn set_codex_config_model(
+    app: &AppHandle,
+    model: String,
+) -> Result<CodexConfigUpdateResult, String> {
+    let trimmed_model = model.trim();
+    if trimmed_model.is_empty() {
+        return Err("模型不能为空".to_string());
+    }
+
+    let ctx = load_runtime_context(app)?;
+    let api_host = if ctx.bootstrap.host == "0.0.0.0" {
+        "127.0.0.1".to_string()
+    } else {
+        ctx.bootstrap.host.clone()
+    };
+    let base_url = format!("http://{}:{}/v1", api_host, ctx.bootstrap.api_port);
+    let available_models = fetch_openclaw_models(&base_url, &ctx.bootstrap.management_key)?;
+    if !available_models.iter().any(|item| item == trimmed_model) {
+        return Err(format!("当前代理未提供模型：{trimmed_model}"));
+    }
+
+    let config_path = resolve_codex_config_path()?;
+    ensure_codex_backup(app, &config_path)?;
+    write_codex_config_values(&config_path, trimmed_model, &base_url)?;
+
+    Ok(CodexConfigUpdateResult {
+        config_path: config_path.display().to_string(),
+        model: trimmed_model.to_string(),
+        base_url,
+    })
+}
+
+pub fn restore_codex_config_default(app: &AppHandle) -> Result<CodexConfigRestoreResult, String> {
+    let config_path = resolve_codex_config_path()?;
+    let backup_path = codex_backup_path(app)?;
+    let backup_raw = fs::read_to_string(&backup_path)
+        .map_err(|error| format!("读取 Codex 备份失败 {}: {error}", backup_path.display()))?;
+    let backup = serde_json::from_str::<CodexConfigBackup>(&backup_raw)
+        .map_err(|error| format!("解析 Codex 备份失败 {}: {error}", backup_path.display()))?;
+
+    if backup.existed {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("创建 Codex 配置目录失败 {}: {error}", parent.display()))?;
+        }
+        fs::write(&config_path, backup.content)
+            .map_err(|error| format!("恢复 Codex 配置失败 {}: {error}", config_path.display()))?;
+    } else if config_path.exists() {
+        fs::remove_file(&config_path)
+            .map_err(|error| format!("删除 Codex 配置失败 {}: {error}", config_path.display()))?;
+    }
+
+    fs::remove_file(&backup_path)
+        .map_err(|error| format!("清理 Codex 备份失败 {}: {error}", backup_path.display()))?;
+
+    Ok(CodexConfigRestoreResult {
+        config_path: config_path.display().to_string(),
+        restored: true,
+    })
+}
+
 fn extract_auth_files_from_zip(
     archive_bytes: &[u8],
     archive_name: &str,
@@ -1111,7 +1235,14 @@ fn resolve_openclaw_command(
     app: &AppHandle,
     logs: &mut Vec<String>,
 ) -> Result<CommandSpec, String> {
-    let candidates = openclaw_command_candidates();
+    let mut candidates = Vec::new();
+    if let Some(cached) = load_cached_openclaw_command(app, logs) {
+        candidates.push(cached);
+    }
+    candidates.extend(openclaw_command_candidates());
+    if let Some(discovered) = resolve_openclaw_command_via_shell(app, logs) {
+        candidates.push(discovered);
+    }
     let mut errors = Vec::new();
 
     for candidate in candidates {
@@ -1119,6 +1250,9 @@ fn resolve_openclaw_command(
         match execute_command(&candidate, &["--help"]) {
             Ok(output) if output.status.success() => {
                 log_openclaw(app, logs, "OpenClaw CLI 检测通过");
+                if let Err(error) = store_openclaw_command(app, &candidate) {
+                    log_openclaw(app, logs, &format!("写入 OpenClaw CLI 缓存失败: {error}"));
+                }
                 return Ok(candidate);
             }
             Ok(output) => {
@@ -1150,10 +1284,17 @@ fn resolve_openclaw_config_path(
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if raw.is_empty() {
-        return Err("openclaw config file 未返回有效路径".to_string());
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stdout.is_empty() {
+        log_openclaw(app, logs, &format!("openclaw config file 输出: {stdout}"));
     }
+    if !stderr.is_empty() {
+        log_openclaw(app, logs, &format!("openclaw config file 警告: {stderr}"));
+    }
+    let Some(raw) = extract_openclaw_config_path(&stdout) else {
+        return Err("openclaw config file 未返回有效路径".to_string());
+    };
     let resolved = expand_user_path(&raw)?;
     log_openclaw(
         app,
@@ -1173,6 +1314,42 @@ fn expand_user_path(raw: &str) -> Result<PathBuf, String> {
         return Ok(home.join(rest.replace('\\', "/")));
     }
     Ok(PathBuf::from(raw))
+}
+
+fn extract_openclaw_config_path(raw: &str) -> Option<String> {
+    for line in raw.lines().rev() {
+        let cleaned = line.trim().trim_matches(|ch: char| ch == '"' || ch == '\'');
+        if cleaned.is_empty() {
+            continue;
+        }
+        if is_path_like(cleaned) {
+            return Some(cleaned.to_string());
+        }
+        for token in cleaned.split_whitespace().rev() {
+            let candidate = token.trim().trim_matches(|ch: char| ch == '"' || ch == '\'');
+            if is_path_like(candidate) {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn is_path_like(value: &str) -> bool {
+    if value.starts_with("~/")
+        || value.starts_with("~\\")
+        || value.starts_with('/')
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with(".\\")
+        || value.starts_with("..\\")
+        || value.starts_with("\\\\")
+    {
+        return true;
+    }
+
+    let bytes = value.as_bytes();
+    bytes.len() >= 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 fn openclaw_command_candidates() -> Vec<CommandSpec> {
@@ -1206,6 +1383,17 @@ fn openclaw_command_candidates() -> Vec<CommandSpec> {
             });
         }
 
+        if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+            candidates.push(CommandSpec {
+                program: PathBuf::from(local_app_data)
+                    .join("Programs")
+                    .join("OpenClaw")
+                    .join("openclaw.exe"),
+                args: Vec::new(),
+                display: "%LOCALAPPDATA%\\Programs\\OpenClaw\\openclaw.exe".to_string(),
+            });
+        }
+
         candidates.push(CommandSpec {
             program: PathBuf::from("npm.cmd"),
             args: vec!["exec".to_string(), "--".to_string(), "openclaw".to_string()],
@@ -1222,6 +1410,23 @@ fn openclaw_command_candidates() -> Vec<CommandSpec> {
             args: Vec::new(),
             display: "openclaw".to_string(),
         });
+        candidates.push(CommandSpec {
+            program: PathBuf::from("/opt/homebrew/bin/openclaw"),
+            args: Vec::new(),
+            display: "/opt/homebrew/bin/openclaw".to_string(),
+        });
+        candidates.push(CommandSpec {
+            program: PathBuf::from("/usr/local/bin/openclaw"),
+            args: Vec::new(),
+            display: "/usr/local/bin/openclaw".to_string(),
+        });
+        if let Ok(home) = user_home_dir() {
+            candidates.push(CommandSpec {
+                program: home.join(".local").join("bin").join("openclaw"),
+                args: Vec::new(),
+                display: "~/.local/bin/openclaw".to_string(),
+            });
+        }
         candidates.push(CommandSpec {
             program: PathBuf::from("npm"),
             args: vec!["exec".to_string(), "--".to_string(), "openclaw".to_string()],
@@ -1241,9 +1446,154 @@ fn execute_command(command: &CommandSpec, extra_args: &[&str]) -> Result<std::pr
     let mut process = Command::new(&command.program);
     process.args(&command.args);
     process.args(extra_args);
+    augment_process_path(&mut process);
     process
         .output()
         .map_err(|error| format!("{}: {error}", command.display))
+}
+
+fn resolve_openclaw_command_via_shell(
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+) -> Option<CommandSpec> {
+    let shell_candidates: Vec<(&str, Vec<&str>, &str)> = if cfg!(target_os = "windows") {
+        vec![
+            ("where.exe", vec!["openclaw"], "where openclaw"),
+            ("cmd.exe", vec!["/C", "where openclaw"], "cmd /C where openclaw"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            ("/bin/zsh", vec!["-lc", "command -v openclaw"], "zsh -lc command -v openclaw"),
+            ("/bin/bash", vec!["-lc", "command -v openclaw"], "bash -lc command -v openclaw"),
+        ]
+    } else {
+        vec![
+            ("/bin/bash", vec!["-lc", "command -v openclaw"], "bash -lc command -v openclaw"),
+            ("/bin/sh", vec!["-lc", "command -v openclaw"], "sh -lc command -v openclaw"),
+        ]
+    };
+
+    for (program, args, display) in shell_candidates {
+        log_openclaw(app, logs, &format!("尝试通过 Shell 查询 OpenClaw CLI: {display}"));
+        let mut process = Command::new(program);
+        process.args(args);
+        augment_process_path(&mut process);
+        let output = match process.output() {
+            Ok(output) => output,
+            Err(error) => {
+                log_openclaw(app, logs, &format!("{display} 失败: {error}"));
+                continue;
+            }
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if !stderr.is_empty() {
+                log_openclaw(app, logs, &format!("{display} 未命中: {stderr}"));
+            }
+            continue;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let candidate_path = line.trim();
+            if candidate_path.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(candidate_path);
+            if path.exists() {
+                log_openclaw(app, logs, &format!("Shell 已解析到 OpenClaw CLI: {}", path.display()));
+                return Some(CommandSpec {
+                    display: path.display().to_string(),
+                    program: path,
+                    args: Vec::new(),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn openclaw_cli_cache_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(resolve_paths(app)?.config_dir.join(OPENCLAW_CLI_CACHE_FILE))
+}
+
+fn load_cached_openclaw_command(app: &AppHandle, logs: &mut Vec<String>) -> Option<CommandSpec> {
+    let cache_path = match openclaw_cli_cache_path(app) {
+        Ok(path) => path,
+        Err(error) => {
+            log_openclaw(app, logs, &format!("解析 OpenClaw CLI 缓存路径失败: {error}"));
+            return None;
+        }
+    };
+    let raw = match fs::read_to_string(&cache_path) {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
+    let program = PathBuf::from(raw.trim());
+    if !program.exists() {
+        return None;
+    }
+    log_openclaw(app, logs, &format!("命中 OpenClaw CLI 缓存: {}", program.display()));
+    Some(CommandSpec {
+        display: program.display().to_string(),
+        program,
+        args: Vec::new(),
+    })
+}
+
+fn store_openclaw_command(app: &AppHandle, command: &CommandSpec) -> Result<(), String> {
+    if !command.program.is_absolute() {
+        return Ok(());
+    }
+    let cache_path = openclaw_cli_cache_path(app)?;
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 OpenClaw CLI 缓存目录失败 {}: {error}", parent.display()))?;
+    }
+    fs::write(&cache_path, command.program.display().to_string())
+        .map_err(|error| format!("写入 OpenClaw CLI 缓存失败 {}: {error}", cache_path.display()))
+}
+
+fn augment_process_path(process: &mut Command) {
+    let mut parts = Vec::new();
+    let separator = if cfg!(target_os = "windows") { ';' } else { ':' };
+
+    if let Some(current) = env::var_os("PATH") {
+        let current = current.to_string_lossy().trim().to_string();
+        if !current.is_empty() {
+            parts.push(current);
+        }
+    }
+
+    if cfg!(target_os = "windows") {
+        for key in ["LOCALAPPDATA", "APPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
+            if let Ok(value) = env::var(key) {
+                match key {
+                    "LOCALAPPDATA" | "APPDATA" => parts.push(format!("{value}\\npm")),
+                    "ProgramFiles" | "ProgramFiles(x86)" => parts.push(format!("{value}\\nodejs")),
+                    _ => {}
+                }
+            }
+        }
+    } else {
+        parts.push("/opt/homebrew/bin".to_string());
+        parts.push("/usr/local/bin".to_string());
+        parts.push("/usr/bin".to_string());
+        parts.push("/bin".to_string());
+        if let Ok(home) = user_home_dir() {
+            parts.push(home.join(".local").join("bin").display().to_string());
+        }
+    }
+
+    let mut deduped = Vec::new();
+    for part in parts {
+        let normalized = part.trim().to_string();
+        if normalized.is_empty() || deduped.iter().any(|existing| existing == &normalized) {
+            continue;
+        }
+        deduped.push(normalized);
+    }
+
+    process.env("PATH", deduped.join(&separator.to_string()));
 }
 
 fn user_home_dir() -> Result<PathBuf, String> {
@@ -1293,6 +1643,173 @@ fn fetch_openclaw_models(base_url: &str, api_key: &str) -> Result<Vec<String>, S
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+fn resolve_codex_config_path() -> Result<PathBuf, String> {
+    if let Ok(codex_home) = env::var("CODEX_HOME") {
+        let trimmed = codex_home.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            if path.extension().and_then(|value| value.to_str()) == Some("toml") {
+                return Ok(path);
+            }
+            return Ok(path.join("config.toml"));
+        }
+    }
+
+    let home = user_home_dir()?;
+    let default_dir = home.join(".codex");
+    let config_path = default_dir.join("config.toml");
+    if config_path.exists() {
+        return Ok(config_path);
+    }
+
+    let legacy_path = default_dir.join("codex.toml");
+    if legacy_path.exists() {
+        return Ok(legacy_path);
+    }
+
+    Ok(config_path)
+}
+
+fn codex_backup_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(resolve_paths(app)?.config_dir.join(CODEX_CONFIG_BACKUP_FILE))
+}
+
+fn ensure_codex_backup(app: &AppHandle, config_path: &Path) -> Result<(), String> {
+    let backup_path = codex_backup_path(app)?;
+    if backup_path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = backup_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 Codex 备份目录失败 {}: {error}", parent.display()))?;
+    }
+
+    let backup = if config_path.exists() {
+        CodexConfigBackup {
+            existed: true,
+            content: fs::read_to_string(config_path)
+                .map_err(|error| format!("读取 Codex 配置失败 {}: {error}", config_path.display()))?,
+        }
+    } else {
+        CodexConfigBackup {
+            existed: false,
+            content: String::new(),
+        }
+    };
+
+    let content = serde_json::to_string_pretty(&backup)
+        .map_err(|error| format!("序列化 Codex 备份失败: {error}"))?;
+    fs::write(&backup_path, content)
+        .map_err(|error| format!("写入 Codex 备份失败 {}: {error}", backup_path.display()))
+}
+
+fn read_codex_config_values(path: &Path) -> Result<(Option<String>, Option<String>), String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("读取 Codex 配置失败 {}: {error}", path.display()))?;
+    let mut model = None;
+    let mut base_url = None;
+
+    for line in content.lines() {
+        if model.is_none() {
+            model = parse_codex_string_line(line, "model");
+        }
+        if base_url.is_none() {
+            base_url = parse_codex_string_line(line, "openai_base_url");
+        }
+    }
+
+    Ok((model, base_url))
+}
+
+fn parse_codex_string_line(line: &str, key_name: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+
+    let (key, value) = trimmed.split_once('=')?;
+    if key.trim() != key_name {
+        return None;
+    }
+
+    let raw_value = value.split('#').next()?.trim();
+    let unquoted = raw_value
+        .strip_prefix('"')
+        .and_then(|item| item.strip_suffix('"'))
+        .or_else(|| raw_value.strip_prefix('\'').and_then(|item| item.strip_suffix('\'')))
+        .unwrap_or(raw_value)
+        .trim();
+    if unquoted.is_empty() {
+        return None;
+    }
+    Some(unquoted.to_string())
+}
+
+fn write_codex_config_values(path: &Path, model: &str, base_url: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 Codex 配置目录失败 {}: {error}", parent.display()))?;
+    }
+
+    let existing = if path.exists() {
+        fs::read_to_string(path)
+            .map_err(|error| format!("读取 Codex 配置失败 {}: {error}", path.display()))?
+    } else {
+        String::new()
+    };
+
+    let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut replaced_model = false;
+    let mut replaced_base_url = false;
+    let mut lines = Vec::new();
+
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('#') {
+            if let Some((key, _)) = trimmed.split_once('=') {
+                if !replaced_model && key.trim() == "model" {
+                    lines.push(format!("model = \"{model}\""));
+                    replaced_model = true;
+                    continue;
+                }
+                if !replaced_base_url && key.trim() == "openai_base_url" {
+                    lines.push(format!("openai_base_url = \"{base_url}\""));
+                    replaced_base_url = true;
+                    continue;
+                }
+            }
+        }
+        lines.push(line.to_string());
+    }
+
+    let mut insert_lines = Vec::new();
+    if !replaced_model {
+        insert_lines.push(format!("model = \"{model}\""));
+    }
+    if !replaced_base_url {
+        insert_lines.push(format!("openai_base_url = \"{base_url}\""));
+    }
+
+    if !insert_lines.is_empty() {
+        if !lines.is_empty() {
+            insert_lines.push(String::new());
+            insert_lines.extend(lines);
+            lines = insert_lines;
+        } else {
+            lines = insert_lines;
+        }
+    }
+
+    let mut output = lines.join(newline);
+    if !output.ends_with(newline) {
+        output.push_str(newline);
+    }
+
+    fs::write(path, output)
+        .map_err(|error| format!("写入 Codex 配置失败 {}: {error}", path.display()))
 }
 
 fn load_or_create_openclaw_config(

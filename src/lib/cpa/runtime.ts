@@ -5,6 +5,9 @@ import type {
   BootstrapSettings,
   CpaManagementInfo,
   CpaState,
+  CodexConfigRestoreResult,
+  CodexConfigState,
+  CodexConfigUpdateResult,
   ExportAuthArchiveResult,
   ImportAuthFilesResult,
   ImportAuthInputFile,
@@ -33,6 +36,12 @@ export const cpaRuntime = {
     invoke<LocalAuthFile[]>('get_local_auth_files'),
   setupOpenClawProvider: () =>
     invoke<OpenClawSetupResult>('setup_openclaw_provider'),
+  getCodexConfigState: () =>
+    invoke<CodexConfigState>('get_codex_config_state'),
+  setCodexConfigModel: (model: string) =>
+    invoke<CodexConfigUpdateResult>('set_codex_config_model', { model }),
+  restoreCodexConfigDefault: () =>
+    invoke<CodexConfigRestoreResult>('restore_codex_config_default'),
   checkAppUpdate: () =>
     invoke<AppUpdateInfo>('check_app_update'),
   onOpenClawSetupLog: (handler: (line: string) => void) =>

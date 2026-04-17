@@ -73,6 +73,26 @@ export interface OpenClawSetupResult {
   alias: string
 }
 
+export interface CodexConfigState {
+  configPath: string
+  exists: boolean
+  currentModel: string | null
+  currentBaseUrl: string | null
+  availableModels: string[]
+  canRestoreDefault: boolean
+}
+
+export interface CodexConfigUpdateResult {
+  configPath: string
+  model: string
+  baseUrl: string
+}
+
+export interface CodexConfigRestoreResult {
+  configPath: string
+  restored: boolean
+}
+
 export interface AppUpdateInfo {
   currentVersion: string
   latestVersion: string

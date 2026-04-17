@@ -83,6 +83,9 @@ pub fn run() {
             open_external_target,
             import_vertex_credential,
             setup_openclaw_provider,
+            get_codex_config_state,
+            set_codex_config_model,
+            restore_codex_config_default,
             check_app_update,
             proxy_cloud_request,
             proxy_cloud_upload,
@@ -331,6 +334,34 @@ async fn setup_openclaw_provider(
     tauri::async_runtime::spawn_blocking(move || cpa::setup_openclaw_provider(&app))
         .await
         .map_err(|error| format!("failed to join OpenClaw setup task: {error}"))?
+}
+
+#[tauri::command]
+async fn get_codex_config_state(
+    app: tauri::AppHandle,
+) -> Result<cpa::CodexConfigState, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::get_codex_config_state(&app))
+        .await
+        .map_err(|error| format!("failed to join Codex config task: {error}"))?
+}
+
+#[tauri::command]
+async fn set_codex_config_model(
+    app: tauri::AppHandle,
+    model: String,
+) -> Result<cpa::CodexConfigUpdateResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::set_codex_config_model(&app, model))
+        .await
+        .map_err(|error| format!("failed to join Codex config write task: {error}"))?
+}
+
+#[tauri::command]
+async fn restore_codex_config_default(
+    app: tauri::AppHandle,
+) -> Result<cpa::CodexConfigRestoreResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::restore_codex_config_default(&app))
+        .await
+        .map_err(|error| format!("failed to join Codex config restore task: {error}"))?
 }
 
 #[tauri::command]

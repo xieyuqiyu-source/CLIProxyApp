@@ -13,6 +13,8 @@ import type {
 } from '../../lib/cloud/types'
 import type { CpaState } from '../../lib/cpa/types'
 import { OAuthPanel } from '../oauth/OAuthPanel'
+import { OpenAIProvidersPanel } from '../openai-providers/OpenAIProvidersPanel'
+import { CodexConfigDialog } from '../codex-config/CodexConfigDialog'
 import type { OAuthProvider } from '../oauth/types'
 import { cloudClient } from '../../lib/cloud/client'
 import { formatPlanLabel } from '../../lib/cloud/planLabels'
@@ -127,6 +129,8 @@ export function UserWorkspace({
   const [providerCounts, setProviderCounts] = useState<Partial<Record<QuotaProvider, number>>>({})
   const [vipDialogOpen, setVipDialogOpen] = useState(false)
   const [oauthDialogOpen, setOauthDialogOpen] = useState(false)
+  const [openAICompatDialogOpen, setOpenAICompatDialogOpen] = useState(false)
+  const [codexConfigDialogOpen, setCodexConfigDialogOpen] = useState(false)
   const [sharedPoolInfoOpen, setSharedPoolInfoOpen] = useState(false)
   const [syncingSharedPool, setSyncingSharedPool] = useState(false)
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0)
@@ -768,7 +772,7 @@ export function UserWorkspace({
           </div>
 
           <div className="grid gap-2">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 className={`btn h-11 rounded-2xl px-0 ${features.allow_shared_pool ? 'btn-accent' : 'btn-outline'}`}
                 onClick={() => void handleSharedPoolAction()}
@@ -789,6 +793,20 @@ export function UserWorkspace({
               <button className="btn btn-primary h-11 rounded-2xl px-0" onClick={() => void handleOpenVipDialog()} disabled={preparingVipDialog}>
                 {preparingVipDialog ? <span className="loading loading-spinner loading-xs" /> : null}
                 开通会员
+              </button>
+
+              <button
+                className="btn btn-outline h-11 rounded-2xl px-0"
+                onClick={() => setOpenAICompatDialogOpen(true)}
+              >
+                OpenAI兼容
+              </button>
+
+              <button
+                className="btn btn-outline h-11 rounded-2xl px-0"
+                onClick={() => setCodexConfigDialogOpen(true)}
+              >
+                Codex配置
               </button>
             </div>
 
@@ -1155,6 +1173,35 @@ export function UserWorkspace({
           </div>
         </div>
       </dialog>
+
+      <dialog className={`modal ${openAICompatDialogOpen ? 'modal-open' : ''}`}>
+        <div className="modal-box max-w-2xl p-0">
+          <div className="flex items-center justify-between border-b border-base-200 px-4 py-3">
+            <div>
+              <h3 className="text-lg font-bold">OpenAI兼容</h3>
+              <p className="mt-1 text-xs text-base-content/60">这里可以直接配置你想接入的 OpenAI 兼容模型。</p>
+            </div>
+            <button className="btn btn-ghost btn-sm btn-circle shrink-0" onClick={() => setOpenAICompatDialogOpen(false)}>
+              ✕
+            </button>
+          </div>
+          <div className="max-h-[78vh] overflow-auto px-4 py-4">
+            <OpenAIProvidersPanel
+              cpaRunning={cpaState?.status === 'running'}
+              onNotify={onNotify}
+              onError={onError}
+              simpleMode
+            />
+          </div>
+        </div>
+      </dialog>
+
+      <CodexConfigDialog
+        open={codexConfigDialogOpen}
+        onClose={() => setCodexConfigDialogOpen(false)}
+        onNotify={onNotify}
+        onError={onError}
+      />
 
       <dialog className={`modal ${openClawIntroOpen ? 'modal-open' : ''}`}>
         <div className="modal-box max-w-md">

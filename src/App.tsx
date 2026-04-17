@@ -6,6 +6,7 @@ import { OAuthPanel } from './features/oauth/OAuthPanel'
 import { QuotaPanel } from './features/quota/QuotaPanel'
 import { AuthFilesPanel } from './features/auth-files/AuthFilesPanel'
 import { CloudAdminPanel } from './features/cloud-admin/CloudAdminPanel'
+import { OpenAIProvidersPanel } from './features/openai-providers/OpenAIProvidersPanel'
 import { UserWorkspace } from './features/user-workspace/UserWorkspace'
 import { authFilesApi } from './features/auth-files/api'
 import { cloudClient } from './lib/cloud/client'
@@ -21,7 +22,7 @@ import type {
   ImportAuthFilesResult
 } from './lib/cpa/types'
 
-type AdminTab = 'overview' | 'oauth' | 'auth-files' | 'quota' | 'cloud-admin' | 'cpm'
+type AdminTab = 'overview' | 'oauth' | 'auth-files' | 'quota' | 'openai-providers' | 'cloud-admin' | 'cpm'
 type UserTab = 'overview' | 'oauth' | 'auth-files' | 'providers' | 'quota' | 'stats'
 
 interface LoginSession {
@@ -956,6 +957,13 @@ function App() {
             </button>
             <button
               role="tab"
+              className={`tab ${adminTab === 'openai-providers' ? 'tab-active' : ''}`}
+              onClick={() => setAdminTab('openai-providers')}
+            >
+              OpenAI兼容
+            </button>
+            <button
+              role="tab"
               className={`tab ${adminTab === 'cloud-admin' ? 'tab-active' : ''}`}
               onClick={() => setAdminTab('cloud-admin')}
             >
@@ -982,6 +990,8 @@ function App() {
                         ? '认证文件'
                       : adminTab === 'quota'
                         ? '配额管理'
+                        : adminTab === 'openai-providers'
+                          ? 'OpenAI 兼容提供商'
                         : adminTab === 'cloud-admin'
                           ? '云用户与共享池'
                         : '原始 CPM 管理页'}
@@ -1246,6 +1256,12 @@ function App() {
             />
           ) : adminTab === 'quota' ? (
             <QuotaPanel
+              cpaRunning={cpaState?.status === 'running'}
+              onNotify={showToast}
+              onError={handleLoadError}
+            />
+          ) : adminTab === 'openai-providers' ? (
+            <OpenAIProvidersPanel
               cpaRunning={cpaState?.status === 'running'}
               onNotify={showToast}
               onError={handleLoadError}
