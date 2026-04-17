@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "CLIProxyApp",
+  "productName": "CPSwitch",
   "version": "0.1.9",
-  "identifier": "com.xieyuqiyu.cliproxyapp",
+  "identifier": "com.xieyuqiyu.cpswitch",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "CLIProxyApp",
+        "title": "CPSwitch",
         "width": 430,
         "height": 920,
         "minWidth": 390,

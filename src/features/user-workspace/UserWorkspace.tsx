@@ -158,6 +158,7 @@ export function UserWorkspace({
   const [lastPaymentCheckedAt, setLastPaymentCheckedAt] = useState<string | null>(null)
   const [manualHelpVisible, setManualHelpVisible] = useState(false)
   const paidNotifiedOrderRef = useRef<string | null>(null)
+  const closeCodexConfigDialog = useCallback(() => setCodexConfigDialogOpen(false), [])
   const planLabel = useMemo(() => formatPlanLabel(plan.planCode, plan.name), [plan.name, plan.planCode])
   const formattedPlanExpiresAt = useMemo(() => {
     if (!planExpiresAt) {
@@ -199,6 +200,47 @@ export function UserWorkspace({
       })
     },
     [cloudToken, paymentQuoteCache]
+  )
+
+  const refreshPaymentQuotesForProduct = useCallback(
+    async (productCode: string) => {
+      const monthsList: Array<1 | 6 | 12> = [1, 6, 12]
+      try {
+        setLoadingPaymentQuote(true)
+        setPaymentQuoteCache((current) => {
+          const next = { ...current }
+          monthsList.forEach((months) => {
+            delete next[buildQuoteCacheKey(productCode, months, 'standard')]
+          })
+          return next
+        })
+
+        const responses = await Promise.all(
+          monthsList.map(async (months) => {
+            const response = await cloudClient.quotePaymentOrder(cloudToken, {
+              product_code: productCode,
+              billing_months: months,
+              purchase_mode: 'standard'
+            })
+            return { months, quote: response.quote }
+          })
+        )
+
+        setPaymentQuoteCache((current) => {
+          const next = { ...current }
+          responses.forEach(({ months, quote }) => {
+            next[buildQuoteCacheKey(productCode, months, 'standard')] = quote
+          })
+          return next
+        })
+
+        const selectedQuote = responses.find(({ months }) => months === selectedBillingMonths)?.quote ?? null
+        setPaymentQuote(selectedQuote)
+      } finally {
+        setLoadingPaymentQuote(false)
+      }
+    },
+    [cloudToken, selectedBillingMonths]
   )
 
   const ensurePaymentProductsLoaded = useCallback(async () => {
@@ -445,6 +487,7 @@ export function UserWorkspace({
       const cached = paymentQuoteCache[quoteKey]
       if (cached) {
         setPaymentQuote(cached)
+        setLoadingPaymentQuote(false)
         return
       }
       try {
@@ -901,7 +944,12 @@ export function UserWorkspace({
                       className={`rounded-2xl border p-3 text-left transition ${active ? 'border-primary bg-primary/5 shadow-sm ring-1 ring-primary/15' : 'border-base-300 bg-base-100'} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
                       onClick={() => {
                         if (disabled) return
+                        if (product.productCode === selectedProductCode) return
                         setSelectedProductCode(product.productCode)
+                        setPaymentQuote(null)
+                        void refreshPaymentQuotesForProduct(product.productCode).catch((error) => {
+                          onError(error instanceof Error ? error.message : String(error))
+                        })
                       }}
                       disabled={disabled}
                     >
@@ -922,33 +970,48 @@ export function UserWorkspace({
                   ) : null}
                 </div>
                 <div className="space-y-3">
-                  <div className="grid grid-cols-3 gap-2">
-                    {[1, 6, 12].map((months) => (
-                      <button
-                        key={months}
-                        className={`rounded-2xl border p-3 text-left transition ${
-                          selectedBillingMonths === months
-                            ? 'border-primary bg-primary/8 ring-1 ring-primary/20'
-                            : 'border-base-300 bg-base-100'
-                        }`}
-                        onClick={() => setSelectedBillingMonths(months as 1 | 6 | 12)}
-                        disabled={hasPendingPayment || downgradeBlocked}
-                      >
-                        <div className="text-sm font-semibold">{months === 1 ? '月付' : months === 6 ? '半年付' : '年付'}</div>
-                        <div className="mt-2 min-h-[28px]">
-                          {billingQuotes[months as 1 | 6 | 12] ? (
-                            <div className="text-lg font-bold">
-                              ¥{(billingQuotes[months as 1 | 6 | 12]!.amount / 100).toFixed(2)}
-                            </div>
-                          ) : loadingPaymentQuote ? (
-                            <div className="flex items-center gap-1 text-xs text-base-content/55">
-                              <span className="loading loading-spinner loading-xs" />
-                              加载中
-                            </div>
-                          ) : null}
-                        </div>
-                      </button>
-                    ))}
+                  <div className="space-y-2.5">
+                    {[1, 6, 12].map((months) => {
+                      const quote = billingQuotes[months as 1 | 6 | 12]
+                      const originalAmount = ((selectedProduct?.priceAmount ?? 0) * months) / 100
+                      const label = months === 1 ? '\u6708\u4ed8' : months === 6 ? '\u534a\u5e74\u4ed8' : '\u5e74\u4ed8'
+
+                      return (
+                        <button
+                          key={months}
+                          className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${
+                            selectedBillingMonths === months
+                              ? 'border-primary bg-primary/8 ring-1 ring-primary/20'
+                              : 'border-base-300 bg-base-100'
+                          }`}
+                          onClick={() => setSelectedBillingMonths(months as 1 | 6 | 12)}
+                          disabled={hasPendingPayment || downgradeBlocked}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-base font-semibold">{label}</div>
+                            {months === 6 || months === 12 ? (
+                              <div className="mt-1 text-xs text-base-content/55">
+                                <span className="line-through">{'\u539f\u4ef7 \u00a5'}{originalAmount.toFixed(2)}</span>
+                                <span className="mx-1.5 text-base-content/30">{'\u00b7'}</span>
+                                <span className="font-semibold text-warning">{months === 6 ? '85\u6298' : '7\u6298'}</span>
+                              </div>
+                            ) : (
+                              <div className="mt-1 text-xs text-base-content/40">{'\u6807\u51c6\u4ef7\u683c'}</div>
+                            )}
+                          </div>
+                          <div className="ml-4 min-w-[104px] text-right">
+                            {quote ? (
+                              <div className="text-xl font-black">{'\u00a5'}{(quote.amount / 100).toFixed(2)}</div>
+                            ) : loadingPaymentQuote ? (
+                              <div className="flex items-center justify-end gap-1 text-xs text-base-content/55">
+                                <span className="loading loading-spinner loading-xs" />
+                                {'\u52a0\u8f7d\u4e2d...'}
+                              </div>
+                            ) : null}
+                          </div>
+                        </button>
+                      )
+                    })}
                   </div>
                   {upgradingToProMax ? (
                     <div className="rounded-2xl border border-error/40 bg-error/10 px-3 py-3 text-xs leading-6 text-error">
@@ -1198,7 +1261,7 @@ export function UserWorkspace({
 
       <CodexConfigDialog
         open={codexConfigDialogOpen}
-        onClose={() => setCodexConfigDialogOpen(false)}
+        onClose={closeCodexConfigDialog}
         onNotify={onNotify}
         onError={onError}
       />

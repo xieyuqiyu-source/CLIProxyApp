@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{webview::PageLoadEvent, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const JIEGEHAO_LOGIN_URL: &str = "https://jiegehao.cn/api/policy/password";
 const JIEGEHAO_PIT_URL: &str = "https://jiegehao.cn/api/lease/pit";
@@ -81,6 +81,18 @@ fn percent_encode(s: &str) -> String {
         }
     }
     result
+}
+
+fn emit_autologin_event(app: &AppHandle, event_type: &str, payload: Value) -> Result<(), String> {
+    if let Some(main_window) = app.get_webview_window("main") {
+        main_window
+            .emit(
+                "autologin-event",
+                json!({ "type": event_type, "payload": payload }),
+            )
+            .map_err(|e| format!("浜嬩欢杞彂澶辫触: {e}"))?;
+    }
+    Ok(())
 }
 
 // ── Tauri commands: account CRUD ─────────────────────────────────────────────
@@ -787,7 +799,9 @@ pub fn autologin_open_window(
 ) -> Result<(), String> {
     // Close existing window if still open
     if let Some(existing) = app.get_webview_window(AUTOLOGIN_WINDOW_LABEL) {
-        let _ = existing.close();
+        // Use destroy() to force-close without triggering the CloseRequested
+        // event handler (which on Windows would only hide the window).
+        let _ = existing.destroy();
         std::thread::sleep(std::time::Duration::from_millis(600));
     }
 
@@ -796,6 +810,8 @@ pub fn autologin_open_window(
         .map_err(|e| format!("无效 OAuth URL: {e}"))?;
 
     let init_script = build_init_script(&codex_account, &codex_password);
+    let navigation_app = app.clone();
+    let page_load_app = app.clone();
 
     WebviewWindowBuilder::new(
         &app,
@@ -805,7 +821,30 @@ pub fn autologin_open_window(
     .title("Codex 自动登录")
     .inner_size(960.0, 720.0)
     .resizable(true)
+    // Override the default WebView2 user-agent which contains "WebView2".
+    // OpenAI/Codex login pages detect this string and refuse to render
+    // (white screen). Using a standard Chrome UA fixes the issue on Windows.
+    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     .initialization_script(&init_script)
+    .on_navigation(move |navigation_url| {
+        let _ = emit_autologin_event(
+            &navigation_app,
+            "progress",
+            Value::String(format!("[RUST] navigation -> {navigation_url}")),
+        );
+        true
+    })
+    .on_page_load(move |_window, payload| {
+        let stage = match payload.event() {
+            PageLoadEvent::Started => "started",
+            PageLoadEvent::Finished => "finished",
+        };
+        let _ = emit_autologin_event(
+            &page_load_app,
+            "progress",
+            Value::String(format!("[RUST] page-load:{stage} -> {}", payload.url())),
+        );
+    })
     .build()
     .map_err(|e| format!("打开自动登录窗口失败: {e}"))?;
 
@@ -825,7 +864,9 @@ pub fn autologin_eval_window(app: AppHandle, js: String) -> Result<(), String> {
 #[tauri::command]
 pub fn autologin_close_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(AUTOLOGIN_WINDOW_LABEL) {
-        window.close().map_err(|e| format!("关闭窗口失败: {e}"))?;
+        // Use destroy() to force-close the window without triggering the
+        // CloseRequested event handler (which on Windows would only hide it).
+        window.destroy().map_err(|e| format!("关闭窗口失败: {e}"))?;
     }
     Ok(())
 }

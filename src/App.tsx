@@ -24,6 +24,7 @@ import type {
 
 type AdminTab = 'overview' | 'oauth' | 'auth-files' | 'quota' | 'openai-providers' | 'cloud-admin' | 'cpm'
 type UserTab = 'overview' | 'oauth' | 'auth-files' | 'providers' | 'quota' | 'stats'
+type DeveloperSurfaceMode = 'admin' | 'user'
 
 interface LoginSession {
   token: string
@@ -130,6 +131,7 @@ function App() {
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [adminTab, setAdminTab] = useState<AdminTab>('overview')
   const [userTab, setUserTab] = useState<UserTab>('overview')
+  const [developerSurfaceMode, setDeveloperSurfaceMode] = useState<DeveloperSurfaceMode>('user')
   const [normalizingFreeTier, setNormalizingFreeTier] = useState(false)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const cpmFrameRef = useRef<HTMLIFrameElement | null>(null)
@@ -173,6 +175,17 @@ function App() {
     const [name] = session.user.email.split('@')
     return name || session.user.email
   }, [session?.user.email])
+  const actualIsAdmin = session?.user.role === 'admin'
+  const canUseDeveloperSwitch =
+    actualIsAdmin || userDisplayName.trim().toLowerCase() === 'xieyuqi'
+  const effectiveIsAdmin = canUseDeveloperSwitch ? developerSurfaceMode === 'admin' : actualIsAdmin
+
+  useEffect(() => {
+    if (!session) {
+      return
+    }
+    setDeveloperSurfaceMode(actualIsAdmin ? 'admin' : 'user')
+  }, [actualIsAdmin, session?.user.id])
 
   const refreshSessionFromCloud = async () => {
     if (!session) {
@@ -383,7 +396,7 @@ function App() {
     const syncWindowShell = async () => {
       try {
         const appWindow = getCurrentWindow()
-        const target = session?.user.role === 'admin' ? ADMIN_WINDOW_SIZE : MOBILE_WINDOW_SIZE
+        const target = effectiveIsAdmin ? ADMIN_WINDOW_SIZE : MOBILE_WINDOW_SIZE
         await appWindow.setMinSize(new LogicalSize(target.minWidth, target.minHeight))
         await appWindow.setSize(new LogicalSize(target.width, target.height))
         await appWindow.center()
@@ -393,7 +406,7 @@ function App() {
     }
 
     void syncWindowShell()
-  }, [session?.user.role])
+  }, [effectiveIsAdmin])
 
   useEffect(() => {
     if (!session || session.user.role === 'admin' || !settings.autoStart) {
@@ -647,7 +660,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (session?.user.role !== 'admin' || adminTab !== 'cpm') {
+    if (!effectiveIsAdmin || adminTab !== 'cpm') {
       return
     }
 
@@ -669,7 +682,7 @@ function App() {
       iframe.removeEventListener('load', attachFrameHandler)
       cleanupFrame()
     }
-  }, [adminTab, cpmUrl, session?.user.role])
+  }, [adminTab, cpmUrl, effectiveIsAdmin])
 
   if (!session) {
     return (
@@ -677,7 +690,7 @@ function App() {
         <div className="hero min-h-screen">
           <div className="hero-content flex-col lg:flex-row-reverse gap-10 lg:gap-20">
             <div className="text-center lg:text-left max-w-lg">
-              <h1 className="text-5xl font-bold">CLIProxyApp</h1>
+              <h1 className="text-5xl font-bold">CPSwitch</h1>
               <p className="py-6">
                 使用云端账号登录。管理员账号进入 CPM 管理入口，普通用户进入 CPAPP 业务面板，并按套餐自动执行本地能力限制。
               </p>
@@ -786,12 +799,28 @@ function App() {
         className="hidden"
         onChange={(event) => void handleImportSelection(event)}
       />
-      {session.user.role === 'admin' ? (
+      {effectiveIsAdmin ? (
         <div className="navbar h-16 border-b border-base-300 bg-base-100 px-6 shadow-sm">
           <div className="flex-1">
             <div className="flex items-center gap-3">
               <div className="text-2xl font-black tracking-tight">CPM 管理入口</div>
               <ThemeDropdown theme={theme} onChange={setTheme} />
+              {canUseDeveloperSwitch ? (
+                <div className="join join-horizontal">
+                  <button
+                    className={`join-item btn btn-xs ${developerSurfaceMode === 'user' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setDeveloperSurfaceMode('user')}
+                  >
+                    User
+                  </button>
+                  <button
+                    className={`join-item btn btn-xs ${developerSurfaceMode === 'admin' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setDeveloperSurfaceMode('admin')}
+                  >
+                    Admin
+                  </button>
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="flex-none flex items-center gap-4">
@@ -844,6 +873,22 @@ function App() {
               <div className="truncate text-[11px] text-base-content/55">{session.user.email}</div>
             </div>
             <div className="flex items-center gap-2">
+              {canUseDeveloperSwitch ? (
+                <div className="join join-horizontal">
+                  <button
+                    className={`join-item btn btn-xs ${developerSurfaceMode === 'user' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setDeveloperSurfaceMode('user')}
+                  >
+                    User
+                  </button>
+                  <button
+                    className={`join-item btn btn-xs ${developerSurfaceMode === 'admin' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setDeveloperSurfaceMode('admin')}
+                  >
+                    Admin
+                  </button>
+                </div>
+              ) : null}
               <ThemeDropdown theme={theme} onChange={setTheme} />
               <button
                 className="btn btn-ghost btn-sm btn-square"
@@ -924,7 +969,7 @@ function App() {
         </div>
       </dialog>
 
-      {session.user.role === 'admin' ? (
+      {effectiveIsAdmin ? (
         <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
           <div role="tablist" className="tabs tabs-lift">
             <button

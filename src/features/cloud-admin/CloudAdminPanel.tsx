@@ -27,6 +27,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const [uploading, setUploading] = useState(false)
   const [uploadingRelease, setUploadingRelease] = useState(false)
   const [clearingSharedPool, setClearingSharedPool] = useState(false)
+  const [deletingSharedFileId, setDeletingSharedFileId] = useState<number | null>(null)
   const [savingUserId, setSavingUserId] = useState<number | null>(null)
   const [savingPaymentProductId, setSavingPaymentProductId] = useState<number | null>(null)
   const [creatingPaymentProduct, setCreatingPaymentProduct] = useState(false)
@@ -179,6 +180,19 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
       onError(error instanceof Error ? error.message : String(error))
     } finally {
       setClearingSharedPool(false)
+    }
+  }
+
+  const deleteSharedFile = async (file: CloudAuthFile) => {
+    try {
+      setDeletingSharedFileId(file.id)
+      await cloudClient.adminDeleteSharedAuthFile(token, file.id)
+      await load()
+      onNotify(`已删除共享认证：${file.displayName || file.fileName}`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDeletingSharedFileId(null)
     }
   }
 
@@ -715,10 +729,22 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                 <div className="space-y-3">
                   {sharedCloudFiles.map((file) => (
                     <div key={file.id} className="rounded-box border border-base-300 bg-base-100 p-4">
-                      <div className="font-semibold">{file.displayName || file.fileName}</div>
-                      <div className="mt-1 text-sm text-base-content/60">
-                        {file.provider} · {file.fileName}
-                        {file.planRequired ? ` · ${file.planRequired}` : ''}
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="font-semibold">{file.displayName || file.fileName}</div>
+                          <div className="mt-1 text-sm text-base-content/60">
+                            {file.provider} · {file.fileName}
+                            {file.planRequired ? ` · ${file.planRequired}` : ''}
+                          </div>
+                        </div>
+                        <button
+                          className="btn btn-outline btn-error btn-sm"
+                          disabled={deletingSharedFileId === file.id || clearingSharedPool}
+                          onClick={() => void deleteSharedFile(file)}
+                        >
+                          {deletingSharedFileId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
+                          删除
+                        </button>
                       </div>
                     </div>
                   ))}

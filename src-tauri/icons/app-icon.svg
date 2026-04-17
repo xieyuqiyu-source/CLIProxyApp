@@ -1,0 +1,27 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1024" height="1024" rx="224" fill="#0B1220"/>
+  <rect x="72" y="72" width="880" height="880" rx="196" fill="url(#bg)"/>
+  <path d="M270 365C270 285.471 334.471 221 414 221H566C603.555 221 634 251.445 634 289C634 326.555 603.555 357 566 357H425C393.52 357 368 382.52 368 414C368 445.48 393.52 471 425 471H525C652.577 471 756 574.423 756 702C756 781.529 691.529 846 612 846H446C408.445 846 378 815.555 378 778C378 740.445 408.445 710 446 710H601C632.48 710 658 684.48 658 653C658 621.52 632.48 596 601 596H501C373.423 596 270 492.577 270 365Z" fill="url(#switchGlow)"/>
+  <path d="M404 276H576C585.941 276 594 284.059 594 294C594 303.941 585.941 312 576 312H404C375.281 312 352 335.281 352 364C352 392.719 375.281 416 404 416H532C664.548 416 772 523.452 772 656C772 731.111 711.111 792 636 792H448C438.059 792 430 783.941 430 774C430 764.059 438.059 756 448 756H636C691.228 756 736 711.228 736 656C736 600.772 691.228 556 636 556H508C375.452 556 268 448.548 268 316C268 293.15 286.52 274.63 309.37 274.63H404V276Z" fill="#F6F9FF" fill-opacity="0.92"/>
+  <circle cx="694" cy="333" r="82" fill="url(#knobOuter)"/>
+  <circle cx="694" cy="333" r="52" fill="#0B1220"/>
+  <path d="M694 285L706.919 320.081L744 333L706.919 345.919L694 381L681.081 345.919L644 333L681.081 320.081L694 285Z" fill="#8DF6C1"/>
+  <path d="M330 681C330 652.281 353.281 629 382 629H535C544.941 629 553 637.059 553 647C553 656.941 544.941 665 535 665H382C373.163 665 366 672.163 366 681C366 689.837 373.163 697 382 697H438C447.941 697 456 705.059 456 715C456 724.941 447.941 733 438 733H382C353.281 733 330 709.719 330 681Z" fill="#8DF6C1"/>
+  <defs>
+    <linearGradient id="bg" x1="126" y1="110" x2="873" y2="897" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#12233D"/>
+      <stop offset="0.48" stop-color="#143E68"/>
+      <stop offset="1" stop-color="#101F36"/>
+    </linearGradient>
+    <linearGradient id="switchGlow" x1="309" y1="247" x2="724" y2="822" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#78A7FF"/>
+      <stop offset="0.52" stop-color="#66E0FF"/>
+      <stop offset="1" stop-color="#8DF6C1"/>
+    </linearGradient>
+    <radialGradient id="knobOuter" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(694 333) rotate(90) scale(82)">
+      <stop stop-color="#F9FEFF"/>
+      <stop offset="0.58" stop-color="#D4F7FF"/>
+      <stop offset="1" stop-color="#7FE8FF"/>
+    </radialGradient>
+  </defs>
+</svg>

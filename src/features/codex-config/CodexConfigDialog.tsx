@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { cpaRuntime } from '../../lib/cpa/runtime'
 import type { CodexConfigState } from '../../lib/cpa/types'
 
@@ -16,7 +16,7 @@ function getErrorMessage(error: unknown) {
   return String(error)
 }
 
-export function CodexConfigDialog({ open, onClose, onNotify, onError }: CodexConfigDialogProps) {
+export const CodexConfigDialog = memo(function CodexConfigDialog({ open, onClose, onNotify, onError }: CodexConfigDialogProps) {
   const [loading, setLoading] = useState(false)
   const [savingModel, setSavingModel] = useState<string | null>(null)
   const [restoringDefault, setRestoringDefault] = useState(false)
@@ -197,4 +197,4 @@ export function CodexConfigDialog({ open, onClose, onNotify, onError }: CodexCon
       </form>
     </dialog>
   )
-}
+}, (prev, next) => prev.open === next.open)

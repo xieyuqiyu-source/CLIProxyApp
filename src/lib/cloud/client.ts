@@ -93,7 +93,7 @@ export const cloudClient = {
           email,
           password,
           device_id: resolveDeviceId(email),
-          device_name: 'CLIProxyApp',
+          device_name: 'CPSwitch',
           platform: navigator.platform || 'desktop'
         })
       }
