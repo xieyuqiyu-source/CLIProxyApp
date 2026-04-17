@@ -658,44 +658,35 @@ function App() {
 
   if (!session) {
     return (
-      <div className="min-h-screen bg-base-200">
-        <div className="hero min-h-screen">
-          <div className="hero-content flex-col lg:flex-row-reverse gap-10 lg:gap-20">
-            <div className="text-center lg:text-left max-w-lg">
-              <h1 className="text-5xl font-bold">CPSwitch</h1>
-              <p className="py-6">
-                使用云端账号登录。管理员账号进入 CPM 管理入口，普通用户进入 CPAPP 业务面板，并按套餐自动执行本地能力限制。
-              </p>
-              <div className="stats shadow bg-base-100">
-                <div className="stat text-center">
-                  <div className="stat-title">管理员</div>
-                  <div className="stat-value text-primary">Admin</div>
-                  <div className="stat-desc">CPM 控制台</div>
-                </div>
-                <div className="stat text-center">
-                  <div className="stat-title">普通用户</div>
-                  <div className="stat-value text-secondary">Guest</div>
-                  <div className="stat-desc">CPAPP 业务面</div>
-                </div>
-              </div>
+      <div className="min-h-screen bg-base-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 mx-auto rounded-2xl bg-primary flex items-center justify-center text-primary-content shadow-lg mb-6">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+              </svg>
             </div>
+            <h1 className="text-3xl font-black tracking-tight text-base-content mb-2">CPSwitch</h1>
+            <p className="text-base-content/60 text-sm">极简高效的桌面代理工具</p>
+          </div>
 
-            <div className="card bg-base-100 w-full max-w-sm shrink-0 shadow-2xl">
-              <div className="card-body">
-                <div className="mb-4 flex items-center justify-between">
-                  <h2 className="card-title text-2xl">{registerMode ? '注册' : '登录'}</h2>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => {
-                      setRegisterMode((current) => !current)
-                      setLoginError(null)
-                    }}
-                  >
-                    {registerMode ? '已有账号' : '新用户注册'}
-                  </button>
-                </div>
+          <div className="card bg-base-200/80 shadow-xl border border-base-300 backdrop-blur-sm">
+            <div className="card-body p-6 sm:p-8">
+              <div className="mb-6 flex items-center justify-between">
+                <h2 className="text-xl font-bold text-base-content">{registerMode ? '创建账号' : '欢迎回来'}</h2>
+                <button
+                  className="btn btn-ghost btn-sm text-primary hover:bg-primary/10"
+                  onClick={() => {
+                    setRegisterMode((current) => !current)
+                    setLoginError(null)
+                  }}
+                >
+                  {registerMode ? '直接登录' : '注册账号'}
+                </button>
+              </div>
 
-                <div className="form-control mb-4">
+              <div className="space-y-4">
+                <div className="form-control">
                   <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
                       <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM12.735 14c.618 0 1.093-.561.872-1.139a6.002 6.002 0 0 0-11.215 0c-.22.578.254 1.139.872 1.139h9.47Z" />
@@ -716,7 +707,7 @@ function App() {
                   </label>
                 </div>
 
-                <div className="form-control mb-6">
+                <div className="form-control">
                   <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
                       <path fillRule="evenodd" d="M14 6a4 4 0 0 1-4.899 3.899l-1.955 1.955a.5.5 0 0 1-.353.146H5v1.5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-2.293a.5.5 0 0 1 .146-.353l3.955-3.955A4 4 0 1 1 14 6Zm-4-2a.75.75 0 0 0 0 1.5.5.5 0 0 1 .5.5.75.75 0 0 0 1.5 0 2 2 0 0 0-2-2Z" clipRule="evenodd" />
@@ -737,20 +728,19 @@ function App() {
                 </div>
 
                 {loginError && (
-                  <div className="alert alert-error mb-4">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  <div className="alert alert-error mt-4 py-2 text-sm rounded-lg">
                     <span>{loginError}</span>
                   </div>
                 )}
 
-                <div className="form-control mt-2">
+                <div className="form-control mt-6">
                   <button
-                    className="btn btn-primary w-full"
+                    className="btn btn-primary w-full text-base"
                     disabled={pendingAction === 'login' || pendingAction === 'register'}
                     onClick={() => void (registerMode ? submitRegister() : submitLogin())}
                   >
-                    {pendingAction === 'login' || pendingAction === 'register' ? <span className="loading loading-spinner loading-xs"></span> : null}
-                    {registerMode ? '创建账号' : '登录'}
+                    {pendingAction === 'login' || pendingAction === 'register' ? <span className="loading loading-spinner loading-sm"></span> : null}
+                    {registerMode ? '创建账号' : '立即登录'}
                   </button>
                 </div>
               </div>
