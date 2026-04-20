@@ -18,6 +18,8 @@ use tauri::{AppHandle, Emitter, Manager};
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
 const CLOUD_BASE_URL_DEV: &str = "https://cliproxy.szxsai.com/api/v1";
 const CLOUD_BASE_URL_RELEASE: &str = "https://cliproxy.szxsai.com/api/v1";
+const CONTINUE_CHAT_MODEL_NAME: &str = "CLIProxy Chat";
+const CONTINUE_AUTOCOMPLETE_MODEL_NAME: &str = "CLIProxy Autocomplete";
 const APP_UPDATE_MANIFEST_PATHS: [&str; 3] = [
     "/downloads/cliproxyapp/latest.json",
     "/cliproxyapp/latest.json",
@@ -171,6 +173,43 @@ pub struct CodexConfigRestoreResult {
     pub restored: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueConfigState {
+    pub config_path: String,
+    pub exists: bool,
+    pub current_base_url: Option<String>,
+    pub chat_model: Option<String>,
+    pub autocomplete_model: Option<String>,
+    pub recommended_chat_model: Option<String>,
+    pub recommended_autocomplete_model: Option<String>,
+    pub available_models: Vec<String>,
+    pub can_restore_default: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueConfigSetupInput {
+    pub chat_model: String,
+    pub autocomplete_model: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueConfigSetupResult {
+    pub config_path: String,
+    pub base_url: String,
+    pub chat_model: String,
+    pub autocomplete_model: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueConfigRestoreResult {
+    pub config_path: String,
+    pub restored: bool,
+}
+
 #[derive(Debug, Clone)]
 struct CommandSpec {
     program: PathBuf,
@@ -180,10 +219,11 @@ struct CommandSpec {
 
 const OPENCLAW_CLI_CACHE_FILE: &str = "openclaw-cli-path.txt";
 const CODEX_CONFIG_BACKUP_FILE: &str = "codex-config-backup.json";
+const CONTINUE_CONFIG_BACKUP_FILE: &str = "continue-config-backup.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CodexConfigBackup {
+struct FileConfigBackup {
     existed: bool,
     content: String,
 }
@@ -883,8 +923,8 @@ pub fn get_local_auth_files(app: &AppHandle) -> Result<Vec<LocalAuthFile>, Strin
             .and_then(|value| value.to_str())
             .ok_or_else(|| format!("invalid auth file name: {}", path.display()))?
             .to_string();
-        let bytes =
-            fs::read(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
         result.push(LocalAuthFile { name, bytes });
     }
 
@@ -922,8 +962,8 @@ pub fn pick_local_auth_files(app: &AppHandle) -> Result<Vec<LocalAuthFile>, Stri
             .and_then(|value| value.to_str())
             .ok_or_else(|| format!("invalid auth file name: {}", path.display()))?
             .to_string();
-        let bytes =
-            fs::read(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
         result.push(LocalAuthFile { name, bytes });
     }
 
@@ -1142,13 +1182,14 @@ pub fn restore_codex_config_default(app: &AppHandle) -> Result<CodexConfigRestor
     let backup_path = codex_backup_path(app)?;
     let backup_raw = fs::read_to_string(&backup_path)
         .map_err(|error| format!("读取 Codex 备份失败 {}: {error}", backup_path.display()))?;
-    let backup = serde_json::from_str::<CodexConfigBackup>(&backup_raw)
+    let backup = serde_json::from_str::<FileConfigBackup>(&backup_raw)
         .map_err(|error| format!("解析 Codex 备份失败 {}: {error}", backup_path.display()))?;
 
     if backup.existed {
         if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("创建 Codex 配置目录失败 {}: {error}", parent.display()))?;
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("创建 Codex 配置目录失败 {}: {error}", parent.display())
+            })?;
         }
         fs::write(&config_path, backup.content)
             .map_err(|error| format!("恢复 Codex 配置失败 {}: {error}", config_path.display()))?;
@@ -1161,6 +1202,131 @@ pub fn restore_codex_config_default(app: &AppHandle) -> Result<CodexConfigRestor
         .map_err(|error| format!("清理 Codex 备份失败 {}: {error}", backup_path.display()))?;
 
     Ok(CodexConfigRestoreResult {
+        config_path: config_path.display().to_string(),
+        restored: true,
+    })
+}
+
+pub fn get_continue_config_state(app: &AppHandle) -> Result<ContinueConfigState, String> {
+    let ctx = load_runtime_context(app)?;
+    let config_path = resolve_continue_config_path()?;
+    let exists = config_path.exists();
+    let (current_base_url, chat_model, autocomplete_model) = if exists {
+        read_continue_config_values(&config_path)?
+    } else {
+        (None, None, None)
+    };
+    let api_host = if ctx.bootstrap.host == "0.0.0.0" {
+        "127.0.0.1".to_string()
+    } else {
+        ctx.bootstrap.host.clone()
+    };
+    let base_url = format!("http://{}:{}/v1", api_host, ctx.bootstrap.api_port);
+    let available_models = fetch_openclaw_models(&base_url, &ctx.bootstrap.management_key)?;
+    let recommended_chat_model = select_continue_chat_model(&available_models);
+    let recommended_autocomplete_model = recommended_chat_model
+        .as_ref()
+        .and_then(|chat_model| select_continue_autocomplete_model(&available_models, chat_model));
+
+    Ok(ContinueConfigState {
+        config_path: config_path.display().to_string(),
+        exists,
+        current_base_url,
+        chat_model,
+        autocomplete_model,
+        recommended_chat_model,
+        recommended_autocomplete_model,
+        available_models,
+        can_restore_default: continue_backup_path(app)?.exists(),
+    })
+}
+
+pub fn setup_continue_config(
+    app: &AppHandle,
+    input: ContinueConfigSetupInput,
+) -> Result<ContinueConfigSetupResult, String> {
+    let ctx = load_runtime_context(app)?;
+    let api_host = if ctx.bootstrap.host == "0.0.0.0" {
+        "127.0.0.1".to_string()
+    } else {
+        ctx.bootstrap.host.clone()
+    };
+    let base_url = format!("http://{}:{}/v1", api_host, ctx.bootstrap.api_port);
+    let available_models = fetch_openclaw_models(&base_url, &ctx.bootstrap.management_key)?;
+    if available_models.is_empty() {
+        return Err("Continue 配置失败：/v1/models 未返回任何模型".to_string());
+    }
+
+    let chat_model = input.chat_model.trim().to_string();
+    if chat_model.is_empty() {
+        return Err("Continue 配置失败：聊天模型不能为空".to_string());
+    }
+    if !available_models.iter().any(|model| model == &chat_model) {
+        return Err(format!(
+            "Continue 配置失败：聊天模型 `{chat_model}` 不在当前代理返回的模型列表中"
+        ));
+    }
+
+    let autocomplete_model = input.autocomplete_model.trim().to_string();
+    if autocomplete_model.is_empty() {
+        return Err("Continue 配置失败：补全模型不能为空".to_string());
+    }
+    if !available_models
+        .iter()
+        .any(|model| model == &autocomplete_model)
+    {
+        return Err(format!(
+            "Continue 配置失败：补全模型 `{autocomplete_model}` 不在当前代理返回的模型列表中"
+        ));
+    }
+
+    let config_path = resolve_continue_config_path()?;
+    ensure_continue_backup(app, &config_path)?;
+    write_continue_config_values(
+        &config_path,
+        &base_url,
+        &ctx.bootstrap.management_key,
+        &chat_model,
+        &autocomplete_model,
+    )?;
+
+    Ok(ContinueConfigSetupResult {
+        config_path: config_path.display().to_string(),
+        base_url,
+        chat_model,
+        autocomplete_model,
+    })
+}
+
+pub fn restore_continue_config_default(
+    app: &AppHandle,
+) -> Result<ContinueConfigRestoreResult, String> {
+    let config_path = resolve_continue_config_path()?;
+    let backup_path = continue_backup_path(app)?;
+    let backup_raw = fs::read_to_string(&backup_path)
+        .map_err(|error| format!("读取 Continue 备份失败 {}: {error}", backup_path.display()))?;
+    let backup = serde_json::from_str::<FileConfigBackup>(&backup_raw)
+        .map_err(|error| format!("解析 Continue 备份失败 {}: {error}", backup_path.display()))?;
+
+    if backup.existed {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("创建 Continue 配置目录失败 {}: {error}", parent.display())
+            })?;
+        }
+        fs::write(&config_path, backup.content).map_err(|error| {
+            format!("恢复 Continue 配置失败 {}: {error}", config_path.display())
+        })?;
+    } else if config_path.exists() {
+        fs::remove_file(&config_path).map_err(|error| {
+            format!("删除 Continue 配置失败 {}: {error}", config_path.display())
+        })?;
+    }
+
+    fs::remove_file(&backup_path)
+        .map_err(|error| format!("清理 Continue 备份失败 {}: {error}", backup_path.display()))?;
+
+    Ok(ContinueConfigRestoreResult {
         config_path: config_path.display().to_string(),
         restored: true,
     })
@@ -1246,7 +1412,11 @@ fn resolve_openclaw_command(
     let mut errors = Vec::new();
 
     for candidate in candidates {
-        log_openclaw(app, logs, &format!("尝试检测 OpenClaw CLI: {}", candidate.display));
+        log_openclaw(
+            app,
+            logs,
+            &format!("尝试检测 OpenClaw CLI: {}", candidate.display),
+        );
         match execute_command(&candidate, &["--help"]) {
             Ok(output) if output.status.success() => {
                 log_openclaw(app, logs, "OpenClaw CLI 检测通过");
@@ -1326,7 +1496,9 @@ fn extract_openclaw_config_path(raw: &str) -> Option<String> {
             return Some(cleaned.to_string());
         }
         for token in cleaned.split_whitespace().rev() {
-            let candidate = token.trim().trim_matches(|ch: char| ch == '"' || ch == '\'');
+            let candidate = token
+                .trim()
+                .trim_matches(|ch: char| ch == '"' || ch == '\'');
             if is_path_like(candidate) {
                 return Some(candidate.to_string());
             }
@@ -1369,7 +1541,9 @@ fn openclaw_command_candidates() -> Vec<CommandSpec> {
 
         if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
             candidates.push(CommandSpec {
-                program: PathBuf::from(local_app_data).join("npm").join("openclaw.cmd"),
+                program: PathBuf::from(local_app_data)
+                    .join("npm")
+                    .join("openclaw.cmd"),
                 args: Vec::new(),
                 display: "%LOCALAPPDATA%\\npm\\openclaw.cmd".to_string(),
             });
@@ -1442,7 +1616,10 @@ fn openclaw_command_candidates() -> Vec<CommandSpec> {
     candidates
 }
 
-fn execute_command(command: &CommandSpec, extra_args: &[&str]) -> Result<std::process::Output, String> {
+fn execute_command(
+    command: &CommandSpec,
+    extra_args: &[&str],
+) -> Result<std::process::Output, String> {
     let mut process = Command::new(&command.program);
     process.args(&command.args);
     process.args(extra_args);
@@ -1459,22 +1636,46 @@ fn resolve_openclaw_command_via_shell(
     let shell_candidates: Vec<(&str, Vec<&str>, &str)> = if cfg!(target_os = "windows") {
         vec![
             ("where.exe", vec!["openclaw"], "where openclaw"),
-            ("cmd.exe", vec!["/C", "where openclaw"], "cmd /C where openclaw"),
+            (
+                "cmd.exe",
+                vec!["/C", "where openclaw"],
+                "cmd /C where openclaw",
+            ),
         ]
     } else if cfg!(target_os = "macos") {
         vec![
-            ("/bin/zsh", vec!["-lc", "command -v openclaw"], "zsh -lc command -v openclaw"),
-            ("/bin/bash", vec!["-lc", "command -v openclaw"], "bash -lc command -v openclaw"),
+            (
+                "/bin/zsh",
+                vec!["-lc", "command -v openclaw"],
+                "zsh -lc command -v openclaw",
+            ),
+            (
+                "/bin/bash",
+                vec!["-lc", "command -v openclaw"],
+                "bash -lc command -v openclaw",
+            ),
         ]
     } else {
         vec![
-            ("/bin/bash", vec!["-lc", "command -v openclaw"], "bash -lc command -v openclaw"),
-            ("/bin/sh", vec!["-lc", "command -v openclaw"], "sh -lc command -v openclaw"),
+            (
+                "/bin/bash",
+                vec!["-lc", "command -v openclaw"],
+                "bash -lc command -v openclaw",
+            ),
+            (
+                "/bin/sh",
+                vec!["-lc", "command -v openclaw"],
+                "sh -lc command -v openclaw",
+            ),
         ]
     };
 
     for (program, args, display) in shell_candidates {
-        log_openclaw(app, logs, &format!("尝试通过 Shell 查询 OpenClaw CLI: {display}"));
+        log_openclaw(
+            app,
+            logs,
+            &format!("尝试通过 Shell 查询 OpenClaw CLI: {display}"),
+        );
         let mut process = Command::new(program);
         process.args(args);
         augment_process_path(&mut process);
@@ -1500,7 +1701,11 @@ fn resolve_openclaw_command_via_shell(
             }
             let path = PathBuf::from(candidate_path);
             if path.exists() {
-                log_openclaw(app, logs, &format!("Shell 已解析到 OpenClaw CLI: {}", path.display()));
+                log_openclaw(
+                    app,
+                    logs,
+                    &format!("Shell 已解析到 OpenClaw CLI: {}", path.display()),
+                );
                 return Some(CommandSpec {
                     display: path.display().to_string(),
                     program: path,
@@ -1520,7 +1725,11 @@ fn load_cached_openclaw_command(app: &AppHandle, logs: &mut Vec<String>) -> Opti
     let cache_path = match openclaw_cli_cache_path(app) {
         Ok(path) => path,
         Err(error) => {
-            log_openclaw(app, logs, &format!("解析 OpenClaw CLI 缓存路径失败: {error}"));
+            log_openclaw(
+                app,
+                logs,
+                &format!("解析 OpenClaw CLI 缓存路径失败: {error}"),
+            );
             return None;
         }
     };
@@ -1532,7 +1741,11 @@ fn load_cached_openclaw_command(app: &AppHandle, logs: &mut Vec<String>) -> Opti
     if !program.exists() {
         return None;
     }
-    log_openclaw(app, logs, &format!("命中 OpenClaw CLI 缓存: {}", program.display()));
+    log_openclaw(
+        app,
+        logs,
+        &format!("命中 OpenClaw CLI 缓存: {}", program.display()),
+    );
     Some(CommandSpec {
         display: program.display().to_string(),
         program,
@@ -1546,16 +1759,28 @@ fn store_openclaw_command(app: &AppHandle, command: &CommandSpec) -> Result<(), 
     }
     let cache_path = openclaw_cli_cache_path(app)?;
     if let Some(parent) = cache_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("创建 OpenClaw CLI 缓存目录失败 {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "创建 OpenClaw CLI 缓存目录失败 {}: {error}",
+                parent.display()
+            )
+        })?;
     }
-    fs::write(&cache_path, command.program.display().to_string())
-        .map_err(|error| format!("写入 OpenClaw CLI 缓存失败 {}: {error}", cache_path.display()))
+    fs::write(&cache_path, command.program.display().to_string()).map_err(|error| {
+        format!(
+            "写入 OpenClaw CLI 缓存失败 {}: {error}",
+            cache_path.display()
+        )
+    })
 }
 
 fn augment_process_path(process: &mut Command) {
     let mut parts = Vec::new();
-    let separator = if cfg!(target_os = "windows") { ';' } else { ':' };
+    let separator = if cfg!(target_os = "windows") {
+        ';'
+    } else {
+        ':'
+    };
 
     if let Some(current) = env::var_os("PATH") {
         let current = current.to_string_lossy().trim().to_string();
@@ -1565,7 +1790,12 @@ fn augment_process_path(process: &mut Command) {
     }
 
     if cfg!(target_os = "windows") {
-        for key in ["LOCALAPPDATA", "APPDATA", "ProgramFiles", "ProgramFiles(x86)"] {
+        for key in [
+            "LOCALAPPDATA",
+            "APPDATA",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+        ] {
             if let Ok(value) = env::var(key) {
                 match key {
                     "LOCALAPPDATA" | "APPDATA" => parts.push(format!("{value}\\npm")),
@@ -1673,7 +1903,9 @@ fn resolve_codex_config_path() -> Result<PathBuf, String> {
 }
 
 fn codex_backup_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(resolve_paths(app)?.config_dir.join(CODEX_CONFIG_BACKUP_FILE))
+    Ok(resolve_paths(app)?
+        .config_dir
+        .join(CODEX_CONFIG_BACKUP_FILE))
 }
 
 fn ensure_codex_backup(app: &AppHandle, config_path: &Path) -> Result<(), String> {
@@ -1688,13 +1920,14 @@ fn ensure_codex_backup(app: &AppHandle, config_path: &Path) -> Result<(), String
     }
 
     let backup = if config_path.exists() {
-        CodexConfigBackup {
+        FileConfigBackup {
             existed: true,
-            content: fs::read_to_string(config_path)
-                .map_err(|error| format!("读取 Codex 配置失败 {}: {error}", config_path.display()))?,
+            content: fs::read_to_string(config_path).map_err(|error| {
+                format!("读取 Codex 配置失败 {}: {error}", config_path.display())
+            })?,
         }
     } else {
-        CodexConfigBackup {
+        FileConfigBackup {
             existed: false,
             content: String::new(),
         }
@@ -1739,7 +1972,11 @@ fn parse_codex_string_line(line: &str, key_name: &str) -> Option<String> {
     let unquoted = raw_value
         .strip_prefix('"')
         .and_then(|item| item.strip_suffix('"'))
-        .or_else(|| raw_value.strip_prefix('\'').and_then(|item| item.strip_suffix('\'')))
+        .or_else(|| {
+            raw_value
+                .strip_prefix('\'')
+                .and_then(|item| item.strip_suffix('\''))
+        })
         .unwrap_or(raw_value)
         .trim();
     if unquoted.is_empty() {
@@ -1761,7 +1998,11 @@ fn write_codex_config_values(path: &Path, model: &str, base_url: &str) -> Result
         String::new()
     };
 
-    let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if existing.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     let mut replaced_model = false;
     let mut replaced_base_url = false;
     let mut lines = Vec::new();
@@ -1812,6 +2053,244 @@ fn write_codex_config_values(path: &Path, model: &str, base_url: &str) -> Result
         .map_err(|error| format!("写入 Codex 配置失败 {}: {error}", path.display()))
 }
 
+fn resolve_continue_config_path() -> Result<PathBuf, String> {
+    let home = user_home_dir()?;
+    Ok(home.join(".continue").join("config.yaml"))
+}
+
+fn continue_backup_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(resolve_paths(app)?
+        .config_dir
+        .join(CONTINUE_CONFIG_BACKUP_FILE))
+}
+
+fn ensure_continue_backup(app: &AppHandle, config_path: &Path) -> Result<(), String> {
+    let backup_path = continue_backup_path(app)?;
+    if backup_path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = backup_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 Continue 备份目录失败 {}: {error}", parent.display()))?;
+    }
+
+    let backup = if config_path.exists() {
+        FileConfigBackup {
+            existed: true,
+            content: fs::read_to_string(config_path).map_err(|error| {
+                format!("读取 Continue 配置失败 {}: {error}", config_path.display())
+            })?,
+        }
+    } else {
+        FileConfigBackup {
+            existed: false,
+            content: String::new(),
+        }
+    };
+
+    let content = serde_json::to_string_pretty(&backup)
+        .map_err(|error| format!("序列化 Continue 备份失败: {error}"))?;
+    fs::write(&backup_path, content)
+        .map_err(|error| format!("写入 Continue 备份失败 {}: {error}", backup_path.display()))
+}
+
+fn read_continue_config_values(
+    path: &Path,
+) -> Result<(Option<String>, Option<String>, Option<String>), String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("读取 Continue 配置失败 {}: {error}", path.display()))?;
+    let root = serde_yaml::from_str::<YamlValue>(&content)
+        .map_err(|error| format!("解析 Continue 配置失败 {}: {error}", path.display()))?;
+    let Some(map) = root.as_mapping() else {
+        return Ok((None, None, None));
+    };
+    let Some(models) = map.get(yaml_key("models")).and_then(YamlValue::as_sequence) else {
+        return Ok((None, None, None));
+    };
+
+    let mut current_base_url = None;
+    let mut chat_model = None;
+    let mut autocomplete_model = None;
+
+    for entry in models {
+        let Some(model_map) = entry.as_mapping() else {
+            continue;
+        };
+        let Some(name) = yaml_mapping_string(model_map, "name") else {
+            continue;
+        };
+        if name != CONTINUE_CHAT_MODEL_NAME && name != CONTINUE_AUTOCOMPLETE_MODEL_NAME {
+            continue;
+        }
+
+        if current_base_url.is_none() {
+            current_base_url = yaml_mapping_string(model_map, "apiBase");
+        }
+        let model_id = yaml_mapping_string(model_map, "model");
+        if name == CONTINUE_CHAT_MODEL_NAME {
+            chat_model = model_id;
+        } else if name == CONTINUE_AUTOCOMPLETE_MODEL_NAME {
+            autocomplete_model = model_id;
+        }
+    }
+
+    Ok((current_base_url, chat_model, autocomplete_model))
+}
+
+fn write_continue_config_values(
+    path: &Path,
+    base_url: &str,
+    api_key: &str,
+    chat_model: &str,
+    autocomplete_model: &str,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 Continue 配置目录失败 {}: {error}", parent.display()))?;
+    }
+
+    let mut root = if path.exists() {
+        let existing = fs::read_to_string(path)
+            .map_err(|error| format!("读取 Continue 配置失败 {}: {error}", path.display()))?;
+        serde_yaml::from_str::<YamlValue>(&existing).unwrap_or(YamlValue::Mapping(Mapping::new()))
+    } else {
+        YamlValue::Mapping(Mapping::new())
+    };
+
+    let Some(map) = root.as_mapping_mut() else {
+        return Err("Continue 配置根节点必须是 YAML 对象".to_string());
+    };
+
+    if !map.contains_key(yaml_key("name")) {
+        map.insert(
+            yaml_key("name"),
+            YamlValue::String("CLIProxy Continue".to_string()),
+        );
+    }
+    if !map.contains_key(yaml_key("version")) {
+        map.insert(yaml_key("version"), YamlValue::String("0.0.1".to_string()));
+    }
+    if !map.contains_key(yaml_key("schema")) {
+        map.insert(yaml_key("schema"), YamlValue::String("v1".to_string()));
+    }
+
+    let models = get_or_create_sequence(map, "models");
+    upsert_continue_model(
+        models,
+        build_continue_model_entry(
+            CONTINUE_CHAT_MODEL_NAME,
+            chat_model,
+            base_url,
+            api_key,
+            &["chat", "edit", "apply"],
+            true,
+        ),
+    );
+    upsert_continue_model(
+        models,
+        build_continue_model_entry(
+            CONTINUE_AUTOCOMPLETE_MODEL_NAME,
+            autocomplete_model,
+            base_url,
+            api_key,
+            &["autocomplete"],
+            false,
+        ),
+    );
+
+    let yaml = serde_yaml::to_string(&root)
+        .map_err(|error| format!("序列化 Continue 配置失败: {error}"))?;
+    fs::write(path, yaml)
+        .map_err(|error| format!("写入 Continue 配置失败 {}: {error}", path.display()))
+}
+
+fn build_continue_model_entry(
+    name: &str,
+    model: &str,
+    base_url: &str,
+    api_key: &str,
+    roles: &[&str],
+    force_chat_completions: bool,
+) -> YamlValue {
+    let mut map = Mapping::new();
+    map.insert(yaml_key("name"), YamlValue::String(name.to_string()));
+    map.insert(
+        yaml_key("provider"),
+        YamlValue::String("openai".to_string()),
+    );
+    map.insert(yaml_key("model"), YamlValue::String(model.to_string()));
+    map.insert(yaml_key("apiBase"), YamlValue::String(base_url.to_string()));
+    map.insert(yaml_key("apiKey"), YamlValue::String(api_key.to_string()));
+    map.insert(
+        yaml_key("roles"),
+        YamlValue::Sequence(
+            roles
+                .iter()
+                .map(|role| YamlValue::String((*role).to_string()))
+                .collect(),
+        ),
+    );
+    if force_chat_completions {
+        map.insert(yaml_key("useResponsesApi"), YamlValue::Bool(false));
+        map.insert(
+            yaml_key("capabilities"),
+            YamlValue::Sequence(vec![YamlValue::String("tool_use".to_string())]),
+        );
+    }
+    YamlValue::Mapping(map)
+}
+
+fn upsert_continue_model(models: &mut Vec<YamlValue>, new_entry: YamlValue) {
+    let new_name = new_entry
+        .as_mapping()
+        .and_then(|mapping| yaml_mapping_string(mapping, "name"));
+    let Some(new_name) = new_name else {
+        models.push(new_entry);
+        return;
+    };
+
+    if let Some(existing) = models.iter_mut().find(|entry| {
+        entry
+            .as_mapping()
+            .and_then(|mapping| yaml_mapping_string(mapping, "name"))
+            .is_some_and(|name| name == new_name)
+    }) {
+        *existing = new_entry;
+    } else {
+        models.push(new_entry);
+    }
+}
+
+fn select_continue_chat_model(models: &[String]) -> Option<String> {
+    let preferred = ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5.4-mini"];
+    select_preferred_model(models, &preferred).or_else(|| models.first().cloned())
+}
+
+fn select_continue_autocomplete_model(models: &[String], fallback: &str) -> Option<String> {
+    let preferred = [
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+        "gpt-5.3-codex",
+        "gpt-5.2",
+    ];
+    select_preferred_model(models, &preferred).or_else(|| {
+        models
+            .iter()
+            .find(|model| model.as_str() == fallback)
+            .cloned()
+    })
+}
+
+fn select_preferred_model(models: &[String], preferred: &[&str]) -> Option<String> {
+    preferred.iter().find_map(|candidate| {
+        models
+            .iter()
+            .find(|model| model.as_str() == *candidate)
+            .cloned()
+    })
+}
+
 fn load_or_create_openclaw_config(
     path: &Path,
     app: &AppHandle,
@@ -1843,7 +2322,10 @@ fn apply_openclaw_provider_config(
     let models_node = ensure_json_object_entry(root_obj, "models");
     let providers_node = ensure_json_object_entry(models_node, "providers");
     let cliproxy = ensure_json_object_entry(providers_node, "cliproxy");
-    cliproxy.insert("baseUrl".to_string(), JsonValue::String(base_url.to_string()));
+    cliproxy.insert(
+        "baseUrl".to_string(),
+        JsonValue::String(base_url.to_string()),
+    );
     cliproxy.insert("apiKey".to_string(), JsonValue::String(api_key.to_string()));
     cliproxy.insert(
         "api".to_string(),
@@ -1851,7 +2333,12 @@ fn apply_openclaw_provider_config(
     );
     cliproxy.insert(
         "models".to_string(),
-        JsonValue::Array(models.iter().map(|id| build_openclaw_model_definition(id)).collect()),
+        JsonValue::Array(
+            models
+                .iter()
+                .map(|id| build_openclaw_model_definition(id))
+                .collect(),
+        ),
     );
 
     let agents_node = ensure_json_object_entry(root_obj, "agents");
@@ -1860,12 +2347,12 @@ fn apply_openclaw_provider_config(
     for model_id in models {
         let mut entry = JsonMap::new();
         if model_id == "gpt-5.4" {
-            entry.insert("alias".to_string(), JsonValue::String("cliproxy".to_string()));
+            entry.insert(
+                "alias".to_string(),
+                JsonValue::String("cliproxy".to_string()),
+            );
         }
-        defaults_models_node.insert(
-            format!("cliproxy/{model_id}"),
-            JsonValue::Object(entry),
-        );
+        defaults_models_node.insert(format!("cliproxy/{model_id}"), JsonValue::Object(entry));
     }
 }
 
@@ -1924,16 +2411,14 @@ fn build_openclaw_model_definition(id: &str) -> JsonValue {
     obj.insert("reasoning".to_string(), JsonValue::Bool(reasoning));
     obj.insert(
         "input".to_string(),
-        JsonValue::Array(
-            if supports_image {
-                vec![
-                    JsonValue::String("text".to_string()),
-                    JsonValue::String("image".to_string()),
-                ]
-            } else {
-                vec![JsonValue::String("text".to_string())]
-            },
-        ),
+        JsonValue::Array(if supports_image {
+            vec![
+                JsonValue::String("text".to_string()),
+                JsonValue::String("image".to_string()),
+            ]
+        } else {
+            vec![JsonValue::String("text".to_string())]
+        }),
     );
     obj.insert(
         "cost".to_string(),
@@ -1958,7 +2443,11 @@ fn ensure_json_object(value: &mut JsonValue) -> &mut JsonMap<String, JsonValue> 
 
 fn cloud_url(path: &str) -> String {
     let normalized_path = path.trim().trim_start_matches('/');
-    format!("{}/{}", cloud_base_url().trim_end_matches('/'), normalized_path)
+    format!(
+        "{}/{}",
+        cloud_base_url().trim_end_matches('/'),
+        normalized_path
+    )
 }
 
 fn app_update_origin() -> Result<String, String> {
@@ -1996,9 +2485,7 @@ fn select_update_download_url(payload: &JsonValue) -> Result<Option<String>, Str
         return Ok(direct);
     }
 
-    let downloads = payload
-        .get("downloads")
-        .and_then(JsonValue::as_object);
+    let downloads = payload.get("downloads").and_then(JsonValue::as_object);
     let Some(downloads) = downloads else {
         return Ok(None);
     };
@@ -2077,7 +2564,9 @@ fn fetch_github_latest_release(client: &reqwest::blocking::Client) -> Result<Jso
         .text()
         .map_err(|error| format!("failed to read latest GitHub release: {error}"))?;
     if !status.is_success() {
-        return Err(format!("GitHub latest release request failed with {status}: {text}"));
+        return Err(format!(
+            "GitHub latest release request failed with {status}: {text}"
+        ));
     }
     let payload = serde_json::from_str::<JsonValue>(&text)
         .map_err(|error| format!("failed to parse latest GitHub release: {error}"))?;
@@ -2094,7 +2583,10 @@ fn fetch_github_latest_release(client: &reqwest::blocking::Client) -> Result<Jso
         .and_then(JsonValue::as_array)
         .and_then(|assets| {
             assets.iter().find_map(|asset| {
-                let name = asset.get("name").and_then(JsonValue::as_str)?.to_ascii_lowercase();
+                let name = asset
+                    .get("name")
+                    .and_then(JsonValue::as_str)?
+                    .to_ascii_lowercase();
                 if cfg!(target_os = "windows") {
                     if !name.ends_with(".exe") {
                         return None;
@@ -2817,6 +3309,25 @@ fn format_system_time(time: SystemTime) -> String {
 
 fn yaml_key(value: &str) -> YamlValue {
     YamlValue::String(value.to_string())
+}
+
+fn yaml_mapping_string(map: &Mapping, key: &str) -> Option<String> {
+    map.get(yaml_key(key))
+        .and_then(YamlValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn get_or_create_sequence<'a>(root: &'a mut Mapping, key: &str) -> &'a mut Vec<YamlValue> {
+    let sequence_key = yaml_key(key);
+    let needs_reset = !matches!(root.get(&sequence_key), Some(YamlValue::Sequence(_)));
+    if needs_reset {
+        root.insert(sequence_key.clone(), YamlValue::Sequence(Vec::new()));
+    }
+    root.get_mut(&sequence_key)
+        .and_then(YamlValue::as_sequence_mut)
+        .expect("sequence inserted above")
 }
 
 fn to_runtime_paths(paths: &ResolvedPaths) -> RuntimePaths {

@@ -1,5 +1,5 @@
-mod cpa;
 mod autologin;
+mod cpa;
 
 use cpa::CpaRuntimeState;
 use std::sync::Mutex;
@@ -54,8 +54,7 @@ pub fn run() {
                     return;
                 }
             }
-            if matches!(event, tauri::WindowEvent::Destroyed)
-                && window.label() == MAIN_WINDOW_LABEL
+            if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == MAIN_WINDOW_LABEL
             {
                 let state = window.state::<CpaRuntimeState>();
                 if let Err(error) = cpa::shutdown_cpa(&state) {
@@ -86,6 +85,9 @@ pub fn run() {
             get_codex_config_state,
             set_codex_config_model,
             restore_codex_config_default,
+            get_continue_config_state,
+            setup_continue_config,
+            restore_continue_config_default,
             check_app_update,
             proxy_cloud_request,
             proxy_cloud_upload,
@@ -337,9 +339,7 @@ async fn setup_openclaw_provider(
 }
 
 #[tauri::command]
-async fn get_codex_config_state(
-    app: tauri::AppHandle,
-) -> Result<cpa::CodexConfigState, String> {
+async fn get_codex_config_state(app: tauri::AppHandle) -> Result<cpa::CodexConfigState, String> {
     tauri::async_runtime::spawn_blocking(move || cpa::get_codex_config_state(&app))
         .await
         .map_err(|error| format!("failed to join Codex config task: {error}"))?
@@ -365,6 +365,34 @@ async fn restore_codex_config_default(
 }
 
 #[tauri::command]
+async fn get_continue_config_state(
+    app: tauri::AppHandle,
+) -> Result<cpa::ContinueConfigState, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::get_continue_config_state(&app))
+        .await
+        .map_err(|error| format!("failed to join Continue config task: {error}"))?
+}
+
+#[tauri::command]
+async fn setup_continue_config(
+    app: tauri::AppHandle,
+    input: cpa::ContinueConfigSetupInput,
+) -> Result<cpa::ContinueConfigSetupResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::setup_continue_config(&app, input))
+        .await
+        .map_err(|error| format!("failed to join Continue config write task: {error}"))?
+}
+
+#[tauri::command]
+async fn restore_continue_config_default(
+    app: tauri::AppHandle,
+) -> Result<cpa::ContinueConfigRestoreResult, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::restore_continue_config_default(&app))
+        .await
+        .map_err(|error| format!("failed to join Continue config restore task: {error}"))?
+}
+
+#[tauri::command]
 async fn check_app_update(app: tauri::AppHandle) -> Result<cpa::AppUpdateInfo, String> {
     tauri::async_runtime::spawn_blocking(move || cpa::check_app_update(&app))
         .await
@@ -372,18 +400,14 @@ async fn check_app_update(app: tauri::AppHandle) -> Result<cpa::AppUpdateInfo, S
 }
 
 #[tauri::command]
-async fn proxy_cloud_request(
-    request: cpa::CloudProxyRequest,
-) -> Result<serde_json::Value, String> {
+async fn proxy_cloud_request(request: cpa::CloudProxyRequest) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || cpa::proxy_cloud_request(request))
         .await
         .map_err(|error| format!("failed to join cloud proxy task: {error}"))?
 }
 
 #[tauri::command]
-async fn proxy_cloud_upload(
-    request: cpa::CloudUploadRequest,
-) -> Result<serde_json::Value, String> {
+async fn proxy_cloud_upload(request: cpa::CloudUploadRequest) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || cpa::proxy_cloud_upload(request))
         .await
         .map_err(|error| format!("failed to join cloud upload task: {error}"))?

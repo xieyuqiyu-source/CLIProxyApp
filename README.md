@@ -17,6 +17,7 @@ Phase 1 is focused on the desktop runtime wrapper:
 - Personal cloud auth sync and shared auth pool access
 - Windows tray/background mode
 - Manual update check and packaged update reminder support
+- One-click Continue integration for local OpenAI-compatible proxy setup
 
 ## Workspace Layout
 
@@ -31,6 +32,7 @@ CLIProxy/
 
 - [docs/cpa-runtime-wrapper.md](docs/cpa-runtime-wrapper.md)
 - [docs/cpapp-architecture.md](docs/cpapp-architecture.md)
+- [docs/continue-auto-provider-setup.md](docs/continue-auto-provider-setup.md)
 
 ## Development
 

@@ -93,6 +93,35 @@ export interface CodexConfigRestoreResult {
   restored: boolean
 }
 
+export interface ContinueConfigState {
+  configPath: string
+  exists: boolean
+  currentBaseUrl: string | null
+  chatModel: string | null
+  autocompleteModel: string | null
+  recommendedChatModel: string | null
+  recommendedAutocompleteModel: string | null
+  availableModels: string[]
+  canRestoreDefault: boolean
+}
+
+export interface ContinueConfigSetupInput {
+  chatModel: string
+  autocompleteModel: string
+}
+
+export interface ContinueConfigSetupResult {
+  configPath: string
+  baseUrl: string
+  chatModel: string
+  autocompleteModel: string
+}
+
+export interface ContinueConfigRestoreResult {
+  configPath: string
+  restored: boolean
+}
+
 export interface AppUpdateInfo {
   currentVersion: string
   latestVersion: string

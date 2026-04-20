@@ -15,6 +15,7 @@ import type { CpaState } from '../../lib/cpa/types'
 import { OAuthPanel } from '../oauth/OAuthPanel'
 import { OpenAIProvidersPanel } from '../openai-providers/OpenAIProvidersPanel'
 import { CodexConfigDialog } from '../codex-config/CodexConfigDialog'
+import { ContinueConfigDialog } from '../continue-config/ContinueConfigDialog'
 import type { OAuthProvider } from '../oauth/types'
 import { cloudClient } from '../../lib/cloud/client'
 import { formatPlanLabel } from '../../lib/cloud/planLabels'
@@ -130,6 +131,7 @@ export function UserWorkspace({
   const [oauthDialogOpen, setOauthDialogOpen] = useState(false)
   const [openAICompatDialogOpen, setOpenAICompatDialogOpen] = useState(false)
   const [codexConfigDialogOpen, setCodexConfigDialogOpen] = useState(false)
+  const [continueConfigDialogOpen, setContinueConfigDialogOpen] = useState(false)
   const [sharedPoolInfoOpen, setSharedPoolInfoOpen] = useState(false)
   const [syncingSharedPool, setSyncingSharedPool] = useState(false)
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0)
@@ -158,6 +160,7 @@ export function UserWorkspace({
   const [manualHelpVisible, setManualHelpVisible] = useState(false)
   const paidNotifiedOrderRef = useRef<string | null>(null)
   const closeCodexConfigDialog = useCallback(() => setCodexConfigDialogOpen(false), [])
+  const closeContinueConfigDialog = useCallback(() => setContinueConfigDialogOpen(false), [])
   const planLabel = useMemo(() => formatPlanLabel(plan.planCode, plan.name), [plan.name, plan.planCode])
   const formattedPlanExpiresAt = useMemo(() => {
     if (!planExpiresAt) {
@@ -851,6 +854,12 @@ export function UserWorkspace({
         >
           Codex配置
         </button>
+        <button
+          className="btn btn-neutral btn-xs h-8 rounded-lg border-none shadow-sm col-span-2"
+          onClick={() => setContinueConfigDialogOpen(true)}
+        >
+          Continue配置
+        </button>
       </div>
 
       {normalizingFreeTier ? (
@@ -1245,6 +1254,13 @@ export function UserWorkspace({
       <CodexConfigDialog
         open={codexConfigDialogOpen}
         onClose={closeCodexConfigDialog}
+        onNotify={onNotify}
+        onError={onError}
+      />
+
+      <ContinueConfigDialog
+        open={continueConfigDialogOpen}
+        onClose={closeContinueConfigDialog}
         onNotify={onNotify}
         onError={onError}
       />

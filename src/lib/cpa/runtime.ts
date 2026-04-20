@@ -5,6 +5,10 @@ import type {
   BootstrapSettings,
   CpaManagementInfo,
   CpaState,
+  ContinueConfigRestoreResult,
+  ContinueConfigSetupInput,
+  ContinueConfigSetupResult,
+  ContinueConfigState,
   CodexConfigRestoreResult,
   CodexConfigState,
   CodexConfigUpdateResult,
@@ -42,6 +46,12 @@ export const cpaRuntime = {
     invoke<CodexConfigUpdateResult>('set_codex_config_model', { model }),
   restoreCodexConfigDefault: () =>
     invoke<CodexConfigRestoreResult>('restore_codex_config_default'),
+  getContinueConfigState: () =>
+    invoke<ContinueConfigState>('get_continue_config_state'),
+  setupContinueConfig: (input: ContinueConfigSetupInput) =>
+    invoke<ContinueConfigSetupResult>('setup_continue_config', { input }),
+  restoreContinueConfigDefault: () =>
+    invoke<ContinueConfigRestoreResult>('restore_continue_config_default'),
   checkAppUpdate: () =>
     invoke<AppUpdateInfo>('check_app_update'),
   onOpenClawSetupLog: (handler: (line: string) => void) =>
