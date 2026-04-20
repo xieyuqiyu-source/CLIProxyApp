@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
-use tauri::{webview::PageLoadEvent, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    webview::PageLoadEvent, AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
+};
 
 const JIEGEHAO_LOGIN_URL: &str = "https://jiegehao.cn/api/policy/password";
 const JIEGEHAO_PIT_URL: &str = "https://jiegehao.cn/api/lease/pit";
@@ -153,12 +155,7 @@ pub async fn autologin_jiegehao_get_codex(
         .await
         .map_err(|e| format!("借个号登录响应解析失败: {e}"))?;
 
-    if login_body
-        .get("code")
-        .and_then(Value::as_i64)
-        .unwrap_or(-1)
-        != 0
-    {
+    if login_body.get("code").and_then(Value::as_i64).unwrap_or(-1) != 0 {
         return Err(login_body
             .get("msg")
             .and_then(Value::as_str)
@@ -166,9 +163,7 @@ pub async fn autologin_jiegehao_get_codex(
             .to_string());
     }
 
-    let login_data = login_body
-        .get("data")
-        .ok_or("借个号登录返回缺少 data")?;
+    let login_data = login_body.get("data").ok_or("借个号登录返回缺少 data")?;
     let token = login_data
         .get("token")
         .and_then(Value::as_str)
@@ -192,12 +187,7 @@ pub async fn autologin_jiegehao_get_codex(
         .await
         .map_err(|e| format!("借个号 pit 响应解析失败: {e}"))?;
 
-    if pit_body
-        .get("code")
-        .and_then(Value::as_i64)
-        .unwrap_or(-1)
-        != 0
-    {
+    if pit_body.get("code").and_then(Value::as_i64).unwrap_or(-1) != 0 {
         return Err(pit_body
             .get("msg")
             .and_then(Value::as_str)
@@ -258,9 +248,7 @@ pub async fn autologin_fetch_code(
 ) -> Result<String, String> {
     let client = reqwest::Client::new();
     let encoded_name = percent_encode(&user_name);
-    let url = format!(
-        "{JIEGEHAO_GPT_CODE_URL}?user_name={encoded_name}&bus_seat_id={seat_id}"
-    );
+    let url = format!("{JIEGEHAO_GPT_CODE_URL}?user_name={encoded_name}&bus_seat_id={seat_id}");
 
     let response = client
         .get(&url)
@@ -805,9 +793,7 @@ pub fn autologin_open_window(
         std::thread::sleep(std::time::Duration::from_millis(600));
     }
 
-    let parsed_url: url::Url = url
-        .parse()
-        .map_err(|e| format!("无效 OAuth URL: {e}"))?;
+    let parsed_url: url::Url = url.parse().map_err(|e| format!("无效 OAuth URL: {e}"))?;
 
     let init_script = build_init_script(&codex_account, &codex_password);
     let navigation_app = app.clone();

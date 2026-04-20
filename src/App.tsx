@@ -36,8 +36,14 @@ interface LoginSession {
 
 const SESSION_KEY = 'cpapp-login-session'
 const THEME_KEY = 'cpapp-theme'
+const REMEMBER_LOGIN_KEY = 'cpapp-remember-login'
 const THEMES = ['light', 'dark', 'synthwave', 'cyberpunk'] as const
 type Theme = typeof THEMES[number]
+
+interface RememberedLogin {
+  email: string
+  password: string
+}
 
 const createEmptySettings = (): BootstrapSettings => ({
   apiPort: 8317,
@@ -74,6 +80,27 @@ function App() {
     window.localStorage.setItem(THEME_KEY, theme)
   }, [theme])
 
+  useEffect(() => {
+    const raw = window.localStorage.getItem(REMEMBER_LOGIN_KEY)
+    if (!raw) {
+      return
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<RememberedLogin>
+      const rememberedEmail = String(parsed.email ?? '').trim()
+      const rememberedPassword = String(parsed.password ?? '')
+      if (!rememberedEmail || !rememberedPassword) {
+        window.localStorage.removeItem(REMEMBER_LOGIN_KEY)
+        return
+      }
+      setEmail(rememberedEmail)
+      setPassword(rememberedPassword)
+      setRememberLogin(true)
+    } catch {
+      window.localStorage.removeItem(REMEMBER_LOGIN_KEY)
+    }
+  }, [])
+
   const [session, setSession] = useState<LoginSession | null>(() => {
     const raw = window.sessionStorage.getItem(SESSION_KEY)
     if (!raw) return null
@@ -86,6 +113,7 @@ function App() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [rememberLogin, setRememberLogin] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [nextPassword, setNextPassword] = useState('')
   const [registerMode, setRegisterMode] = useState(false)
@@ -433,8 +461,16 @@ function App() {
         expiresAt: response.expiresAt ?? null
       }
       window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
+      if (rememberLogin) {
+        const remembered: RememberedLogin = {
+          email: email.trim().toLowerCase(),
+          password
+        }
+        window.localStorage.setItem(REMEMBER_LOGIN_KEY, JSON.stringify(remembered))
+      } else {
+        window.localStorage.removeItem(REMEMBER_LOGIN_KEY)
+      }
       setSession(nextSession)
-      setPassword('')
       setLoginError(null)
       showToast(`登录成功：${response.plan.name}`)
     } catch (error) {
@@ -469,8 +505,10 @@ function App() {
   const logout = () => {
     window.sessionStorage.removeItem(SESSION_KEY)
     setSession(null)
-    setEmail('')
-    setPassword('')
+    if (!rememberLogin) {
+      setEmail('')
+      setPassword('')
+    }
     setLoginError(null)
   }
 
@@ -726,6 +764,24 @@ function App() {
                     />
                   </label>
                 </div>
+
+                {!registerMode ? (
+                  <label className="label cursor-pointer justify-start gap-3 py-0">
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-primary checkbox-sm"
+                      checked={rememberLogin}
+                      onChange={(event) => {
+                        const checked = event.target.checked
+                        setRememberLogin(checked)
+                        if (!checked) {
+                          window.localStorage.removeItem(REMEMBER_LOGIN_KEY)
+                        }
+                      }}
+                    />
+                    <span className="label-text text-sm text-base-content/70">记住账号密码</span>
+                  </label>
+                ) : null}
 
                 {loginError && (
                   <div className="alert alert-error mt-4 py-2 text-sm rounded-lg">
