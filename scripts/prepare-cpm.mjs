@@ -45,8 +45,25 @@ if (!existsSync(cpmDist)) {
   process.exit(1)
 }
 
-rmSync(targetDir, { recursive: true, force: true })
-mkdirSync(targetDir, { recursive: true })
-cpSync(cpmDist, targetDir, { recursive: true })
+if (process.platform === 'win32') {
+  execFileSync('cmd', ['/d', '/c', 'if', 'exist', targetDir, 'rmdir', '/s', '/q', targetDir], {
+    stdio: 'inherit'
+  })
+  mkdirSync(targetDir, { recursive: true })
+  try {
+    execFileSync('robocopy', [cpmDist, targetDir, '/E'], {
+      stdio: 'inherit'
+    })
+  } catch (error) {
+    const status = typeof error.status === 'number' ? error.status : 1
+    if (status > 7) {
+      throw error
+    }
+  }
+} else {
+  rmSync(targetDir, { recursive: true, force: true })
+  mkdirSync(targetDir, { recursive: true })
+  cpSync(cpmDist, targetDir, { recursive: true })
+}
 
 console.log(`Prepared CPM assets at ${targetDir}`)
