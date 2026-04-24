@@ -37,8 +37,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if cfg!(target_os = "windows")
+            if (cfg!(target_os = "windows") || cfg!(target_os = "macos"))
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+                && window.label() == MAIN_WINDOW_LABEL
             {
                 let shell_state = window.state::<DesktopShellState>();
                 let quitting = shell_state
