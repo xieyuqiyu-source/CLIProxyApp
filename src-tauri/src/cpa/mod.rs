@@ -149,6 +149,39 @@ pub struct OpenClawSetupResult {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OpenClawConfigState {
+    pub available_models: Vec<String>,
+    pub recommended_primary_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenClawSetupInput {
+    #[serde(default = "default_openclaw_config_mode")]
+    pub mode: OpenClawConfigMode,
+    #[serde(default)]
+    pub selected_models: Vec<String>,
+    #[serde(default)]
+    pub primary_model: Option<String>,
+    #[serde(default)]
+    pub fallback_models: Vec<String>,
+    #[serde(default)]
+    pub clear_other_models: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenClawConfigMode {
+    Legacy,
+    Modern,
+}
+
+fn default_openclaw_config_mode() -> OpenClawConfigMode {
+    OpenClawConfigMode::Legacy
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodexConfigState {
     pub config_path: String,
     pub exists: bool,
@@ -1065,7 +1098,27 @@ pub fn import_vertex_credential(
     Ok(serde_json::from_str::<JsonValue>(&text).unwrap_or(JsonValue::String(text)))
 }
 
-pub fn setup_openclaw_provider(app: &AppHandle) -> Result<OpenClawSetupResult, String> {
+pub fn get_openclaw_config_state(app: &AppHandle) -> Result<OpenClawConfigState, String> {
+    let ctx = load_runtime_context(app)?;
+    let api_host = if ctx.bootstrap.host == "0.0.0.0" {
+        "127.0.0.1".to_string()
+    } else {
+        ctx.bootstrap.host.clone()
+    };
+    let base_url = format!("http://{}:{}/v1", api_host, ctx.bootstrap.api_port);
+    let available_models = fetch_openclaw_models(&base_url, &ctx.bootstrap.management_key)?;
+    let recommended_primary_model = select_openclaw_primary_model(&available_models);
+
+    Ok(OpenClawConfigState {
+        available_models,
+        recommended_primary_model,
+    })
+}
+
+pub fn setup_openclaw_provider(
+    app: &AppHandle,
+    input: OpenClawSetupInput,
+) -> Result<OpenClawSetupResult, String> {
     let ctx = load_runtime_context(app)?;
     let mut logs = Vec::new();
 
@@ -1086,10 +1139,14 @@ pub fn setup_openclaw_provider(app: &AppHandle) -> Result<OpenClawSetupResult, S
     let base_url = format!("http://{}:{}/v1", api_host, ctx.bootstrap.api_port);
     log_openclaw(app, &mut logs, &format!("探测代理接口: {base_url}/models"));
 
-    let models = fetch_openclaw_models(&base_url, &ctx.bootstrap.management_key)?;
-    if models.is_empty() {
+    let available_models = fetch_openclaw_models(&base_url, &ctx.bootstrap.management_key)?;
+    if available_models.is_empty() {
         return Err("OpenClaw 接入失败：/v1/models 未返回任何模型".to_string());
     }
+    let models = resolve_openclaw_selected_models(&input, &available_models)?;
+    let primary_model = resolve_openclaw_primary_model(&input, &models)?;
+    let fallback_models =
+        resolve_openclaw_fallback_models(&input, &models, primary_model.as_deref())?;
     log_openclaw(
         app,
         &mut logs,
@@ -1097,7 +1154,16 @@ pub fn setup_openclaw_provider(app: &AppHandle) -> Result<OpenClawSetupResult, S
     );
 
     let mut root = load_or_create_openclaw_config(&config_path, app, &mut logs)?;
-    apply_openclaw_provider_config(&mut root, &base_url, &ctx.bootstrap.management_key, &models);
+    apply_openclaw_provider_config(
+        &mut root,
+        &base_url,
+        &ctx.bootstrap.management_key,
+        &models,
+        &input.mode,
+        primary_model.as_deref(),
+        &fallback_models,
+        input.clear_other_models,
+    );
     write_openclaw_config(&config_path, &root, app, &mut logs)?;
     validate_openclaw_config(&openclaw_cmd, app, &mut logs)?;
 
@@ -1105,7 +1171,8 @@ pub fn setup_openclaw_provider(app: &AppHandle) -> Result<OpenClawSetupResult, S
         app,
         &mut logs,
         &format!(
-            "OpenClaw 接入完成。provider=cliproxy, alias=cliproxy, models={}",
+            "OpenClaw 接入完成。mode={:?}, provider=cliproxy, alias=cliproxy, models={}",
+            input.mode,
             models.len()
         ),
     );
@@ -1875,6 +1942,114 @@ fn fetch_openclaw_models(base_url: &str, api_key: &str) -> Result<Vec<String>, S
     Ok(ids)
 }
 
+fn select_openclaw_primary_model(models: &[String]) -> Option<String> {
+    const PREFERRED: [&str; 5] = [
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5",
+        "claude",
+    ];
+    for needle in PREFERRED {
+        if let Some(model) = models
+            .iter()
+            .find(|model| model.to_ascii_lowercase().contains(needle))
+        {
+            return Some(model.clone());
+        }
+    }
+    models.first().cloned()
+}
+
+fn resolve_openclaw_selected_models(
+    input: &OpenClawSetupInput,
+    available_models: &[String],
+) -> Result<Vec<String>, String> {
+    if input.mode == OpenClawConfigMode::Legacy || input.selected_models.is_empty() {
+        return Ok(available_models.to_vec());
+    }
+
+    let mut selected = Vec::new();
+    for model in &input.selected_models {
+        let trimmed = model.trim();
+        if trimmed.is_empty() || selected.iter().any(|item| item == trimmed) {
+            continue;
+        }
+        if !available_models.iter().any(|item| item == trimmed) {
+            return Err(format!(
+                "OpenClaw 接入失败：模型 `{trimmed}` 不在当前代理返回的模型列表中"
+            ));
+        }
+        selected.push(trimmed.to_string());
+    }
+
+    if selected.is_empty() {
+        return Err("OpenClaw 接入失败：新版配置至少需要选择一个模型".to_string());
+    }
+    Ok(selected)
+}
+
+fn resolve_openclaw_primary_model(
+    input: &OpenClawSetupInput,
+    selected_models: &[String],
+) -> Result<Option<String>, String> {
+    if input.mode != OpenClawConfigMode::Modern {
+        return Ok(None);
+    }
+
+    let primary = input
+        .primary_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| select_openclaw_primary_model(selected_models));
+
+    if let Some(model) = &primary {
+        if !selected_models.iter().any(|item| item == model) {
+            return Err(format!(
+                "OpenClaw 接入失败：默认模型 `{model}` 必须在已选择模型中"
+            ));
+        }
+    }
+
+    Ok(primary)
+}
+
+fn resolve_openclaw_fallback_models(
+    input: &OpenClawSetupInput,
+    selected_models: &[String],
+    primary_model: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if input.mode != OpenClawConfigMode::Modern {
+        return Ok(Vec::new());
+    }
+
+    let source = if input.fallback_models.is_empty() {
+        selected_models.to_vec()
+    } else {
+        input.fallback_models.clone()
+    };
+
+    let mut fallbacks = Vec::new();
+    for model in source {
+        let trimmed = model.trim();
+        if trimmed.is_empty()
+            || Some(trimmed) == primary_model
+            || fallbacks.iter().any(|item| item == trimmed)
+        {
+            continue;
+        }
+        if !selected_models.iter().any(|item| item == trimmed) {
+            return Err(format!(
+                "OpenClaw 接入失败：备选模型 `{trimmed}` 必须在已选择模型中"
+            ));
+        }
+        fallbacks.push(trimmed.to_string());
+    }
+    Ok(fallbacks)
+}
+
 fn resolve_codex_config_path() -> Result<PathBuf, String> {
     if let Ok(codex_home) = env::var("CODEX_HOME") {
         let trimmed = codex_home.trim();
@@ -2317,9 +2492,16 @@ fn apply_openclaw_provider_config(
     base_url: &str,
     api_key: &str,
     models: &[String],
+    mode: &OpenClawConfigMode,
+    primary_model: Option<&str>,
+    fallback_models: &[String],
+    clear_other_models: bool,
 ) {
     let root_obj = ensure_json_object(root);
     let models_node = ensure_json_object_entry(root_obj, "models");
+    if mode == &OpenClawConfigMode::Modern {
+        models_node.insert("mode".to_string(), JsonValue::String("merge".to_string()));
+    }
     let providers_node = ensure_json_object_entry(models_node, "providers");
     let cliproxy = ensure_json_object_entry(providers_node, "cliproxy");
     cliproxy.insert(
@@ -2327,6 +2509,9 @@ fn apply_openclaw_provider_config(
         JsonValue::String(base_url.to_string()),
     );
     cliproxy.insert("apiKey".to_string(), JsonValue::String(api_key.to_string()));
+    if mode == &OpenClawConfigMode::Modern {
+        cliproxy.insert("auth".to_string(), JsonValue::String("api-key".to_string()));
+    }
     cliproxy.insert(
         "api".to_string(),
         JsonValue::String("openai-completions".to_string()),
@@ -2336,7 +2521,7 @@ fn apply_openclaw_provider_config(
         JsonValue::Array(
             models
                 .iter()
-                .map(|id| build_openclaw_model_definition(id))
+                .map(|id| build_openclaw_model_definition(id, mode == &OpenClawConfigMode::Modern))
                 .collect(),
         ),
     );
@@ -2344,6 +2529,13 @@ fn apply_openclaw_provider_config(
     let agents_node = ensure_json_object_entry(root_obj, "agents");
     let defaults_node = ensure_json_object_entry(agents_node, "defaults");
     let defaults_models_node = ensure_json_object_entry(defaults_node, "models");
+    if clear_other_models {
+        let keep: HashSet<String> = models
+            .iter()
+            .map(|model_id| format!("cliproxy/{model_id}"))
+            .collect();
+        defaults_models_node.retain(|key, _| !key.starts_with("cliproxy/") || keep.contains(key));
+    }
     for model_id in models {
         let mut entry = JsonMap::new();
         if model_id == "gpt-5.4" {
@@ -2353,6 +2545,25 @@ fn apply_openclaw_provider_config(
             );
         }
         defaults_models_node.insert(format!("cliproxy/{model_id}"), JsonValue::Object(entry));
+    }
+
+    if mode == &OpenClawConfigMode::Modern {
+        let model_node = ensure_json_object_entry(defaults_node, "model");
+        if let Some(primary) = primary_model {
+            model_node.insert(
+                "primary".to_string(),
+                JsonValue::String(format!("cliproxy/{primary}")),
+            );
+        }
+        model_node.insert(
+            "fallbacks".to_string(),
+            JsonValue::Array(
+                fallback_models
+                    .iter()
+                    .map(|model| JsonValue::String(format!("cliproxy/{model}")))
+                    .collect(),
+            ),
+        );
     }
 }
 
@@ -2392,7 +2603,7 @@ fn validate_openclaw_config(
     Ok(())
 }
 
-fn build_openclaw_model_definition(id: &str) -> JsonValue {
+fn build_openclaw_model_definition(id: &str, modern: bool) -> JsonValue {
     let lower = id.to_ascii_lowercase();
     let supports_image = ["vision", "image", "gemini", "gpt-4o", "gpt-5", "claude"]
         .iter()
@@ -2430,7 +2641,12 @@ fn build_openclaw_model_definition(id: &str) -> JsonValue {
         }),
     );
     obj.insert("contextWindow".to_string(), JsonValue::from(266000));
-    obj.insert("maxTokens".to_string(), JsonValue::from(4096));
+    if modern {
+        obj.insert("contextTokens".to_string(), JsonValue::from(266000));
+        obj.insert("maxTokens".to_string(), JsonValue::from(8192));
+    } else {
+        obj.insert("maxTokens".to_string(), JsonValue::from(4096));
+    }
     JsonValue::Object(obj)
 }
 

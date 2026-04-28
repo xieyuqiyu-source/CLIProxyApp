@@ -16,6 +16,8 @@ import type {
   ImportAuthFilesResult,
   ImportAuthInputFile,
   LocalAuthFile,
+  OpenClawConfigState,
+  OpenClawSetupInput,
   OpenClawSetupResult,
   RuntimePaths
 } from './types'
@@ -38,8 +40,10 @@ export const cpaRuntime = {
     invoke<ExportAuthArchiveResult>('export_auth_files_archive'),
   getLocalAuthFiles: () =>
     invoke<LocalAuthFile[]>('get_local_auth_files'),
-  setupOpenClawProvider: () =>
-    invoke<OpenClawSetupResult>('setup_openclaw_provider'),
+  getOpenClawConfigState: () =>
+    invoke<OpenClawConfigState>('get_openclaw_config_state'),
+  setupOpenClawProvider: (input: OpenClawSetupInput) =>
+    invoke<OpenClawSetupResult>('setup_openclaw_provider', { input }),
   getCodexConfigState: () =>
     invoke<CodexConfigState>('get_codex_config_state'),
   setCodexConfigModel: (model: string) =>

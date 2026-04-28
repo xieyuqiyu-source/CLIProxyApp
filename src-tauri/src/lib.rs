@@ -82,6 +82,7 @@ pub fn run() {
             pick_local_auth_files,
             open_external_target,
             import_vertex_credential,
+            get_openclaw_config_state,
             setup_openclaw_provider,
             get_codex_config_state,
             set_codex_config_model,
@@ -331,10 +332,20 @@ fn import_vertex_credential(
 }
 
 #[tauri::command]
+async fn get_openclaw_config_state(
+    app: tauri::AppHandle,
+) -> Result<cpa::OpenClawConfigState, String> {
+    tauri::async_runtime::spawn_blocking(move || cpa::get_openclaw_config_state(&app))
+        .await
+        .map_err(|error| format!("failed to join OpenClaw config state task: {error}"))?
+}
+
+#[tauri::command]
 async fn setup_openclaw_provider(
     app: tauri::AppHandle,
+    input: cpa::OpenClawSetupInput,
 ) -> Result<cpa::OpenClawSetupResult, String> {
-    tauri::async_runtime::spawn_blocking(move || cpa::setup_openclaw_provider(&app))
+    tauri::async_runtime::spawn_blocking(move || cpa::setup_openclaw_provider(&app, input))
         .await
         .map_err(|error| format!("failed to join OpenClaw setup task: {error}"))?
 }

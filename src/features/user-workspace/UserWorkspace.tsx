@@ -12,6 +12,7 @@ import type {
   CloudPlan
 } from '../../lib/cloud/types'
 import type { CpaState } from '../../lib/cpa/types'
+import type { OpenClawConfigMode } from '../../lib/cpa/types'
 import { OAuthPanel } from '../oauth/OAuthPanel'
 import { OpenAIProvidersPanel } from '../openai-providers/OpenAIProvidersPanel'
 import { CodexConfigDialog } from '../codex-config/CodexConfigDialog'
@@ -95,6 +96,13 @@ function buildSharedLocalFileName(fileName: string) {
   return fileName.startsWith('共享-') ? fileName : `共享-${fileName}`
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message
+  }
+  return String(error)
+}
+
 function buildQuoteCacheKey(productCode: string, billingMonths: number, purchaseMode: CloudPaymentPurchaseMode) {
   return `${productCode}:${billingMonths}:${purchaseMode}`
 }
@@ -140,6 +148,14 @@ export function UserWorkspace({
   const [openClawDialogOpen, setOpenClawDialogOpen] = useState(false)
   const [runningOpenClawSetup, setRunningOpenClawSetup] = useState(false)
   const [openClawLogs, setOpenClawLogs] = useState<string[]>([])
+  const [openClawMode, setOpenClawMode] = useState<OpenClawConfigMode>('modern')
+  const [loadingOpenClawState, setLoadingOpenClawState] = useState(false)
+  const [openClawModels, setOpenClawModels] = useState<string[]>([])
+  const [openClawSelectedModels, setOpenClawSelectedModels] = useState<string[]>([])
+  const [openClawPrimaryModel, setOpenClawPrimaryModel] = useState<string>('')
+  const [openClawFallbackModels, setOpenClawFallbackModels] = useState<string[]>([])
+  const [openClawClearOtherModels, setOpenClawClearOtherModels] = useState(false)
+  const openClawSelectionDirtyRef = useRef(false)
   const [paymentProducts, setPaymentProducts] = useState<CloudPaymentProduct[]>([])
   const [loadingPaymentProducts, setLoadingPaymentProducts] = useState(false)
   const [preparingVipDialog, setPreparingVipDialog] = useState(false)
@@ -149,7 +165,7 @@ export function UserWorkspace({
   const [paymentQuote, setPaymentQuote] = useState<CloudPaymentQuote | null>(null)
   const [loadingPaymentQuote, setLoadingPaymentQuote] = useState(false)
   const [paymentQuoteCache, setPaymentQuoteCache] = useState<Record<string, CloudPaymentQuote>>({})
-  const selectedPaymentProvider: 'xunhu' = 'xunhu'
+  const selectedPaymentProvider = 'xunhu' as const
   const [activePayment, setActivePayment] = useState<CloudCreatePaymentOrderResponse | null>(null)
   const [paymentCheckoutOpen, setPaymentCheckoutOpen] = useState(false)
   const [paymentQrDataUrl, setPaymentQrDataUrl] = useState<string | null>(null)
@@ -540,6 +556,34 @@ export function UserWorkspace({
     void warmupQuotes()
   }, [selectedProductCode, vipDialogOpen, warmupStandardQuotes])
 
+  const loadOpenClawConfigState = useCallback(async () => {
+    openClawSelectionDirtyRef.current = false
+    setLoadingOpenClawState(true)
+    try {
+      const result = await cpaRuntime.getOpenClawConfigState()
+      const models = result.availableModels
+      setOpenClawModels(models)
+      setOpenClawSelectedModels(models)
+      const primary = result.recommendedPrimaryModel ?? models[0] ?? ''
+      setOpenClawPrimaryModel(primary)
+      setOpenClawFallbackModels(models.filter((model) => model !== primary))
+      setOpenClawClearOtherModels(false)
+      return true
+    } catch (error) {
+      onError(getErrorMessage(error))
+      return false
+    } finally {
+      setLoadingOpenClawState(false)
+    }
+  }, [onError])
+
+  const handleOpenClawIntro = useCallback(async () => {
+    const loaded = await loadOpenClawConfigState()
+    if (loaded) {
+      setOpenClawIntroOpen(true)
+    }
+  }, [loadOpenClawConfigState])
+
   const hasPendingPayment = activePayment?.order.status === 'pending'
   const mobileProviderOrder: (QuotaProvider | 'all')[] = ['all', 'codex', 'claude', 'gemini-cli', 'antigravity', 'kimi']
 
@@ -769,6 +813,31 @@ export function UserWorkspace({
     }
   }
 
+  const toggleOpenClawSelectedModel = (model: string) => {
+    openClawSelectionDirtyRef.current = true
+    setOpenClawSelectedModels((current) => {
+      const next = current.includes(model)
+        ? current.filter((item) => item !== model)
+        : [...current, model]
+      if (!next.includes(openClawPrimaryModel)) {
+        setOpenClawPrimaryModel(next[0] ?? '')
+      }
+      setOpenClawFallbackModels((fallbacks) =>
+        fallbacks.filter((item) => next.includes(item) && item !== openClawPrimaryModel)
+      )
+      return next
+    })
+  }
+
+  const toggleOpenClawFallbackModel = (model: string) => {
+    openClawSelectionDirtyRef.current = true
+    setOpenClawFallbackModels((current) =>
+      current.includes(model)
+        ? current.filter((item) => item !== model)
+        : [...current, model]
+    )
+  }
+
   const handleOpenClawSetup = async () => {
     setOpenClawIntroOpen(false)
     setOpenClawDialogOpen(true)
@@ -776,7 +845,13 @@ export function UserWorkspace({
     setRunningOpenClawSetup(true)
     onError(null)
     try {
-      const result = await cpaRuntime.setupOpenClawProvider()
+      const result = await cpaRuntime.setupOpenClawProvider({
+        mode: openClawMode,
+        selectedModels: openClawMode === 'modern' ? openClawSelectedModels : [],
+        primaryModel: openClawMode === 'modern' ? openClawPrimaryModel || null : null,
+        fallbackModels: openClawMode === 'modern' ? openClawFallbackModels : [],
+        clearOtherModels: openClawMode === 'modern' ? openClawClearOtherModels : false
+      })
       onNotify(`OpenClaw 接入完成，已写入 ${result.modelCount} 个模型`)
       setOpenClawLogs((current) => [
         ...current,
@@ -826,9 +901,10 @@ export function UserWorkspace({
 
         <button
           className="btn btn-neutral btn-xs h-8 rounded-lg border-none shadow-sm"
-          disabled={runningOpenClawSetup}
-          onClick={() => setOpenClawIntroOpen(true)}
+          disabled={runningOpenClawSetup || loadingOpenClawState}
+          onClick={() => void handleOpenClawIntro()}
         >
+          {loadingOpenClawState ? <span className="loading loading-spinner loading-xs" /> : null}
           OpenClaw
         </button>
 
@@ -1266,19 +1342,130 @@ export function UserWorkspace({
       />
 
       <dialog className={`modal ${openClawIntroOpen ? 'modal-open' : ''}`}>
-        <div className="modal-box max-w-md">
+        <div className="modal-box max-w-2xl">
           <div className="space-y-4">
             <div>
               <h3 className="text-xl font-bold">OpenClaw</h3>
               <p className="mt-2 text-sm leading-6 text-base-content/70">
-                这个按钮会自动把当前本地代理接入 OpenClaw，并写入 provider 和模型配置。
+                自动把当前本地代理接入 OpenClaw。旧版保持原有写法，新版支持指定模型、默认模型和备选模型。
               </p>
             </div>
+            <div className="join w-full">
+              <button
+                className={`btn join-item flex-1 ${openClawMode === 'legacy' ? 'btn-primary' : 'btn-outline'}`}
+                onClick={() => {
+                  openClawSelectionDirtyRef.current = true
+                  setOpenClawMode('legacy')
+                }}
+              >
+                旧版
+              </button>
+              <button
+                className={`btn join-item flex-1 ${openClawMode === 'modern' ? 'btn-primary' : 'btn-outline'}`}
+                onClick={() => {
+                  openClawSelectionDirtyRef.current = true
+                  setOpenClawMode('modern')
+                }}
+              >
+                新版
+              </button>
+            </div>
+            {openClawMode === 'modern' ? (
+              <div className="space-y-3 rounded-box border border-base-300 bg-base-200/50 p-3">
+                {loadingOpenClawState ? (
+                  <div className="flex items-center gap-2 text-sm text-base-content/60">
+                    <span className="loading loading-spinner loading-xs" />
+                    正在读取当前代理模型
+                  </div>
+                ) : null}
+                <div>
+                  <div className="mb-2 text-sm font-bold">写入模型（可多选）</div>
+                  <div className="max-h-40 space-y-1 overflow-auto rounded-box bg-base-100 p-2">
+                    {openClawModels.length === 0 && !loadingOpenClawState ? (
+                      <div className="text-sm text-base-content/50">暂无模型，请先确认本地代理已启动。</div>
+                    ) : null}
+                    {openClawModels.map((model) => (
+                      <label key={model} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-sm hover:bg-base-200">
+                        <input
+                          type="checkbox"
+                          className="checkbox checkbox-primary checkbox-sm"
+                          checked={openClawSelectedModels.includes(model)}
+                          onChange={() => toggleOpenClawSelectedModel(model)}
+                        />
+                        <span className="truncate">{model}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <label className="form-control">
+                  <span className="label-text mb-1 font-bold">默认模型</span>
+                  <select
+                    className="select select-bordered select-sm"
+                    value={openClawPrimaryModel}
+                    onChange={(event) => {
+                      openClawSelectionDirtyRef.current = true
+                      const next = event.target.value
+                      setOpenClawPrimaryModel(next)
+                      setOpenClawFallbackModels((current) => current.filter((model) => model !== next))
+                    }}
+                  >
+                    {openClawSelectedModels.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div>
+                  <div className="mb-2 text-sm font-bold">备选模型（可多选）</div>
+                  <div className="max-h-32 space-y-1 overflow-auto rounded-box bg-base-100 p-2">
+                    {openClawSelectedModels
+                      .filter((model) => model !== openClawPrimaryModel)
+                      .map((model) => (
+                        <label key={model} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-sm hover:bg-base-200">
+                          <input
+                            type="checkbox"
+                            className="checkbox checkbox-warning checkbox-sm"
+                            checked={openClawFallbackModels.includes(model)}
+                            onChange={() => toggleOpenClawFallbackModel(model)}
+                          />
+                          <span className="truncate">{model}</span>
+                        </label>
+                      ))}
+                  </div>
+                </div>
+                <label className="flex cursor-pointer items-start gap-3 rounded-box border border-warning/30 bg-warning/10 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-warning checkbox-sm mt-0.5"
+                    checked={openClawClearOtherModels}
+                    onChange={(event) => {
+                      openClawSelectionDirtyRef.current = true
+                      setOpenClawClearOtherModels(event.target.checked)
+                    }}
+                  />
+                  <span className="leading-6">
+                    清除其他模型
+                    <span className="block text-xs text-base-content/60">
+                      勾选后只保留本次选择的 `cliproxy` 模型，并清理以前残留的 `cliproxy/*` 模型项。
+                    </span>
+                  </span>
+                </label>
+              </div>
+            ) : (
+              <div className="rounded-box border border-base-300 bg-base-200/50 p-3 text-sm text-base-content/70">
+                旧版会写入所有代理模型，只更新 provider 和模型 allowlist，不主动修改默认模型和备选模型。
+              </div>
+            )}
             <div className="modal-action">
               <button className="btn btn-outline" onClick={() => setOpenClawIntroOpen(false)}>
                 取消
               </button>
-              <button className="btn btn-primary" onClick={() => void handleOpenClawSetup()}>
+              <button
+                className="btn btn-primary"
+                disabled={runningOpenClawSetup || loadingOpenClawState || (openClawMode === 'modern' && openClawSelectedModels.length === 0)}
+                onClick={() => void handleOpenClawSetup()}
+              >
                 继续
               </button>
             </div>

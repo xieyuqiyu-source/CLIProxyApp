@@ -73,6 +73,21 @@ export interface OpenClawSetupResult {
   alias: string
 }
 
+export interface OpenClawConfigState {
+  availableModels: string[]
+  recommendedPrimaryModel: string | null
+}
+
+export type OpenClawConfigMode = 'legacy' | 'modern'
+
+export interface OpenClawSetupInput {
+  mode: OpenClawConfigMode
+  selectedModels: string[]
+  primaryModel: string | null
+  fallbackModels: string[]
+  clearOtherModels: boolean
+}
+
 export interface CodexConfigState {
   configPath: string
   exists: boolean
