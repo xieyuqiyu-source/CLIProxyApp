@@ -10,10 +10,11 @@
     "preview": "vite preview",
     "prepare:sidecar": "node ./scripts/prepare-sidecar.mjs",
     "prepare:cpm": "node ./scripts/prepare-cpm.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:win:exe": "tauri build --bundles nsis"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/api": "^2.11.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -22,7 +23,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@tailwindcss/vite": "^4.2.2",
-    "@tauri-apps/cli": "^2.10.1",
+    "@tauri-apps/cli": "^2.11.1",
     "@types/node": "^24.12.0",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19.2.14",
