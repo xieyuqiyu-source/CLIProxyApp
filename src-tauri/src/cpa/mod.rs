@@ -16,7 +16,7 @@ use sysinfo::{Signal, System};
 use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
-const CLOUD_BASE_URL_DEV: &str = "https://cliproxy.szxsai.com/api/v1";
+const CLOUD_BASE_URL_DEV: &str = "http://127.0.0.1:8090/api/v1";
 const CLOUD_BASE_URL_RELEASE: &str = "https://cliproxy.szxsai.com/api/v1";
 const CONTINUE_CHAT_MODEL_NAME: &str = "CLIProxy Chat";
 const CONTINUE_AUTOCOMPLETE_MODEL_NAME: &str = "CLIProxy Autocomplete";
@@ -2880,6 +2880,11 @@ fn parse_cloud_json_response(response: reqwest::blocking::Response) -> Result<Js
         .map_err(|error| format!("failed to read cloud response: {error}"))?;
 
     if !status.is_success() {
+        if status == reqwest::StatusCode::CONFLICT {
+            if let Ok(payload) = serde_json::from_str::<JsonValue>(&text) {
+                return Ok(payload);
+            }
+        }
         let message = serde_json::from_str::<JsonValue>(&text)
             .ok()
             .and_then(|payload| {

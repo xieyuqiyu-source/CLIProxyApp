@@ -2,6 +2,9 @@ import { cpaRuntime } from '../cpa/runtime'
 import type {
   CloudAppReleaseManifest,
   CloudCreatePaymentOrderResponse,
+  CloudLoginChallengeResponse,
+  CloudLoginConflictResponse,
+  CloudRegisterChallengeResponse,
   CloudQuotePaymentOrderResponse,
   CloudPaymentOrder,
   CloudPaymentProduct,
@@ -14,6 +17,7 @@ import type {
 } from './types'
 
 const DEVICE_ID_KEY = 'cpapp-cloud-device-id'
+const TRUSTED_DEVICE_KEY = 'cpapp-cloud-trusted-device'
 
 function normalizeAccountKey(account: string) {
   return account.trim().toLowerCase()
@@ -37,6 +41,13 @@ async function request<T>(path: string, init?: RequestInit, token?: string): Pro
     body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
     token
   }) as Promise<T>
+}
+
+interface TrustedDeviceLoginCache {
+  email: string
+  deviceId: string
+  trustedToken: string
+  trustedUntil?: string | null
 }
 
 async function download(path: string, token: string): Promise<{ fileName: string; bytes: number[] }> {
@@ -75,8 +86,38 @@ async function uploadFormWithFields<T>(
 export const cloudClient = {
   getDeviceId: (account: string) => resolveDeviceId(account),
 
+  getTrustedDeviceLogin: (): TrustedDeviceLoginCache | null => {
+    const raw = window.localStorage.getItem(TRUSTED_DEVICE_KEY)
+    if (!raw) {
+      return null
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<TrustedDeviceLoginCache>
+      const email = String(parsed.email ?? '').trim().toLowerCase()
+      const deviceId = String(parsed.deviceId ?? '').trim()
+      const trustedToken = String(parsed.trustedToken ?? '').trim()
+      const trustedUntil = parsed.trustedUntil ? String(parsed.trustedUntil) : null
+      if (!email || !deviceId || !trustedToken) {
+        window.localStorage.removeItem(TRUSTED_DEVICE_KEY)
+        return null
+      }
+      return { email, deviceId, trustedToken, trustedUntil }
+    } catch {
+      window.localStorage.removeItem(TRUSTED_DEVICE_KEY)
+      return null
+    }
+  },
+
+  saveTrustedDeviceLogin: (payload: TrustedDeviceLoginCache) => {
+    window.localStorage.setItem(TRUSTED_DEVICE_KEY, JSON.stringify(payload))
+  },
+
+  clearTrustedDeviceLogin: () => {
+    window.localStorage.removeItem(TRUSTED_DEVICE_KEY)
+  },
+
   register: (email: string, password: string) =>
-    request<CloudRegisterResponse>('/auth/register', {
+    request<CloudRegisterChallengeResponse>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({
         email,
@@ -84,8 +125,18 @@ export const cloudClient = {
       })
     }),
 
-  login: (email: string, password: string) =>
-    request<CloudLoginResponse>(
+  verifyRegister: (email: string, challengeId: string, code: string) =>
+    request<CloudRegisterResponse>('/auth/register/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        challenge_id: challengeId,
+        code
+      })
+    }),
+
+  login: (email: string, password: string, trustDevice = true) =>
+    request<CloudLoginResponse | CloudLoginChallengeResponse>(
       '/auth/login',
       {
         method: 'POST',
@@ -94,12 +145,51 @@ export const cloudClient = {
           password,
           device_id: resolveDeviceId(email),
           device_name: 'CPSwitch',
-          platform: navigator.platform || 'desktop'
+          platform: navigator.platform || 'desktop',
+          trust_device: trustDevice
+        })
+      }
+    ),
+
+  verifyLogin: (
+    email: string,
+    challengeId: string,
+    code: string,
+    trustDevice = true,
+    forceLogoutExisting = false
+  ) =>
+    request<CloudLoginResponse | CloudLoginConflictResponse>(
+      '/auth/login/verify',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          challenge_id: challengeId,
+          code,
+          trust_device: trustDevice,
+          force_logout_existing: forceLogoutExisting
+        })
+      }
+    ),
+
+  loginTrustedDevice: (email: string, trustedToken: string) =>
+    request<CloudLoginResponse>(
+      '/auth/device-login',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          email,
+          device_id: resolveDeviceId(email),
+          device_name: 'CPSwitch',
+          platform: navigator.platform || 'desktop',
+          trusted_token: trustedToken
         })
       }
     ),
 
   me: (token: string) => request<CloudMeResponse>('/me', { method: 'GET' }, token),
+
+  logout: (token: string) => request<{ status: string }>('/me/logout', { method: 'POST' }, token),
 
   changePassword: (token: string, currentPassword: string, newPassword: string) =>
     request<{ status: string }>(

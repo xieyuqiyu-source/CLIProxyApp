@@ -11,7 +11,14 @@ import { UserWorkspace } from './features/user-workspace/UserWorkspace'
 import { authFilesApi } from './features/auth-files/api'
 import { cloudClient } from './lib/cloud/client'
 import { sharedImportRegistry } from './lib/cloud/sharedRegistry'
-import type { CloudFeatures, CloudPlan, CloudUser } from './lib/cloud/types'
+import type {
+  CloudFeatures,
+  CloudLoginChallengeResponse,
+  CloudLoginConflictResponse,
+  CloudLoginResponse,
+  CloudPlan,
+  CloudUser
+} from './lib/cloud/types'
 import { formatPlanLabel } from './lib/cloud/planLabels'
 import type {
   AppState,
@@ -36,13 +43,24 @@ interface LoginSession {
 
 const SESSION_KEY = 'cpapp-login-session'
 const THEME_KEY = 'cpapp-theme'
-const REMEMBER_LOGIN_KEY = 'cpapp-remember-login'
+const REMEMBERED_EMAIL_KEY = 'cpapp-remembered-email'
 const THEMES = ['light', 'dark', 'synthwave', 'cyberpunk'] as const
 type Theme = typeof THEMES[number]
 
-interface RememberedLogin {
+interface PendingLoginChallenge {
   email: string
-  password: string
+  challengeId: string
+  maskedEmail: string
+  expiresAt: string
+  debugCode?: string
+}
+
+interface PendingRegisterChallenge {
+  email: string
+  challengeId: string
+  maskedEmail: string
+  expiresAt: string
+  debugCode?: string
 }
 
 const createEmptySettings = (): BootstrapSettings => ({
@@ -81,24 +99,16 @@ function App() {
   }, [theme])
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(REMEMBER_LOGIN_KEY)
+    const raw = window.localStorage.getItem(REMEMBERED_EMAIL_KEY)
     if (!raw) {
       return
     }
-    try {
-      const parsed = JSON.parse(raw) as Partial<RememberedLogin>
-      const rememberedEmail = String(parsed.email ?? '').trim()
-      const rememberedPassword = String(parsed.password ?? '')
-      if (!rememberedEmail || !rememberedPassword) {
-        window.localStorage.removeItem(REMEMBER_LOGIN_KEY)
-        return
-      }
-      setEmail(rememberedEmail)
-      setPassword(rememberedPassword)
-      setRememberLogin(true)
-    } catch {
-      window.localStorage.removeItem(REMEMBER_LOGIN_KEY)
+    const rememberedEmail = String(raw).trim().toLowerCase()
+    if (!rememberedEmail) {
+      window.localStorage.removeItem(REMEMBERED_EMAIL_KEY)
+      return
     }
+    setEmail(rememberedEmail)
   }, [])
 
   const [session, setSession] = useState<LoginSession | null>(() => {
@@ -113,7 +123,11 @@ function App() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [rememberLogin, setRememberLogin] = useState(false)
+  const [trustDevice, setTrustDevice] = useState(true)
+  const [pendingChallenge, setPendingChallenge] = useState<PendingLoginChallenge | null>(null)
+  const [pendingRegisterChallenge, setPendingRegisterChallenge] = useState<PendingRegisterChallenge | null>(null)
+  const [verificationCode, setVerificationCode] = useState('')
+  const [conflictDevice, setConflictDevice] = useState<CloudLoginConflictResponse['active_device'] | null>(null)
   const [currentPassword, setCurrentPassword] = useState('')
   const [nextPassword, setNextPassword] = useState('')
   const [registerMode, setRegisterMode] = useState(false)
@@ -136,6 +150,7 @@ function App() {
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const cpmFrameRef = useRef<HTMLIFrameElement | null>(null)
   const errorToastTimerRef = useRef<number | null>(null)
+  const trustedLoginAttemptedRef = useRef(false)
 
   const statusTone = useMemo(() => {
     switch (cpaState?.status) {
@@ -300,6 +315,35 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (session || trustedLoginAttemptedRef.current) {
+      return
+    }
+    trustedLoginAttemptedRef.current = true
+    const trustedLogin = cloudClient.getTrustedDeviceLogin()
+    if (!trustedLogin) {
+      return
+    }
+    if (trustedLogin.trustedUntil && new Date(trustedLogin.trustedUntil).getTime() <= Date.now()) {
+      cloudClient.clearTrustedDeviceLogin()
+      return
+    }
+
+    setEmail(trustedLogin.email)
+    void (async () => {
+      try {
+        setPendingAction('trusted-login')
+        const response = await cloudClient.loginTrustedDevice(trustedLogin.email, trustedLogin.trustedToken)
+        completeLogin(response, trustedLogin.email)
+        showToast('已自动登录')
+      } catch {
+        cloudClient.clearTrustedDeviceLogin()
+      } finally {
+        setPendingAction(null)
+      }
+    })()
+  }, [session])
+
+  useEffect(() => {
     if (!session || cpaState?.status !== 'running' || session.features.max_enabled_auth_files !== 1) {
       return
     }
@@ -452,26 +496,63 @@ function App() {
 
     try {
       setPendingAction('login')
-      const response = await cloudClient.login(email.trim().toLowerCase(), password)
-      const nextSession: LoginSession = {
-        token: response.token,
-        user: response.user,
-        plan: response.plan,
-        features: response.features,
-        expiresAt: response.expiresAt ?? null
-      }
-      window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
-      if (rememberLogin) {
-        const remembered: RememberedLogin = {
-          email: email.trim().toLowerCase(),
-          password
+      const normalizedEmail = email.trim().toLowerCase()
+      const response = await cloudClient.login(normalizedEmail, password, trustDevice)
+      if (response.status === 'verification_required') {
+        const challenge = response as CloudLoginChallengeResponse
+        setPendingChallenge({
+          email: normalizedEmail,
+          challengeId: challenge.challenge_id,
+          maskedEmail: challenge.masked_email,
+          expiresAt: challenge.expires_at,
+          debugCode: challenge.debug_code
+        })
+        setVerificationCode('')
+        setConflictDevice(null)
+        setLoginError(null)
+        if (challenge.debug_code) {
+          showToast(`本地调试验证码：${challenge.debug_code}`)
+        } else {
+          showToast(`验证码已发送到 ${challenge.masked_email}`)
         }
-        window.localStorage.setItem(REMEMBER_LOGIN_KEY, JSON.stringify(remembered))
-      } else {
-        window.localStorage.removeItem(REMEMBER_LOGIN_KEY)
+        return
       }
-      setSession(nextSession)
-      setLoginError(null)
+      completeLogin(response as CloudLoginResponse, normalizedEmail)
+      showToast(`登录成功：${response.plan.name}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLoginError(message)
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const submitVerification = async (forceLogoutExisting = false) => {
+    if (!pendingChallenge) {
+      return
+    }
+    if (!verificationCode.trim()) {
+      setLoginError('请输入邮箱验证码。')
+      return
+    }
+    try {
+      setPendingAction(forceLogoutExisting ? 'kick-login' : 'verify-login')
+      const response = await cloudClient.verifyLogin(
+        pendingChallenge.email,
+        pendingChallenge.challengeId,
+        verificationCode.trim(),
+        trustDevice,
+        forceLogoutExisting
+      )
+      if (response.status === 'conflict') {
+        setConflictDevice(response.active_device ?? null)
+        setLoginError('该账号当前已有另一台设备在线。确认后将踢掉旧设备并继续登录。')
+        return
+      }
+      completeLogin(response as CloudLoginResponse, pendingChallenge.email)
+      setPendingChallenge(null)
+      setVerificationCode('')
+      setConflictDevice(null)
       showToast(`登录成功：${response.plan.name}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -489,8 +570,47 @@ function App() {
 
     try {
       setPendingAction('register')
-      await cloudClient.register(email.trim().toLowerCase(), password)
+      const challenge = await cloudClient.register(email.trim().toLowerCase(), password)
+      setPendingRegisterChallenge({
+        email: email.trim().toLowerCase(),
+        challengeId: challenge.challenge_id,
+        maskedEmail: challenge.masked_email,
+        expiresAt: challenge.expires_at,
+        debugCode: challenge.debug_code
+      })
+      setVerificationCode('')
+      setLoginError(null)
+      if (challenge.debug_code) {
+        showToast(`本地调试验证码：${challenge.debug_code}`)
+      } else {
+        showToast(`注册验证码已发送到 ${challenge.masked_email}`)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLoginError(message)
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const submitRegisterVerification = async () => {
+    if (!pendingRegisterChallenge) {
+      return
+    }
+    if (!verificationCode.trim()) {
+      setLoginError('请输入注册验证码。')
+      return
+    }
+    try {
+      setPendingAction('register-verify')
+      await cloudClient.verifyRegister(
+        pendingRegisterChallenge.email,
+        pendingRegisterChallenge.challengeId,
+        verificationCode.trim()
+      )
       setRegisterMode(false)
+      setPendingRegisterChallenge(null)
+      setVerificationCode('')
       setPassword('')
       setLoginError(null)
       showToast('注册成功，请使用新账号登录')
@@ -503,13 +623,43 @@ function App() {
   }
 
   const logout = () => {
-    window.sessionStorage.removeItem(SESSION_KEY)
-    setSession(null)
-    if (!rememberLogin) {
-      setEmail('')
-      setPassword('')
+    if (session) {
+      void cloudClient.logout(session.token).catch(() => undefined)
     }
+    window.sessionStorage.removeItem(SESSION_KEY)
+    cloudClient.clearTrustedDeviceLogin()
+    setSession(null)
+    setPassword('')
+    setPendingChallenge(null)
+    setPendingRegisterChallenge(null)
+    setVerificationCode('')
+    setConflictDevice(null)
     setLoginError(null)
+  }
+
+  const completeLogin = (response: CloudLoginResponse, loginEmail: string) => {
+    const nextSession: LoginSession = {
+      token: response.token,
+      user: response.user,
+      plan: response.plan,
+      features: response.features,
+      expiresAt: response.expiresAt ?? null
+    }
+    window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
+    window.localStorage.setItem(REMEMBERED_EMAIL_KEY, loginEmail)
+    if (response.trusted_token) {
+      cloudClient.saveTrustedDeviceLogin({
+        email: loginEmail,
+        deviceId: cloudClient.getDeviceId(loginEmail),
+        trustedToken: response.trusted_token,
+        trustedUntil: response.trusted_until ?? null
+      })
+    } else {
+      cloudClient.clearTrustedDeviceLogin()
+    }
+    setSession(nextSession)
+    setLoginError(null)
+    setPassword('')
   }
 
   const submitChangePassword = async () => {
@@ -716,6 +866,10 @@ function App() {
                   className="btn btn-ghost btn-sm text-primary hover:bg-primary/10"
                   onClick={() => {
                     setRegisterMode((current) => !current)
+                    setPendingChallenge(null)
+                    setPendingRegisterChallenge(null)
+                    setVerificationCode('')
+                    setConflictDevice(null)
                     setLoginError(null)
                   }}
                 >
@@ -724,64 +878,133 @@ function App() {
               </div>
 
               <div className="space-y-4">
-                <div className="form-control">
-                  <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
-                      <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM12.735 14c.618 0 1.093-.561.872-1.139a6.002 6.002 0 0 0-11.215 0c-.22.578.254 1.139.872 1.139h9.47Z" />
-                    </svg>
-                    <input
-                      type="text"
-                      className="grow"
-                      placeholder="账号"
-                      autoCapitalize="none"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          void (registerMode ? submitRegister() : submitLogin())
-                        }
-                      }}
-                    />
-                  </label>
-                </div>
+                {!pendingChallenge && !pendingRegisterChallenge ? (
+                  <>
+                    <div className="form-control">
+                      <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
+                          <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM12.735 14c.618 0 1.093-.561.872-1.139a6.002 6.002 0 0 0-11.215 0c-.22.578.254 1.139.872 1.139h9.47Z" />
+                        </svg>
+                        <input
+                          type="text"
+                          className="grow"
+                          placeholder="账号"
+                          autoCapitalize="none"
+                          value={email}
+                          onChange={(event) => setEmail(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              void (registerMode ? submitRegister() : submitLogin())
+                            }
+                          }}
+                        />
+                      </label>
+                    </div>
 
-                <div className="form-control">
-                  <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
-                      <path fillRule="evenodd" d="M14 6a4 4 0 0 1-4.899 3.899l-1.955 1.955a.5.5 0 0 1-.353.146H5v1.5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-2.293a.5.5 0 0 1 .146-.353l3.955-3.955A4 4 0 1 1 14 6Zm-4-2a.75.75 0 0 0 0 1.5.5.5 0 0 1 .5.5.75.75 0 0 0 1.5 0 2 2 0 0 0-2-2Z" clipRule="evenodd" />
-                    </svg>
-                    <input
-                      type="password"
-                      className="grow"
-                      placeholder="Password"
-                      value={password}
-                      onChange={(event) => setPassword(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          void (registerMode ? submitRegister() : submitLogin())
-                        }
-                      }}
-                    />
-                  </label>
-                </div>
+                    <div className="form-control">
+                      <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
+                          <path fillRule="evenodd" d="M14 6a4 4 0 0 1-4.899 3.899l-1.955 1.955a.5.5 0 0 1-.353.146H5v1.5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-2.293a.5.5 0 0 1 .146-.353l3.955-3.955A4 4 0 1 1 14 6Zm-4-2a.75.75 0 0 0 0 1.5.5.5 0 0 1 .5.5.75.75 0 0 0 1.5 0 2 2 0 0 0-2-2Z" clipRule="evenodd" />
+                        </svg>
+                        <input
+                          type="password"
+                          className="grow"
+                          placeholder="密码"
+                          value={password}
+                          onChange={(event) => setPassword(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              void (registerMode ? submitRegister() : submitLogin())
+                            }
+                          }}
+                        />
+                      </label>
+                    </div>
 
-                {!registerMode ? (
-                  <label className="label cursor-pointer justify-start gap-3 py-0">
-                    <input
-                      type="checkbox"
-                      className="checkbox checkbox-primary checkbox-sm"
-                      checked={rememberLogin}
-                      onChange={(event) => {
-                        const checked = event.target.checked
-                        setRememberLogin(checked)
-                        if (!checked) {
-                          window.localStorage.removeItem(REMEMBER_LOGIN_KEY)
-                        }
-                      }}
-                    />
-                    <span className="label-text text-sm text-base-content/70">记住账号密码</span>
-                  </label>
-                ) : null}
+                    {!registerMode ? (
+                      <label className="label cursor-pointer justify-start gap-3 py-0">
+                        <input
+                          type="checkbox"
+                          className="checkbox checkbox-primary checkbox-sm"
+                          checked={trustDevice}
+                          onChange={(event) => setTrustDevice(event.target.checked)}
+                        />
+                        <span className="label-text text-sm text-base-content/70">信任本机 7 天</span>
+                      </label>
+                    ) : null}
+                  </>
+                ) : pendingChallenge ? (
+                  <>
+                    <div className="rounded-2xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-base-content/80">
+                      新设备登录，验证码已发送到 <span className="font-semibold">{pendingChallenge.maskedEmail}</span>
+                      {pendingChallenge.debugCode ? (
+                        <div className="mt-2 text-xs text-primary">本地调试验证码：{pendingChallenge.debugCode}</div>
+                      ) : null}
+                    </div>
+                    <div className="form-control">
+                      <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
+                          <path d="M15 4.5A3.5 3.5 0 0 0 11.5 1h-7A3.5 3.5 0 0 0 1 4.5v7A3.5 3.5 0 0 0 4.5 15h7a3.5 3.5 0 0 0 3.5-3.5v-7ZM4 5.75A.75.75 0 0 1 4.75 5h6.5a.75.75 0 0 1 0 1.5h-6.5A.75.75 0 0 1 4 5.75Zm0 4a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5h-3.5A.75.75 0 0 1 4 9.75Z" />
+                        </svg>
+                        <input
+                          type="text"
+                          className="grow"
+                          placeholder="邮箱验证码"
+                          value={verificationCode}
+                          onChange={(event) => setVerificationCode(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              void submitVerification(false)
+                            }
+                          }}
+                        />
+                      </label>
+                    </div>
+                    <label className="label cursor-pointer justify-start gap-3 py-0">
+                      <input
+                        type="checkbox"
+                        className="checkbox checkbox-primary checkbox-sm"
+                        checked={trustDevice}
+                        onChange={(event) => setTrustDevice(event.target.checked)}
+                      />
+                      <span className="label-text text-sm text-base-content/70">验证后信任本机 7 天</span>
+                    </label>
+                    {conflictDevice ? (
+                      <div className="rounded-2xl border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-base-content/80">
+                        当前在线设备：{conflictDevice.deviceName || '未知设备'}
+                        {conflictDevice.platform ? ` · ${conflictDevice.platform}` : ''}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <div className="rounded-2xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-base-content/80">
+                      注册验证码已发送到 <span className="font-semibold">{pendingRegisterChallenge?.maskedEmail}</span>
+                      {pendingRegisterChallenge?.debugCode ? (
+                        <div className="mt-2 text-xs text-primary">本地调试验证码：{pendingRegisterChallenge.debugCode}</div>
+                      ) : null}
+                    </div>
+                    <div className="form-control">
+                      <label className="input input-bordered flex items-center gap-3 w-full focus-within:outline-none focus-within:border-primary transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-4 w-4 opacity-70">
+                          <path d="M15 4.5A3.5 3.5 0 0 0 11.5 1h-7A3.5 3.5 0 0 0 1 4.5v7A3.5 3.5 0 0 0 4.5 15h7a3.5 3.5 0 0 0 3.5-3.5v-7ZM4 5.75A.75.75 0 0 1 4.75 5h6.5a.75.75 0 0 1 0 1.5h-6.5A.75.75 0 0 1 4 5.75Zm0 4a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5h-3.5A.75.75 0 0 1 4 9.75Z" />
+                        </svg>
+                        <input
+                          type="text"
+                          className="grow"
+                          placeholder="注册验证码"
+                          value={verificationCode}
+                          onChange={(event) => setVerificationCode(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              void submitRegisterVerification()
+                            }
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </>
+                )}
 
                 {loginError && (
                   <div className="alert alert-error mt-4 py-2 text-sm rounded-lg">
@@ -792,12 +1015,48 @@ function App() {
                 <div className="form-control mt-6">
                   <button
                     className="btn btn-primary w-full text-base"
-                    disabled={pendingAction === 'login' || pendingAction === 'register'}
-                    onClick={() => void (registerMode ? submitRegister() : submitLogin())}
+                    disabled={pendingAction !== null}
+                    onClick={() =>
+                      void (
+                        pendingChallenge
+                          ? submitVerification(false)
+                          : pendingRegisterChallenge
+                            ? submitRegisterVerification()
+                            : registerMode
+                              ? submitRegister()
+                              : submitLogin()
+                      )
+                    }
                   >
-                    {pendingAction === 'login' || pendingAction === 'register' ? <span className="loading loading-spinner loading-sm"></span> : null}
-                    {registerMode ? '创建账号' : '立即登录'}
+                    {pendingAction !== null ? <span className="loading loading-spinner loading-sm"></span> : null}
+                    {pendingChallenge ? '验证并登录' : pendingRegisterChallenge ? '验证并创建账号' : registerMode ? '创建账号' : '立即登录'}
                   </button>
+                  {pendingChallenge || pendingRegisterChallenge ? (
+                    <div className="mt-3 flex gap-3">
+                      <button
+                        className="btn btn-outline flex-1"
+                        disabled={pendingAction !== null}
+                        onClick={() => {
+                          setPendingChallenge(null)
+                          setPendingRegisterChallenge(null)
+                          setVerificationCode('')
+                          setConflictDevice(null)
+                          setLoginError(null)
+                        }}
+                      >
+                        返回
+                      </button>
+                      {pendingChallenge && conflictDevice ? (
+                        <button
+                          className="btn btn-error flex-1"
+                          disabled={pendingAction !== null}
+                          onClick={() => void submitVerification(true)}
+                        >
+                          踢掉在线设备
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>

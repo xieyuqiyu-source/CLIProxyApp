@@ -38,12 +38,42 @@ export interface CloudDevice {
 }
 
 export interface CloudLoginResponse {
+  status: 'ok'
   token: string
   user: CloudUser
   plan: CloudPlan
   features: CloudFeatures
   expiresAt?: string | null
   device: CloudDevice
+  trusted_token?: string
+  trusted_until?: string | null
+}
+
+export interface CloudLoginChallengeResponse {
+  status: 'verification_required'
+  challenge_id: string
+  masked_email: string
+  expires_at: string
+  debug_code?: string
+}
+
+export interface CloudLoginConflictResponse {
+  status: 'conflict'
+  error: string
+  active_device?: {
+    deviceId: string
+    deviceName: string
+    platform: string
+    lastSeenAt?: string | null
+  } | null
+}
+
+export interface CloudRegisterChallengeResponse {
+  status: 'verification_required'
+  challenge_id: string
+  masked_email: string
+  expires_at: string
+  debug_code?: string
 }
 
 export interface CloudMeResponse {
@@ -78,6 +108,7 @@ export interface SharedSyncPackage {
 }
 
 export interface CloudRegisterResponse {
+  status?: 'ok'
   user: CloudUser
 }
 
