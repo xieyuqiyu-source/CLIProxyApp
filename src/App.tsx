@@ -81,6 +81,11 @@ const statusLabelMap: Record<string, string> = {
 const MOBILE_WINDOW_SIZE = { width: 430, height: 920, minWidth: 390, minHeight: 760 }
 const ADMIN_WINDOW_SIZE = { width: 1440, height: 920, minWidth: 1180, minHeight: 760 }
 
+function normalizeLoginIdentifier(value: string) {
+  const normalized = value.trim()
+  return normalized.includes('@') ? normalized.toLowerCase() : normalized
+}
+
 function App() {
   const passwordDialogRef = useRef<HTMLDialogElement | null>(null)
   const updateDialogRef = useRef<HTMLDialogElement | null>(null)
@@ -103,7 +108,7 @@ function App() {
     if (!raw) {
       return
     }
-    const rememberedEmail = String(raw).trim().toLowerCase()
+    const rememberedEmail = normalizeLoginIdentifier(String(raw))
     if (!rememberedEmail) {
       window.localStorage.removeItem(REMEMBERED_EMAIL_KEY)
       return
@@ -496,7 +501,7 @@ function App() {
 
     try {
       setPendingAction('login')
-      const normalizedEmail = email.trim().toLowerCase()
+      const normalizedEmail = normalizeLoginIdentifier(email)
       const response = await cloudClient.login(normalizedEmail, password, trustDevice)
       if (response.status === 'verification_required') {
         const challenge = response as CloudLoginChallengeResponse
@@ -570,9 +575,10 @@ function App() {
 
     try {
       setPendingAction('register')
-      const challenge = await cloudClient.register(email.trim().toLowerCase(), password)
+      const normalizedEmail = email.trim().toLowerCase()
+      const challenge = await cloudClient.register(normalizedEmail, password)
       setPendingRegisterChallenge({
-        email: email.trim().toLowerCase(),
+        email: normalizedEmail,
         challengeId: challenge.challenge_id,
         maskedEmail: challenge.masked_email,
         expiresAt: challenge.expires_at,

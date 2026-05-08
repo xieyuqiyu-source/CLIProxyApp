@@ -20,7 +20,8 @@ const DEVICE_ID_KEY = 'cpapp-cloud-device-id'
 const TRUSTED_DEVICE_KEY = 'cpapp-cloud-trusted-device'
 
 function normalizeAccountKey(account: string) {
-  return account.trim().toLowerCase()
+  const normalized = account.trim()
+  return normalized.includes('@') ? normalized.toLowerCase() : normalized
 }
 
 function resolveDeviceId(account: string) {
@@ -93,7 +94,7 @@ export const cloudClient = {
     }
     try {
       const parsed = JSON.parse(raw) as Partial<TrustedDeviceLoginCache>
-      const email = String(parsed.email ?? '').trim().toLowerCase()
+      const email = normalizeAccountKey(String(parsed.email ?? ''))
       const deviceId = String(parsed.deviceId ?? '').trim()
       const trustedToken = String(parsed.trustedToken ?? '').trim()
       const trustedUntil = parsed.trustedUntil ? String(parsed.trustedUntil) : null
