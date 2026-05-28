@@ -33,12 +33,12 @@ const ANTIGRAVITY_GROUPS = [
     identifiers: ['claude-sonnet-4-6', 'claude-opus-4-6-thinking', 'gpt-oss-120b-medium']
   },
   {
-    label: 'Gemini 3.1 Pro',
-    identifiers: ['gemini-3.1-pro-high', 'gemini-3.1-pro-low']
-  },
-  {
     label: 'Gemini 3 Pro',
     identifiers: ['gemini-3-pro-high', 'gemini-3-pro-low']
+  },
+  {
+    label: 'Gemini 3.1 Pro Series',
+    identifiers: ['gemini-3.1-pro-high', 'gemini-3.1-pro-low']
   },
   {
     label: 'Gemini 2.5 Flash',
@@ -55,6 +55,10 @@ const ANTIGRAVITY_GROUPS = [
   {
     label: 'Gemini 3 Flash',
     identifiers: ['gemini-3-flash']
+  },
+  {
+    label: 'gemini-3.1-flash-image',
+    identifiers: ['gemini-3.1-flash-image']
   }
 ]
 
@@ -99,6 +103,11 @@ function normalizeFractionPercent(value: unknown): number | null {
     return null
   }
   return normalized <= 1 ? normalized * 100 : normalized
+}
+
+function normalizePlanType(value: unknown): string | null {
+  const normalized = normalizeStringValue(value)
+  return normalized ? normalized.toLowerCase().replace(/[_\s]+/g, '-') : null
 }
 
 function formatPercent(value: number | null) {
@@ -218,6 +227,14 @@ function formatCodexReset(window?: Record<string, unknown> | null) {
     return formatUnixSeconds(Math.floor(Date.now() / 1000 + resetAfter))
   }
   return '-'
+}
+
+function createStatusError(message: string, status?: number) {
+  const error = new Error(message) as Error & { status?: number }
+  if (status) {
+    error.status = status
+  }
+  return error
 }
 
 function resolveAuthProvider(file: AuthFileItem): QuotaProvider | null {
@@ -341,6 +358,52 @@ function resolveCodexPlanType(file: AuthFileItem) {
   return null
 }
 
+function resolveCodexUsagePlanType(payload: Record<string, unknown>) {
+  return normalizePlanType(payload.plan_type ?? payload.planType)
+}
+
+function getCodexWindowSeconds(windowValue?: Record<string, unknown> | null) {
+  if (!windowValue) {
+    return null
+  }
+  return normalizeNumberValue(windowValue.limit_window_seconds ?? windowValue.limitWindowSeconds)
+}
+
+function pickCodexClassifiedWindows(limitInfo?: Record<string, unknown> | null) {
+  const primaryWindow =
+    limitInfo?.primary_window && typeof limitInfo.primary_window === 'object'
+      ? (limitInfo.primary_window as Record<string, unknown>)
+      : limitInfo?.primaryWindow && typeof limitInfo.primaryWindow === 'object'
+        ? (limitInfo.primaryWindow as Record<string, unknown>)
+        : null
+  const secondaryWindow =
+    limitInfo?.secondary_window && typeof limitInfo.secondary_window === 'object'
+      ? (limitInfo.secondary_window as Record<string, unknown>)
+      : limitInfo?.secondaryWindow && typeof limitInfo.secondaryWindow === 'object'
+        ? (limitInfo.secondaryWindow as Record<string, unknown>)
+        : null
+
+  let fiveHourWindow: Record<string, unknown> | null = null
+  let weeklyWindow: Record<string, unknown> | null = null
+  for (const windowValue of [primaryWindow, secondaryWindow]) {
+    const seconds = getCodexWindowSeconds(windowValue)
+    if (seconds === 18000 && !fiveHourWindow) {
+      fiveHourWindow = windowValue
+    } else if (seconds === 604800 && !weeklyWindow) {
+      weeklyWindow = windowValue
+    }
+  }
+
+  if (!fiveHourWindow) {
+    fiveHourWindow = primaryWindow && primaryWindow !== weeklyWindow ? primaryWindow : null
+  }
+  if (!weeklyWindow) {
+    weeklyWindow = secondaryWindow && secondaryWindow !== fiveHourWindow ? secondaryWindow : null
+  }
+
+  return { fiveHourWindow, weeklyWindow }
+}
+
 function resolveGeminiCliProjectId(file: AuthFileItem) {
   const metadata =
     file.metadata && typeof file.metadata === 'object' && !Array.isArray(file.metadata)
@@ -446,25 +509,34 @@ async function fetchClaudeQuota(file: AuthFileItem): Promise<QuotaResult> {
     'anthropic-beta': 'oauth-2025-04-20'
   }
 
-  const [profileResult, usageResult] = await Promise.all([
-    quotaApi.apiCall({
-      authIndex,
-      method: 'GET',
-      url: 'https://api.anthropic.com/api/oauth/profile',
-      header: headers
-    }),
+  const [usageResult, profileResult] = await Promise.allSettled([
     quotaApi.apiCall({
       authIndex,
       method: 'GET',
       url: 'https://api.anthropic.com/api/oauth/usage',
       header: headers
+    }),
+    quotaApi.apiCall({
+      authIndex,
+      method: 'GET',
+      url: 'https://api.anthropic.com/api/oauth/profile',
+      header: headers
     })
   ])
 
-  ensureSuccess(usageResult)
+  if (usageResult.status === 'rejected') {
+    throw usageResult.reason
+  }
 
-  const profile = parseResponseJson(profileResult)
-  const usage = parseResponseJson(usageResult)
+  ensureSuccess(usageResult.value)
+
+  const profile =
+    profileResult.status === 'fulfilled' &&
+    profileResult.value.statusCode >= 200 &&
+    profileResult.value.statusCode < 300
+      ? parseResponseJson(profileResult.value)
+      : null
+  const usage = parseResponseJson(usageResult.value)
   const account =
     profile?.account && typeof profile.account === 'object'
       ? (profile.account as Record<string, unknown>)
@@ -474,11 +546,20 @@ async function fetchClaudeQuota(file: AuthFileItem): Promise<QuotaResult> {
       ? (profile.organization as Record<string, unknown>)
       : null
 
+  const hasClaudeMax = account?.has_claude_max === true || account?.hasClaudeMax === true
+  const hasClaudePro = account?.has_claude_pro === true || account?.hasClaudePro === true
+  const orgType = normalizeStringValue(organization?.organization_type ?? organization?.organizationType)?.toLowerCase()
+  const subscriptionStatus = normalizeStringValue(
+    organization?.subscription_status ?? organization?.subscriptionStatus
+  )?.toLowerCase()
+
   let headline = 'Claude OAuth'
-  if (account?.has_claude_max === true) {
+  if (hasClaudeMax) {
     headline = 'Claude Max'
-  } else if (account?.has_claude_pro === true) {
+  } else if (hasClaudePro) {
     headline = 'Claude Pro'
+  } else if (orgType === 'claude_team' && subscriptionStatus === 'active') {
+    headline = 'Claude Team'
   }
 
   const metrics: QuotaMetric[] = CLAUDE_USAGE_WINDOW_LABELS.flatMap(({ key, label }) => {
@@ -533,29 +614,31 @@ async function fetchCodexQuota(file: AuthFileItem): Promise<QuotaResult> {
   }
 
   const accountId = resolveCodexChatgptAccountId(file)
-  if (!accountId) {
-    throw new Error('当前 Codex 认证文件缺少 ChatGPT account id')
+  const headers: Record<string, string> = {
+    Authorization: 'Bearer $TOKEN$',
+    'Content-Type': 'application/json',
+    'User-Agent': 'codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal'
+  }
+  if (accountId) {
+    headers['Chatgpt-Account-Id'] = accountId
   }
 
   const result = await quotaApi.apiCall({
     authIndex,
     method: 'GET',
     url: 'https://chatgpt.com/backend-api/wham/usage',
-    header: {
-      Authorization: 'Bearer $TOKEN$',
-      'Content-Type': 'application/json',
-      'User-Agent': 'codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal',
-      'Chatgpt-Account-Id': accountId
-    }
+    header: headers
   })
 
-  ensureSuccess(result)
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    throw createStatusError(getApiCallErrorMessage(result), result.statusCode)
+  }
   const payload = parseResponseJson(result)
   if (!payload) {
     throw new Error('Codex 配额响应为空')
   }
 
-  const planType = normalizeStringValue(payload.plan_type ?? payload.planType) ?? resolveCodexPlanType(file)
+  const planType = resolveCodexUsagePlanType(payload) ?? normalizePlanType(resolveCodexPlanType(file))
   const metrics: QuotaMetric[] = []
 
   const addWindowMetric = (
@@ -597,31 +680,33 @@ async function fetchCodexQuota(file: AuthFileItem): Promise<QuotaResult> {
         ? (payload.codeReviewRateLimit as Record<string, unknown>)
         : null
 
+  const rateWindows = pickCodexClassifiedWindows(rateLimit)
   addWindowMetric(
     '5 小时',
-    'primary-window',
-    rateLimit?.primary_window ?? rateLimit?.primaryWindow,
+    'five-hour-window',
+    rateWindows.fiveHourWindow,
     rateLimit?.allowed,
     rateLimit?.limit_reached ?? rateLimit?.limitReached
   )
   addWindowMetric(
     '1 周',
-    'secondary-window',
-    rateLimit?.secondary_window ?? rateLimit?.secondaryWindow,
+    'weekly-window',
+    rateWindows.weeklyWindow,
     rateLimit?.allowed,
     rateLimit?.limit_reached ?? rateLimit?.limitReached
   )
+  const codeReviewWindows = pickCodexClassifiedWindows(codeReviewRateLimit)
   addWindowMetric(
     'Code Review 5 小时',
-    'code-review-primary-window',
-    codeReviewRateLimit?.primary_window ?? codeReviewRateLimit?.primaryWindow,
+    'code-review-five-hour-window',
+    codeReviewWindows.fiveHourWindow,
     codeReviewRateLimit?.allowed,
     codeReviewRateLimit?.limit_reached ?? codeReviewRateLimit?.limitReached
   )
   addWindowMetric(
     'Code Review 1 周',
-    'code-review-secondary-window',
-    codeReviewRateLimit?.secondary_window ?? codeReviewRateLimit?.secondaryWindow,
+    'code-review-weekly-window',
+    codeReviewWindows.weeklyWindow,
     codeReviewRateLimit?.allowed,
     codeReviewRateLimit?.limit_reached ?? codeReviewRateLimit?.limitReached
   )
@@ -648,17 +733,18 @@ async function fetchCodexQuota(file: AuthFileItem): Promise<QuotaResult> {
     const label =
       normalizeStringValue(record.limit_name ?? record.limitName ?? record.metered_feature ?? record.meteredFeature) ??
       `附加限制 ${index + 1}`
+    const additionalWindows = pickCodexClassifiedWindows(rateInfo)
     addWindowMetric(
       `${label} 5 小时`,
-      `additional-primary-${index}`,
-      rateInfo.primary_window ?? rateInfo.primaryWindow,
+      `additional-five-hour-${index}`,
+      additionalWindows.fiveHourWindow,
       rateInfo.allowed,
       rateInfo.limit_reached ?? rateInfo.limitReached
     )
     addWindowMetric(
       `${label} 1 周`,
-      `additional-secondary-${index}`,
-      rateInfo.secondary_window ?? rateInfo.secondaryWindow,
+      `additional-weekly-${index}`,
+      additionalWindows.weeklyWindow,
       rateInfo.allowed,
       rateInfo.limit_reached ?? rateInfo.limitReached
     )
@@ -667,7 +753,7 @@ async function fetchCodexQuota(file: AuthFileItem): Promise<QuotaResult> {
   return {
     provider: 'codex',
     headline: planType ? `Codex ${planType}` : 'Codex',
-    summary: accountId,
+    summary: accountId ?? undefined,
     badges: planType ? [planType] : [],
     metrics
   }
@@ -689,15 +775,19 @@ async function fetchGeminiCliQuota(file: AuthFileItem): Promise<QuotaResult> {
     'Content-Type': 'application/json'
   }
 
-  const [quotaResult, codeAssistResult] = await Promise.all([
-    quotaApi.apiCall({
-      authIndex,
-      method: 'POST',
-      url: 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
-      header: headers,
-      data: JSON.stringify({ project: projectId })
-    }),
-    quotaApi.apiCall({
+  const quotaResult = await quotaApi.apiCall({
+    authIndex,
+    method: 'POST',
+    url: 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota',
+    header: headers,
+    data: JSON.stringify({ project: projectId })
+  })
+
+  ensureSuccess(quotaResult)
+
+  let codeAssistResult: ApiCallResult | null = null
+  try {
+    const result = await quotaApi.apiCall({
       authIndex,
       method: 'POST',
       url: 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
@@ -712,12 +802,15 @@ async function fetchGeminiCliQuota(file: AuthFileItem): Promise<QuotaResult> {
         }
       })
     })
-  ])
-
-  ensureSuccess(quotaResult)
+    if (result.statusCode >= 200 && result.statusCode < 300) {
+      codeAssistResult = result
+    }
+  } catch {
+    codeAssistResult = null
+  }
 
   const quotaPayload = parseResponseJson(quotaResult)
-  const assistPayload = parseResponseJson(codeAssistResult)
+  const assistPayload = codeAssistResult ? parseResponseJson(codeAssistResult) : null
   const buckets = Array.isArray(quotaPayload?.buckets) ? quotaPayload.buckets : []
   const metrics: QuotaMetric[] = []
 
@@ -847,27 +940,39 @@ async function fetchAntigravityQuota(file: AuthFileItem): Promise<QuotaResult> {
 
   const projectId = await fetchAntigravityProjectId(file)
   let successfulResult: ApiCallResult | null = null
+  let lastError = ''
+  let lastStatus: number | undefined
+  let priorityStatus: number | undefined
 
   for (const url of ANTIGRAVITY_QUOTA_URLS) {
-    const result = await quotaApi.apiCall({
-      authIndex,
-      method: 'POST',
-      url,
-      header: {
-        Authorization: 'Bearer $TOKEN$',
-        'Content-Type': 'application/json',
-        'User-Agent': 'antigravity/1.11.5 windows/amd64'
-      },
-      data: JSON.stringify({ project: projectId })
-    })
-    if (result.statusCode >= 200 && result.statusCode < 300) {
-      successfulResult = result
-      break
+    try {
+      const result = await quotaApi.apiCall({
+        authIndex,
+        method: 'POST',
+        url,
+        header: {
+          Authorization: 'Bearer $TOKEN$',
+          'Content-Type': 'application/json',
+          'User-Agent': 'antigravity/1.11.5 windows/amd64'
+        },
+        data: JSON.stringify({ project: projectId })
+      })
+      if (result.statusCode >= 200 && result.statusCode < 300) {
+        successfulResult = result
+        break
+      }
+      lastError = getApiCallErrorMessage(result)
+      lastStatus = result.statusCode
+      if (result.statusCode === 403 || result.statusCode === 404) {
+        priorityStatus ??= result.statusCode
+      }
+    } catch (error) {
+      lastError = getErrorMessage(error)
     }
   }
 
   if (!successfulResult) {
-    throw new Error('Antigravity 配额接口未返回成功结果')
+    throw createStatusError(lastError || 'Antigravity 配额接口未返回成功结果', priorityStatus ?? lastStatus)
   }
 
   const payload = parseResponseJson(successfulResult)

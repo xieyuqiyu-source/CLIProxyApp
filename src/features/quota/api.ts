@@ -26,27 +26,54 @@ function normalizeBody(input: unknown): { bodyText: string; body: unknown | null
 }
 
 export function getApiCallErrorMessage(result: ApiCallResult) {
+  const status = result.statusCode
+  const withStatus = (message: string) => (status ? `${status} ${message}`.trim() : message)
+  const summarizeText = (value: string) => {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return ''
+    }
+    if (/^<!doctype html\b|^<html[\s>]/i.test(trimmed)) {
+      const title = trimmed.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+      const heading = trimmed.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1]
+      const summary = (title ?? heading ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      return summary || '远端返回了 HTML 错误页面'
+    }
+    return trimmed.length > 240 ? `${trimmed.slice(0, 240)}...` : trimmed
+  }
+
   const body = result.body
   if (body && typeof body === 'object' && !Array.isArray(body)) {
     const record = body as Record<string, unknown>
-    if (typeof record.error === 'string' && record.error.trim()) {
-      return `${result.statusCode} ${record.error}`.trim()
+    const error = record.error
+    if (error && typeof error === 'object' && !Array.isArray(error)) {
+      const nested = error as Record<string, unknown>
+      if (typeof nested.message === 'string' && nested.message.trim()) {
+        return withStatus(nested.message.trim())
+      }
+    }
+    if (typeof error === 'string' && error.trim()) {
+      return withStatus(summarizeText(error))
     }
     if (typeof record.message === 'string' && record.message.trim()) {
-      return `${result.statusCode} ${record.message}`.trim()
+      return withStatus(summarizeText(record.message))
     }
   }
 
-  if (typeof body === 'string' && body.trim()) {
-    return `${result.statusCode} ${body}`.trim()
+  if (typeof body === 'string') {
+    const message = summarizeText(body)
+    if (message) {
+      return withStatus(message)
+    }
   }
 
-  if (result.bodyText.trim()) {
-    return `${result.statusCode} ${result.bodyText}`.trim()
+  const fallback = summarizeText(result.bodyText)
+  if (fallback) {
+    return withStatus(fallback)
   }
 
-  if (result.statusCode) {
-    return `HTTP ${result.statusCode}`
+  if (status) {
+    return `HTTP ${status}`
   }
 
   return 'Request failed'
