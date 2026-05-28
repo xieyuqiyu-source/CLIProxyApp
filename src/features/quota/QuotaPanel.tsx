@@ -98,6 +98,13 @@ function normalizeNumberValue(value: unknown): number | null {
 }
 
 function normalizeFractionPercent(value: unknown): number | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed.endsWith('%')) {
+      const parsed = Number(trimmed.slice(0, -1))
+      return Number.isFinite(parsed) ? parsed : null
+    }
+  }
   const normalized = normalizeNumberValue(value)
   if (normalized === null) {
     return null
@@ -165,7 +172,18 @@ function isSharedAuthFile(file: AuthFileItem) {
   return file.name.startsWith('共享-')
 }
 
-function pickCompactMetrics(metrics: QuotaMetric[]) {
+function pickCompactMetrics(metrics: QuotaMetric[], provider: QuotaProvider) {
+  if (provider === 'codex') {
+    const fiveHour =
+      metrics.find((metric) => metric.id === 'five-hour' || metric.id === 'five-hour-window') ?? null
+    const oneWeek =
+      metrics.find((metric) => metric.id === 'weekly' || metric.id === 'weekly-window') ?? null
+    const selected = [fiveHour, oneWeek].filter((metric): metric is QuotaMetric => metric !== null)
+    if (selected.length > 0) {
+      return selected
+    }
+  }
+
   const normalized = metrics.map((metric) => ({
     metric,
     label: metric.label.replace(/\s+/g, '').toLowerCase()
@@ -178,6 +196,20 @@ function pickCompactMetrics(metrics: QuotaMetric[]) {
 
   const selected = [fiveHour, oneWeek].filter((metric): metric is QuotaMetric => metric !== null)
   return selected.length > 0 ? selected : metrics.slice(0, 2)
+}
+
+function getCompactMetricLabel(metric: QuotaMetric, provider: QuotaProvider) {
+  if (provider === 'codex') {
+    if (metric.id === 'five-hour' || metric.id === 'five-hour-window') {
+      return '5h'
+    }
+    if (metric.id === 'weekly' || metric.id === 'weekly-window') {
+      return '1week'
+    }
+  }
+
+  const normalizedLabel = metric.label.replace(/\s+/g, '').toLowerCase()
+  return normalizedLabel.includes('5小时') || normalizedLabel.includes('fivehour') ? '5h' : '1week'
 }
 
 function formatResetTime(value?: string | null) {
@@ -402,6 +434,116 @@ function pickCodexClassifiedWindows(limitInfo?: Record<string, unknown> | null) 
   }
 
   return { fiveHourWindow, weeklyWindow }
+}
+
+function normalizeCodexWindowId(raw: string) {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function readCodexRateLimitInfo(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+function readCodexWindow(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+function buildCodexQuotaMetrics(payload: Record<string, unknown>) {
+  const metrics: QuotaMetric[] = []
+  const rateLimit = readCodexRateLimitInfo(payload.rate_limit ?? payload.rateLimit)
+  const codeReviewLimit = readCodexRateLimitInfo(payload.code_review_rate_limit ?? payload.codeReviewRateLimit)
+  const additionalRateLimits = Array.isArray(payload.additional_rate_limits)
+    ? payload.additional_rate_limits
+    : Array.isArray(payload.additionalRateLimits)
+      ? payload.additionalRateLimits
+      : []
+
+  const addWindowMetric = (
+    id: string,
+    label: string,
+    windowValue: unknown,
+    limitReached?: unknown,
+    allowed?: unknown
+  ) => {
+    const windowRecord = readCodexWindow(windowValue)
+    if (!windowRecord) {
+      return
+    }
+
+    const resetLabel = formatCodexReset(windowRecord)
+    const usedPercentRaw = normalizeNumberValue(windowRecord.used_percent ?? windowRecord.usedPercent)
+    const isLimitReached = Boolean(limitReached) || allowed === false
+    const usedPercent = usedPercentRaw ?? (isLimitReached && resetLabel !== '-' ? 100 : null)
+    const remainingPercent = usedPercent === null ? null : Math.max(0, 100 - usedPercent)
+
+    metrics.push({
+      id,
+      label,
+      value: formatPercent(remainingPercent),
+      hint: `重置 ${resetLabel}`
+    })
+  }
+
+  const rateWindows = pickCodexClassifiedWindows(rateLimit)
+  const rateLimitReached = rateLimit?.limit_reached ?? rateLimit?.limitReached
+  const rateAllowed = rateLimit?.allowed
+  addWindowMetric('five-hour', '5 小时', rateWindows.fiveHourWindow, rateLimitReached, rateAllowed)
+  addWindowMetric('weekly', '1 周', rateWindows.weeklyWindow, rateLimitReached, rateAllowed)
+
+  const codeReviewWindows = pickCodexClassifiedWindows(codeReviewLimit)
+  const codeReviewLimitReached = codeReviewLimit?.limit_reached ?? codeReviewLimit?.limitReached
+  const codeReviewAllowed = codeReviewLimit?.allowed
+  addWindowMetric(
+    'code-review-five-hour',
+    'Code Review 5 小时',
+    codeReviewWindows.fiveHourWindow,
+    codeReviewLimitReached,
+    codeReviewAllowed
+  )
+  addWindowMetric(
+    'code-review-weekly',
+    'Code Review 1 周',
+    codeReviewWindows.weeklyWindow,
+    codeReviewLimitReached,
+    codeReviewAllowed
+  )
+
+  additionalRateLimits.forEach((item, index) => {
+    const record = readCodexRateLimitInfo(item)
+    const rateInfo = readCodexRateLimitInfo(record?.rate_limit ?? record?.rateLimit)
+    if (!record || !rateInfo) {
+      return
+    }
+
+    const limitName =
+      normalizeStringValue(record.limit_name ?? record.limitName) ??
+      normalizeStringValue(record.metered_feature ?? record.meteredFeature) ??
+      `additional-${index + 1}`
+    const idPrefix = normalizeCodexWindowId(limitName) || `additional-${index + 1}`
+    const additionalLimitReached = rateInfo.limit_reached ?? rateInfo.limitReached
+    const additionalAllowed = rateInfo.allowed
+
+    addWindowMetric(
+      `${idPrefix}-five-hour-${index}`,
+      `${limitName} 5 小时`,
+      rateInfo.primary_window ?? rateInfo.primaryWindow,
+      additionalLimitReached,
+      additionalAllowed
+    )
+    addWindowMetric(
+      `${idPrefix}-weekly-${index}`,
+      `${limitName} 1 周`,
+      rateInfo.secondary_window ?? rateInfo.secondaryWindow,
+      additionalLimitReached,
+      additionalAllowed
+    )
+  })
+
+  return metrics
 }
 
 function resolveGeminiCliProjectId(file: AuthFileItem) {
@@ -639,116 +781,7 @@ async function fetchCodexQuota(file: AuthFileItem): Promise<QuotaResult> {
   }
 
   const planType = resolveCodexUsagePlanType(payload) ?? normalizePlanType(resolveCodexPlanType(file))
-  const metrics: QuotaMetric[] = []
-
-  const addWindowMetric = (
-    label: string,
-    id: string,
-    windowValue: unknown,
-    allowed?: unknown,
-    limitReached?: unknown
-  ) => {
-    if (!windowValue || typeof windowValue !== 'object') {
-      return
-    }
-    const windowRecord = windowValue as Record<string, unknown>
-    const usedPercent = normalizeFractionPercent(windowRecord.used_percent ?? windowRecord.usedPercent)
-    const remainingPercent =
-      usedPercent === null
-        ? limitReached === true || allowed === false
-          ? 0
-          : null
-        : 100 - usedPercent
-    metrics.push({
-      id,
-      label,
-      value: formatPercent(remainingPercent),
-      hint: `重置 ${formatCodexReset(windowRecord)}`
-    })
-  }
-
-  const rateLimit =
-    payload.rate_limit && typeof payload.rate_limit === 'object'
-      ? (payload.rate_limit as Record<string, unknown>)
-      : payload.rateLimit && typeof payload.rateLimit === 'object'
-        ? (payload.rateLimit as Record<string, unknown>)
-        : null
-  const codeReviewRateLimit =
-    payload.code_review_rate_limit && typeof payload.code_review_rate_limit === 'object'
-      ? (payload.code_review_rate_limit as Record<string, unknown>)
-      : payload.codeReviewRateLimit && typeof payload.codeReviewRateLimit === 'object'
-        ? (payload.codeReviewRateLimit as Record<string, unknown>)
-        : null
-
-  const rateWindows = pickCodexClassifiedWindows(rateLimit)
-  addWindowMetric(
-    '5 小时',
-    'five-hour-window',
-    rateWindows.fiveHourWindow,
-    rateLimit?.allowed,
-    rateLimit?.limit_reached ?? rateLimit?.limitReached
-  )
-  addWindowMetric(
-    '1 周',
-    'weekly-window',
-    rateWindows.weeklyWindow,
-    rateLimit?.allowed,
-    rateLimit?.limit_reached ?? rateLimit?.limitReached
-  )
-  const codeReviewWindows = pickCodexClassifiedWindows(codeReviewRateLimit)
-  addWindowMetric(
-    'Code Review 5 小时',
-    'code-review-five-hour-window',
-    codeReviewWindows.fiveHourWindow,
-    codeReviewRateLimit?.allowed,
-    codeReviewRateLimit?.limit_reached ?? codeReviewRateLimit?.limitReached
-  )
-  addWindowMetric(
-    'Code Review 1 周',
-    'code-review-weekly-window',
-    codeReviewWindows.weeklyWindow,
-    codeReviewRateLimit?.allowed,
-    codeReviewRateLimit?.limit_reached ?? codeReviewRateLimit?.limitReached
-  )
-
-  const additionalRateLimits = Array.isArray(payload.additional_rate_limits)
-    ? payload.additional_rate_limits
-    : Array.isArray(payload.additionalRateLimits)
-      ? payload.additionalRateLimits
-      : []
-  additionalRateLimits.forEach((item, index) => {
-    if (!item || typeof item !== 'object') {
-      return
-    }
-    const record = item as Record<string, unknown>
-    const rateInfo =
-      record.rate_limit && typeof record.rate_limit === 'object'
-        ? (record.rate_limit as Record<string, unknown>)
-        : record.rateLimit && typeof record.rateLimit === 'object'
-          ? (record.rateLimit as Record<string, unknown>)
-          : null
-    if (!rateInfo) {
-      return
-    }
-    const label =
-      normalizeStringValue(record.limit_name ?? record.limitName ?? record.metered_feature ?? record.meteredFeature) ??
-      `附加限制 ${index + 1}`
-    const additionalWindows = pickCodexClassifiedWindows(rateInfo)
-    addWindowMetric(
-      `${label} 5 小时`,
-      `additional-five-hour-${index}`,
-      additionalWindows.fiveHourWindow,
-      rateInfo.allowed,
-      rateInfo.limit_reached ?? rateInfo.limitReached
-    )
-    addWindowMetric(
-      `${label} 1 周`,
-      `additional-weekly-${index}`,
-      additionalWindows.weeklyWindow,
-      rateInfo.allowed,
-      rateInfo.limit_reached ?? rateInfo.limitReached
-    )
-  })
+  const metrics = buildCodexQuotaMetrics(payload)
 
   return {
     provider: 'codex',
@@ -1575,8 +1608,8 @@ export function QuotaPanel({
                 const data = state.data
                 const enabled = !isDisabledAuthFile(file)
                 const shared = isSharedAuthFile(file)
-                const compactMetrics = pickCompactMetrics(data?.metrics ?? [])
                 const resolvedProvider = resolveAuthProvider(file) ?? 'codex'
+                const compactMetrics = pickCompactMetrics(data?.metrics ?? [], resolvedProvider)
                 const compactStatusLabel = enabled ? (state.status === 'loading' ? '刷新中' : '正常') : '未启用'
                 const compactStatusClass = enabled
                   ? state.status === 'loading'
@@ -1683,7 +1716,7 @@ export function QuotaPanel({
                                 <div key={metric.id} className="space-y-1">
                                   <div className="flex items-center justify-between gap-2">
                                     <div className="min-w-0 text-xs font-medium text-base-content/80">
-                                      {metric.label.includes('5') ? '5h' : '1week'}
+                                      {getCompactMetricLabel(metric, resolvedProvider)}
                                     </div>
                                     <div className="flex shrink-0 items-center gap-1.5">
                                       <div className={`text-xs font-semibold ${getMetricToneClass(metric.tone)}`}>
