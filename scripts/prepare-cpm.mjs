@@ -23,8 +23,14 @@ if (!existsSync(cpmRoot)) {
 
 const cpmNodeModules = resolve(cpmRoot, 'node_modules')
 if (!existsSync(cpmNodeModules)) {
-  console.log(`Installing CLIProxyManagement dependencies in ${cpmRoot}`)
-  execFileSync('npm', ['ci'], {
+  // Prefer a reproducible install when a lockfile exists; otherwise fall back
+  // to npm install, since npm ci requires a package-lock.json / npm-shrinkwrap.json.
+  const hasLockfile =
+    existsSync(resolve(cpmRoot, 'package-lock.json')) ||
+    existsSync(resolve(cpmRoot, 'npm-shrinkwrap.json'))
+  const installArgs = hasLockfile ? ['ci'] : ['install']
+  console.log(`Installing CLIProxyManagement dependencies in ${cpmRoot} (npm ${installArgs[0]})`)
+  execFileSync('npm', installArgs, {
     cwd: cpmRoot,
     stdio: 'inherit',
     env: process.env,
