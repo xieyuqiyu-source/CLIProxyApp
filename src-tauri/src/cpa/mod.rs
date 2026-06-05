@@ -251,6 +251,7 @@ struct CommandSpec {
 }
 
 const OPENCLAW_CLI_CACHE_FILE: &str = "openclaw-cli-path.txt";
+const OPENCLAW_CONFIG_BACKUP_PREFIX: &str = "openclaw-config-backup";
 const CODEX_CONFIG_BACKUP_FILE: &str = "codex-config-backup.json";
 const CONTINUE_CONFIG_BACKUP_FILE: &str = "continue-config-backup.json";
 
@@ -1147,6 +1148,7 @@ pub fn setup_openclaw_provider(
     let primary_model = resolve_openclaw_primary_model(&input, &models)?;
     let fallback_models =
         resolve_openclaw_fallback_models(&input, &models, primary_model.as_deref())?;
+    let alias_model = resolve_openclaw_alias_model(&models, primary_model.as_deref())?;
     log_openclaw(
         app,
         &mut logs,
@@ -1162,17 +1164,35 @@ pub fn setup_openclaw_provider(
         &input.mode,
         primary_model.as_deref(),
         &fallback_models,
+        &alias_model,
         input.clear_other_models,
     );
-    write_openclaw_config(&config_path, &root, app, &mut logs)?;
-    validate_openclaw_config(&openclaw_cmd, app, &mut logs)?;
+    let backup_path = backup_openclaw_config(&config_path, app, &mut logs)?;
+    if let Err(error) = write_openclaw_config(&config_path, &root, app, &mut logs)
+        .and_then(|_| validate_openclaw_config(&openclaw_cmd, app, &mut logs))
+        .and_then(|_| {
+            verify_openclaw_effective_config(
+                &openclaw_cmd,
+                app,
+                &mut logs,
+                &models,
+                primary_model.as_deref(),
+                &fallback_models,
+                &alias_model,
+            )
+        })
+    {
+        restore_openclaw_config(&config_path, backup_path.as_deref(), app, &mut logs);
+        return Err(error);
+    }
 
     log_openclaw(
         app,
         &mut logs,
         &format!(
-            "OpenClaw 接入完成。mode={:?}, provider=cliproxy, alias=cliproxy, models={}",
+            "OpenClaw 接入完成。mode={:?}, provider=cliproxy, alias=cliproxy->{}, models={}",
             input.mode,
+            format!("cliproxy/{alias_model}"),
             models.len()
         ),
     );
@@ -2050,6 +2070,21 @@ fn resolve_openclaw_fallback_models(
     Ok(fallbacks)
 }
 
+fn resolve_openclaw_alias_model(
+    selected_models: &[String],
+    primary_model: Option<&str>,
+) -> Result<String, String> {
+    if let Some(primary) = primary_model {
+        return Ok(primary.to_string());
+    }
+    selected_models
+        .iter()
+        .find(|model| model.as_str() == "gpt-5.4")
+        .or_else(|| selected_models.first())
+        .cloned()
+        .ok_or_else(|| "OpenClaw 接入失败：没有可用于设置别名的模型".to_string())
+}
+
 fn resolve_codex_config_path() -> Result<PathBuf, String> {
     if let Ok(codex_home) = env::var("CODEX_HOME") {
         let trimmed = codex_home.trim();
@@ -2495,6 +2530,7 @@ fn apply_openclaw_provider_config(
     mode: &OpenClawConfigMode,
     primary_model: Option<&str>,
     fallback_models: &[String],
+    alias_model: &str,
     clear_other_models: bool,
 ) {
     let root_obj = ensure_json_object(root);
@@ -2538,7 +2574,7 @@ fn apply_openclaw_provider_config(
     }
     for model_id in models {
         let mut entry = JsonMap::new();
-        if model_id == "gpt-5.4" {
+        if model_id == alias_model {
             entry.insert(
                 "alias".to_string(),
                 JsonValue::String("cliproxy".to_string()),
@@ -2601,6 +2637,207 @@ fn validate_openclaw_config(
     }
     log_openclaw(app, logs, "OpenClaw 配置校验通过");
     Ok(())
+}
+
+fn backup_openclaw_config(
+    path: &Path,
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+) -> Result<Option<PathBuf>, String> {
+    if !path.exists() {
+        log_openclaw(app, logs, "OpenClaw 配置文件尚不存在，本次无需备份");
+        return Ok(None);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("OpenClaw 配置备份失败：无法解析配置目录 {}", path.display()))?;
+    let backup_path = parent.join(format!(
+        "{}-{}.json",
+        OPENCLAW_CONFIG_BACKUP_PREFIX,
+        chrono_like_now_string()
+    ));
+    fs::copy(path, &backup_path).map_err(|error| {
+        format!(
+            "OpenClaw 配置备份失败：无法从 {} 复制到 {}。原因：{}",
+            path.display(),
+            backup_path.display(),
+            error
+        )
+    })?;
+    log_openclaw(
+        app,
+        logs,
+        &format!("已备份 OpenClaw 配置：{}", backup_path.display()),
+    );
+    Ok(Some(backup_path))
+}
+
+fn restore_openclaw_config(
+    path: &Path,
+    backup_path: Option<&Path>,
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+) {
+    match backup_path {
+        Some(backup) => match fs::copy(backup, path) {
+            Ok(_) => log_openclaw(
+                app,
+                logs,
+                &format!("已恢复 OpenClaw 配置备份：{}", backup.display()),
+            ),
+            Err(error) => log_openclaw(
+                app,
+                logs,
+                &format!(
+                    "恢复 OpenClaw 配置备份失败：{}。原因：{}",
+                    backup.display(),
+                    error
+                ),
+            ),
+        },
+        None => {
+            if path.exists() {
+                match fs::remove_file(path) {
+                    Ok(_) => {
+                        log_openclaw(app, logs, "已移除本次新建但未通过校验的 OpenClaw 配置文件")
+                    }
+                    Err(error) => log_openclaw(
+                        app,
+                        logs,
+                        &format!(
+                            "移除未通过校验的 OpenClaw 配置文件失败：{}。原因：{}",
+                            path.display(),
+                            error
+                        ),
+                    ),
+                }
+            }
+        }
+    }
+}
+
+fn verify_openclaw_effective_config(
+    command: &CommandSpec,
+    app: &AppHandle,
+    logs: &mut Vec<String>,
+    models: &[String],
+    primary_model: Option<&str>,
+    fallback_models: &[String],
+    alias_model: &str,
+) -> Result<(), String> {
+    log_openclaw(app, logs, "检查 OpenClaw 模型列表是否已生效 ...");
+    let list_output = execute_command(
+        command,
+        &["models", "list", "--provider", "cliproxy", "--plain"],
+    )
+    .map_err(|error| format!("OpenClaw 生效检查失败：无法执行 models list。原因：{error}"))?;
+    if !list_output.status.success() {
+        return Err(format!(
+            "OpenClaw 生效检查失败：models list 返回错误。原因：{}",
+            command_output_detail(&list_output)
+        ));
+    }
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    let listed: HashSet<String> = list_stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect();
+    let missing: Vec<String> = models
+        .iter()
+        .map(|model| format!("cliproxy/{model}"))
+        .filter(|model| !listed.contains(model))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "OpenClaw 生效检查失败：以下模型没有出现在 `openclaw models list --provider cliproxy` 中：{}。原因：OpenClaw 可能没有加载新的 provider 配置，或模型定义字段已不兼容。",
+            missing.join(", ")
+        ));
+    }
+    log_openclaw(
+        app,
+        logs,
+        &format!("OpenClaw 已识别 {} 个 cliproxy 模型", listed.len()),
+    );
+
+    log_openclaw(app, logs, "检查 OpenClaw 默认模型、备选模型和别名 ...");
+    let status_output = execute_command(command, &["models", "status", "--json"])
+        .map_err(|error| format!("OpenClaw 生效检查失败：无法执行 models status。原因：{error}"))?;
+    if !status_output.status.success() {
+        return Err(format!(
+            "OpenClaw 生效检查失败：models status 返回错误。原因：{}",
+            command_output_detail(&status_output)
+        ));
+    }
+    let status_text = String::from_utf8_lossy(&status_output.stdout);
+    let status_json = serde_json::from_str::<JsonValue>(&status_text).map_err(|error| {
+        format!("OpenClaw 生效检查失败：models status 输出不是有效 JSON。原因：{error}")
+    })?;
+
+    let expected_alias_target = format!("cliproxy/{alias_model}");
+    let actual_alias = status_json
+        .get("aliases")
+        .and_then(|value| value.get("cliproxy"))
+        .and_then(JsonValue::as_str);
+    if actual_alias != Some(expected_alias_target.as_str()) {
+        return Err(format!(
+            "OpenClaw 生效检查失败：别名 `cliproxy` 未指向 `{}`。当前值：{}。原因：OpenClaw 别名配置未被正确加载，或所选模型没有写入 agents.defaults.models。",
+            expected_alias_target,
+            actual_alias.unwrap_or("<未设置>")
+        ));
+    }
+
+    if let Some(primary) = primary_model {
+        let expected_primary = format!("cliproxy/{primary}");
+        let actual_primary = status_json.get("defaultModel").and_then(JsonValue::as_str);
+        if actual_primary != Some(expected_primary.as_str()) {
+            return Err(format!(
+                "OpenClaw 生效检查失败：默认模型未切换到 `{}`。当前值：{}。原因：agents.defaults.model.primary 未生效，或 OpenClaw 使用了其他 agent/profile 的配置。",
+                expected_primary,
+                actual_primary.unwrap_or("<未设置>")
+            ));
+        }
+    }
+
+    let actual_fallbacks: HashSet<String> = status_json
+        .get("fallbacks")
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let missing_fallbacks: Vec<String> = fallback_models
+        .iter()
+        .map(|model| format!("cliproxy/{model}"))
+        .filter(|model| !actual_fallbacks.contains(model))
+        .collect();
+    if !missing_fallbacks.is_empty() {
+        return Err(format!(
+            "OpenClaw 生效检查失败：以下备选模型未生效：{}。原因：agents.defaults.model.fallbacks 未被 OpenClaw 当前版本识别，或 fallback 模型不在允许列表中。",
+            missing_fallbacks.join(", ")
+        ));
+    }
+
+    log_openclaw(app, logs, "OpenClaw 生效检查通过");
+    Ok(())
+}
+
+fn command_output_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        "<无输出>".to_string()
+    } else {
+        stdout
+    }
 }
 
 fn build_openclaw_model_definition(id: &str, modern: bool) -> JsonValue {
