@@ -12,7 +12,7 @@ use std::{
     sync::Mutex,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use sysinfo::{Signal, System};
+use sysinfo::{Process, Signal, System};
 use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
@@ -388,6 +388,7 @@ pub fn start_cpa(
     }
 
     cleanup_stale_cpa_processes(&ctx.paths, None)?;
+    cleanup_stale_cpa_port_processes(ctx.bootstrap.api_port, None)?;
     write_runtime_config(&ctx)?;
     reset_log_files(&ctx.paths)?;
 
@@ -3610,31 +3611,102 @@ fn cleanup_stale_cpa_processes(paths: &ResolvedPaths, keep_pid: Option<u32>) -> 
             continue;
         }
 
-        let executable = process
-            .exe()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let looks_like_cpa = executable.contains("cliproxyapi")
-            || cmdline.contains("cliproxyapi")
-            || cmdline.contains("cmd/server")
-            || cmdline.contains("go run");
-
-        if !looks_like_cpa {
+        if !looks_like_cpa_process(process, &cmdline) {
             continue;
         }
 
-        let terminated = process
-            .kill_with(Signal::Kill)
-            .unwrap_or_else(|| process.kill());
-        if !terminated {
-            return Err(format!(
-                "failed to terminate stale CPA process {} ({})",
-                pid_u32, cmdline
-            ));
+        terminate_cpa_process(process, pid_u32, &cmdline)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_stale_cpa_port_processes(port: u16, keep_pid: Option<u32>) -> Result<(), String> {
+    let output = Command::new("netstat")
+        .args(["-ano", "-p", "tcp"])
+        .output()
+        .map_err(|error| format!("failed to inspect port {port}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to inspect port {port}: {}",
+            command_output_detail(&output)
+        ));
+    }
+
+    let target_suffix = format!(":{port}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut pids = HashSet::new();
+    for line in stdout.lines() {
+        let parts = line.split_whitespace().collect::<Vec<_>>();
+        if parts.len() < 5 || !parts[0].eq_ignore_ascii_case("TCP") {
+            continue;
+        }
+        let local_address = parts[1];
+        let state = parts[3];
+        let pid = parts[4];
+        if !state.eq_ignore_ascii_case("LISTENING") || !local_address.ends_with(&target_suffix) {
+            continue;
+        }
+        if let Ok(pid) = pid.parse::<u32>() {
+            if !keep_pid.is_some_and(|value| value == pid) {
+                pids.insert(pid);
+            }
         }
     }
 
+    if pids.is_empty() {
+        return Ok(());
+    }
+
+    let mut system = System::new_all();
+    system.refresh_all();
+    for pid in pids {
+        let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) else {
+            continue;
+        };
+        let cmdline = process
+            .cmd()
+            .iter()
+            .map(|part| part.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !looks_like_cpa_process(process, &cmdline) {
+            continue;
+        }
+        terminate_cpa_process(process, pid, &cmdline)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cleanup_stale_cpa_port_processes(_port: u16, _keep_pid: Option<u32>) -> Result<(), String> {
+    Ok(())
+}
+
+fn looks_like_cpa_process(process: &Process, cmdline: &str) -> bool {
+    let executable = process
+        .exe()
+        .map(|path| path.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let cmdline = cmdline.to_ascii_lowercase();
+    executable.contains("cliproxyapi")
+        || cmdline.contains("cliproxyapi")
+        || cmdline.contains("cmd/server")
+        || cmdline.contains("go run")
+}
+
+fn terminate_cpa_process(process: &Process, pid: u32, cmdline: &str) -> Result<(), String> {
+    let terminated = process
+        .kill_with(Signal::Kill)
+        .unwrap_or_else(|| process.kill());
+    if !terminated {
+        return Err(format!(
+            "failed to terminate stale CPA process {} ({})",
+            pid, cmdline
+        ));
+    }
     Ok(())
 }
 
