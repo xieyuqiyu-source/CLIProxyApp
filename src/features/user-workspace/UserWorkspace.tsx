@@ -31,6 +31,7 @@ interface UserWorkspaceProps {
   planExpiresAt: string | null
   userKey: string
   cloudToken: string
+  isAdminAccount: boolean
   cpaState: CpaState | null
   loadError: string | null
   pendingAction: string | null
@@ -92,6 +93,22 @@ function getSharedSyncStorageKey(userKey: string) {
   return `cpapp-shared-sync-last:${userKey}`
 }
 
+function getAutoSharedSyncStorageKey(userKey: string) {
+  return `cpapp-auto-shared-sync-hours:${userKey}`
+}
+
+function getAutoSharedSyncLastRunKey(userKey: string) {
+  return `cpapp-auto-shared-sync-last-run:${userKey}`
+}
+
+const autoSharedSyncOptions = [
+  { label: '关闭', hours: 0 },
+  { label: '1小时', hours: 1 },
+  { label: '3小时', hours: 3 },
+  { label: '6小时', hours: 6 },
+  { label: '12小时', hours: 12 }
+] as const
+
 function buildSharedLocalFileName(fileName: string) {
   return fileName.startsWith('共享-') ? fileName : `共享-${fileName}`
 }
@@ -126,6 +143,7 @@ export function UserWorkspace({
   planExpiresAt,
   userKey,
   cloudToken,
+  isAdminAccount,
   cpaState,
   normalizingFreeTier,
   onRefreshSession,
@@ -144,6 +162,8 @@ export function UserWorkspace({
   const [syncingSharedPool, setSyncingSharedPool] = useState(false)
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0)
   const [, setSharedCooldownSeconds] = useState(0)
+  const [autoSharedSyncHours, setAutoSharedSyncHours] = useState(0)
+  const autoSharedSyncRunningRef = useRef(false)
   const [openClawIntroOpen, setOpenClawIntroOpen] = useState(false)
   const [openClawDialogOpen, setOpenClawDialogOpen] = useState(false)
   const [runningOpenClawSetup, setRunningOpenClawSetup] = useState(false)
@@ -188,7 +208,10 @@ export function UserWorkspace({
     }
     return value.toLocaleString('zh-CN', { hour12: false })
   }, [planExpiresAt])
-  const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(userKey.trim().toLowerCase()), [userKey])
+  const normalizedUserKey = useMemo(() => userKey.trim().toLowerCase(), [userKey])
+  const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(normalizedUserKey), [normalizedUserKey])
+  const autoSharedSyncKey = useMemo(() => getAutoSharedSyncStorageKey(normalizedUserKey), [normalizedUserKey])
+  const autoSharedSyncLastRunKey = useMemo(() => getAutoSharedSyncLastRunKey(normalizedUserKey), [normalizedUserKey])
 
   const warmupStandardQuotes = useCallback(
     async (productCode: string) => {
@@ -293,6 +316,17 @@ export function UserWorkspace({
     const timer = window.setInterval(tick, 1000)
     return () => window.clearInterval(timer)
   }, [features.shared_pool_mode, features.shared_pool_refresh_minutes, sharedSyncKey])
+
+  useEffect(() => {
+    if (!isAdminAccount) {
+      setAutoSharedSyncHours(0)
+      return
+    }
+
+    const storedHours = Number(window.localStorage.getItem(autoSharedSyncKey) || '0')
+    const allowedHours = autoSharedSyncOptions.some((option) => option.hours === storedHours) ? storedHours : 0
+    setAutoSharedSyncHours(allowedHours)
+  }, [autoSharedSyncKey, isAdminAccount])
 
   useEffect(() => {
     let disposed = false
@@ -739,17 +773,21 @@ export function UserWorkspace({
     setPaymentCheckoutOpen(false)
   }
 
-  const handleSharedPoolAction = async () => {
+  const handleSharedPoolAction = useCallback(async (options?: { silent?: boolean; scheduled?: boolean }) => {
     const latestSession = await onRefreshSession()
     const effectiveFeatures = latestSession?.features ?? features
 
     if (!effectiveFeatures.allow_shared_pool) {
-      setVipDialogOpen(true)
-      return
+      if (!options?.silent) {
+        setVipDialogOpen(true)
+      }
+      return false
     }
     if (cpaState?.status !== 'running') {
-      onError('请先启动 CPA，再同步共享号池。')
-      return
+      if (!options?.silent) {
+        onError('请先启动本地代理，再同步共享号池。')
+      }
+      return false
     }
 
     try {
@@ -758,8 +796,10 @@ export function UserWorkspace({
       const syncPackage = await cloudClient.getSharedSyncPackage(cloudToken)
       const sharedFiles = Array.isArray(syncPackage.files) ? syncPackage.files : []
       if (sharedFiles.length === 0) {
-        onNotify('当前共享号池没有可同步的认证文件')
-        return
+        if (!options?.silent) {
+          onNotify('当前共享号池没有可同步的认证文件')
+        }
+        return true
       }
 
       if (effectiveFeatures.shared_pool_mode === 'sample' && effectiveFeatures.shared_pool_refresh_minutes > 0) {
@@ -768,8 +808,10 @@ export function UserWorkspace({
         if (lastSync > 0 && Date.now() < nextAllowedAt) {
           const remaining = Math.max(0, Math.ceil((nextAllowedAt - Date.now()) / 1000))
           setSharedCooldownSeconds(remaining)
-          onError(`当前套餐的共享号池每 ${effectiveFeatures.shared_pool_refresh_minutes} 分钟可更新一次。`)
-          return
+          if (!options?.silent) {
+            onError(`当前套餐的共享号池每 ${effectiveFeatures.shared_pool_refresh_minutes} 分钟可更新一次。`)
+          }
+          return false
         }
       }
 
@@ -805,13 +847,72 @@ export function UserWorkspace({
         setSharedCooldownSeconds(effectiveFeatures.shared_pool_refresh_minutes * 60)
       }
       setQuotaRefreshToken((current) => current + 1)
-      onNotify(`已同步 ${sharedFiles.length} 个共享认证文件到本地`)
+      onNotify(options?.scheduled ? `自动获取账号完成：已同步 ${sharedFiles.length} 个共享认证文件到本地` : `已同步 ${sharedFiles.length} 个共享认证文件到本地`)
+      return true
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error))
+      if (!options?.silent) {
+        onError(error instanceof Error ? error.message : String(error))
+      }
+      return false
     } finally {
       setSyncingSharedPool(false)
     }
-  }
+  }, [cloudToken, cpaState?.status, features, onError, onNotify, onRefreshSession, sharedSyncKey])
+
+  const handleAutoSharedSyncChange = useCallback(
+    (hours: number) => {
+      setAutoSharedSyncHours(hours)
+      if (hours > 0) {
+        window.localStorage.setItem(autoSharedSyncKey, String(hours))
+        onNotify(`已开启自动获取账号：每 ${hours} 小时执行一次`)
+        return
+      }
+
+      window.localStorage.removeItem(autoSharedSyncKey)
+      window.localStorage.removeItem(autoSharedSyncLastRunKey)
+      onNotify('已关闭自动获取账号')
+    },
+    [autoSharedSyncKey, autoSharedSyncLastRunKey, onNotify]
+  )
+
+  useEffect(() => {
+    if (!isAdminAccount || autoSharedSyncHours <= 0 || !features.allow_shared_pool) {
+      return
+    }
+
+    const intervalMs = autoSharedSyncHours * 60 * 60 * 1000
+    const tick = () => {
+      if (autoSharedSyncRunningRef.current || syncingSharedPool) {
+        return
+      }
+      const lastRun = Number(window.localStorage.getItem(autoSharedSyncLastRunKey) || '0')
+      if (lastRun > 0 && Date.now() - lastRun < intervalMs) {
+        return
+      }
+
+      autoSharedSyncRunningRef.current = true
+      void handleSharedPoolAction({ silent: true, scheduled: true })
+        .then((completed) => {
+          if (completed) {
+            window.localStorage.setItem(autoSharedSyncLastRunKey, String(Date.now()))
+          }
+        })
+        .finally(() => {
+          autoSharedSyncRunningRef.current = false
+        })
+    }
+
+    tick()
+    const timer = window.setInterval(tick, 60 * 1000)
+    return () => window.clearInterval(timer)
+  }, [
+    autoSharedSyncHours,
+    autoSharedSyncLastRunKey,
+    features.allow_shared_pool,
+    handleSharedPoolAction,
+    isAdminAccount,
+    syncingSharedPool
+  ])
 
   const toggleOpenClawSelectedModel = (model: string) => {
     openClawSelectionDirtyRef.current = true
@@ -916,6 +1017,25 @@ export function UserWorkspace({
           开通会员
         </button>
       </div>
+
+      {isAdminAccount ? (
+        <div className="w-full mb-2 px-4">
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-base-300 bg-base-100 px-3 py-2 shadow-sm">
+            <span className="text-xs font-semibold text-base-content/70">自动获取账号</span>
+            <select
+              className="select select-bordered select-xs h-8 min-h-8 w-28 rounded-lg"
+              value={autoSharedSyncHours}
+              onChange={(event) => handleAutoSharedSyncChange(Number(event.target.value))}
+            >
+              {autoSharedSyncOptions.map((option) => (
+                <option key={option.hours} value={option.hours}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-2 w-full mb-6 px-4">
         <button

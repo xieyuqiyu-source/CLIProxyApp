@@ -1665,6 +1665,7 @@ function App() {
                   features={session.features}
                   planExpiresAt={session.expiresAt ?? null}
                   userKey={session.user.email}
+                  isAdminAccount={actualIsAdmin}
           cloudToken={session.token}
           cpaState={cpaState}
           loadError={loadError}
