@@ -1600,7 +1600,12 @@ export function QuotaPanel({
           ) : null}
 
           {providerFiles.length === 0 ? (
-            <div className="px-6 py-12 text-center text-base-content/55">当前没有可用的 {meta?.label ?? '该供应商'} 认证文件。</div>
+            <div className="px-6 py-12 text-center text-base-content/55">
+              <div>当前没有可用的 {meta?.label ?? '该供应商'} 认证文件。</div>
+              <div className="mt-2 text-xs text-base-content/45">
+                你也可以自行登录完成认证，用本机 CPA 进行反代使用。
+              </div>
+            </div>
           ) : (
             <div className={`grid gap-2 ${compactUserMode ? 'grid-cols-1 p-1.5' : 'p-6 xl:grid-cols-2'}`}>
               {providerFiles.map((file) => {

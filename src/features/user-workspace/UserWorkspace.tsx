@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { QuotaPanel } from '../quota/QuotaPanel'
 import { PROVIDER_META, PROVIDER_ORDER } from '../quota/providerMeta'
-import type { QuotaProvider } from '../quota/types'
+import type { AuthFileItem, QuotaProvider } from '../quota/types'
 import type {
   CloudCreatePaymentOrderResponse,
   CloudFeatures,
@@ -24,6 +24,7 @@ import { sharedImportRegistry } from '../../lib/cloud/sharedRegistry'
 import { cpaRuntime } from '../../lib/cpa/runtime'
 import vipQrImage from '../../assets/vip-qr.jpg'
 import { authFilesApi } from '../auth-files/api'
+import { getApiCallErrorMessage, quotaApi } from '../quota/api'
 
 interface UserWorkspaceProps {
   plan: CloudPlan
@@ -124,6 +125,193 @@ function buildQuoteCacheKey(productCode: string, billingMonths: number, purchase
   return `${productCode}:${billingMonths}:${purchaseMode}`
 }
 
+function normalizeStringValue(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  if (typeof value !== 'string') {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed ? trimmed : null
+}
+
+function normalizeNumberValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function normalizeAuthFileName(value: unknown) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function normalizeAuthIndex(file: AuthFileItem) {
+  return normalizeStringValue(file.authIndex) ?? normalizeStringValue(file.auth_index)
+}
+
+function isDisabledAuthFile(file: AuthFileItem) {
+  return file.disabled === true || file.disabled === 1 || `${file.disabled ?? ''}`.match(/^(true|1)$/i) !== null
+}
+
+function isCodexLikeAuthFile(file: AuthFileItem) {
+  const raw = `${file.provider ?? ''} ${file.type ?? ''} ${file.name ?? ''}`.toLowerCase()
+  return raw.includes('codex') || raw.includes('chatgpt') || raw.includes('openai')
+}
+
+function parseResponseJson(result: { body: unknown | null; bodyText: string }) {
+  if (result.body && typeof result.body === 'object' && !Array.isArray(result.body)) {
+    return result.body as Record<string, unknown>
+  }
+  try {
+    const parsed = JSON.parse(result.bodyText)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function readRecord(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+function getWindowUsedPercent(windowValue: unknown) {
+  const record = readRecord(windowValue)
+  if (!record) {
+    return null
+  }
+  return normalizeNumberValue(record.used_percent ?? record.usedPercent)
+}
+
+function getCodexWindowSeconds(windowValue: unknown) {
+  const record = readRecord(windowValue)
+  if (!record) {
+    return null
+  }
+  return normalizeNumberValue(record.limit_window_seconds ?? record.limitWindowSeconds)
+}
+
+function getCodexWindows(limitInfo: Record<string, unknown> | null) {
+  const primary =
+    readRecord(limitInfo?.primary_window) ??
+    readRecord(limitInfo?.primaryWindow)
+  const secondary =
+    readRecord(limitInfo?.secondary_window) ??
+    readRecord(limitInfo?.secondaryWindow)
+
+  let fiveHour = null as Record<string, unknown> | null
+  let weekly = null as Record<string, unknown> | null
+  for (const windowValue of [primary, secondary]) {
+    const seconds = getCodexWindowSeconds(windowValue)
+    if (seconds === 18000 && !fiveHour) {
+      fiveHour = windowValue
+    } else if (seconds === 604800 && !weekly) {
+      weekly = windowValue
+    }
+  }
+
+  return {
+    fiveHour: fiveHour ?? (primary && primary !== weekly ? primary : null),
+    weekly: weekly ?? (secondary && secondary !== fiveHour ? secondary : null)
+  }
+}
+
+function isCodexQuotaPayloadExhausted(payload: Record<string, unknown>) {
+  const rateLimit = readRecord(payload.rate_limit) ?? readRecord(payload.rateLimit)
+  if (!rateLimit) {
+    return false
+  }
+
+  const windows = getCodexWindows(rateLimit)
+  const weeklyUsed = getWindowUsedPercent(windows.weekly)
+  return weeklyUsed !== null && weeklyUsed >= 99.5
+}
+
+async function isSharedAuthExhausted(file: AuthFileItem) {
+  if (isDisabledAuthFile(file)) {
+    return true
+  }
+  if (!isCodexLikeAuthFile(file)) {
+    return false
+  }
+
+  const authIndex = normalizeAuthIndex(file)
+  if (!authIndex) {
+    return false
+  }
+
+  const result = await quotaApi.apiCall({
+    authIndex,
+    method: 'GET',
+    url: 'https://chatgpt.com/backend-api/wham/usage',
+    header: {
+      Authorization: 'Bearer $TOKEN$',
+      'Content-Type': 'application/json',
+      'User-Agent': 'codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal'
+    }
+  })
+
+  if (result.statusCode === 401 || result.statusCode === 402) {
+    return true
+  }
+  if (result.statusCode < 200 || result.statusCode >= 300) {
+    const message = getApiCallErrorMessage(result).toLowerCase()
+    return [
+      'invalid_token',
+      'invalid token',
+      'unauthorized',
+      'authentication failed',
+      'account_deactivated',
+      'account disabled',
+      'account_disabled',
+      'subscription_required',
+      'subscription required',
+      'payment required'
+    ].some((needle) => message.includes(needle))
+  }
+
+  const payload = parseResponseJson(result)
+  return payload ? isCodexQuotaPayloadExhausted(payload) : false
+}
+
+async function checkTrackedSharedAuthsExhausted() {
+  const trackedFiles = sharedImportRegistry.list()
+  if (trackedFiles.length === 0) {
+    return { hasTrackedFiles: false, exhausted: true, usableCount: 0, checkedCount: 0 }
+  }
+
+  const response = await quotaApi.listAuthFiles()
+  const localFiles = Array.isArray(response.files) ? response.files : []
+  const localByName = new Map(localFiles.map((file) => [normalizeAuthFileName(file.name), file]))
+  let usableCount = 0
+  let checkedCount = 0
+
+  for (const record of trackedFiles) {
+    const file = localByName.get(normalizeAuthFileName(record.localFileName))
+    if (!file) {
+      checkedCount += 1
+      continue
+    }
+    checkedCount += 1
+    const exhausted = await isSharedAuthExhausted(file)
+    if (!exhausted) {
+      usableCount += 1
+    }
+  }
+
+  return {
+    hasTrackedFiles: true,
+    exhausted: usableCount === 0,
+    usableCount,
+    checkedCount
+  }
+}
+
 function isDirectQrImageUrl(value: string): boolean {
   const trimmed = value.trim()
   if (!/^https?:\/\//i.test(trimmed)) {
@@ -161,7 +349,6 @@ export function UserWorkspace({
   const [sharedPoolInfoOpen, setSharedPoolInfoOpen] = useState(false)
   const [syncingSharedPool, setSyncingSharedPool] = useState(false)
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0)
-  const [, setSharedCooldownSeconds] = useState(0)
   const [autoSharedSyncHours, setAutoSharedSyncHours] = useState(0)
   const autoSharedSyncRunningRef = useRef(false)
   const [openClawIntroOpen, setOpenClawIntroOpen] = useState(false)
@@ -298,24 +485,6 @@ export function UserWorkspace({
       setLoadingPaymentProducts(false)
     }
   }, [cloudToken, paymentProducts])
-
-  useEffect(() => {
-    if (features.shared_pool_mode !== 'sample' || features.shared_pool_refresh_minutes <= 0) {
-      setSharedCooldownSeconds(0)
-      return
-    }
-
-    const tick = () => {
-      const lastSync = Number(window.localStorage.getItem(sharedSyncKey) || '0')
-      const nextAllowedAt = lastSync + features.shared_pool_refresh_minutes * 60 * 1000
-      const remaining = Math.max(0, Math.ceil((nextAllowedAt - Date.now()) / 1000))
-      setSharedCooldownSeconds(remaining)
-    }
-
-    tick()
-    const timer = window.setInterval(tick, 1000)
-    return () => window.clearInterval(timer)
-  }, [features.shared_pool_mode, features.shared_pool_refresh_minutes, sharedSyncKey])
 
   useEffect(() => {
     if (!isAdminAccount) {
@@ -793,6 +962,16 @@ export function UserWorkspace({
     try {
       setSyncingSharedPool(true)
       onError(null)
+      if (effectiveFeatures.shared_pool_mode === 'sample') {
+        const currentSharedState = await checkTrackedSharedAuthsExhausted()
+        if (currentSharedState.hasTrackedFiles && !currentSharedState.exhausted) {
+          if (!options?.silent) {
+            onError(`当前还有 ${currentSharedState.usableCount} 个共享账号可用，全部用完后才能重新获取账号。`)
+          }
+          return false
+        }
+      }
+
       const syncPackage = await cloudClient.getSharedSyncPackage(cloudToken)
       const sharedFiles = Array.isArray(syncPackage.files) ? syncPackage.files : []
       if (sharedFiles.length === 0) {
@@ -800,19 +979,6 @@ export function UserWorkspace({
           onNotify('当前共享号池没有可同步的认证文件')
         }
         return true
-      }
-
-      if (effectiveFeatures.shared_pool_mode === 'sample' && effectiveFeatures.shared_pool_refresh_minutes > 0) {
-        const lastSync = Number(window.localStorage.getItem(sharedSyncKey) || '0')
-        const nextAllowedAt = lastSync + effectiveFeatures.shared_pool_refresh_minutes * 60 * 1000
-        if (lastSync > 0 && Date.now() < nextAllowedAt) {
-          const remaining = Math.max(0, Math.ceil((nextAllowedAt - Date.now()) / 1000))
-          setSharedCooldownSeconds(remaining)
-          if (!options?.silent) {
-            onError(`当前套餐的共享号池每 ${effectiveFeatures.shared_pool_refresh_minutes} 分钟可更新一次。`)
-          }
-          return false
-        }
       }
 
       const existingShared = sharedImportRegistry.list()
@@ -843,9 +1009,6 @@ export function UserWorkspace({
       }
 
       window.localStorage.setItem(sharedSyncKey, String(Date.now()))
-      if (effectiveFeatures.shared_pool_mode === 'sample' && effectiveFeatures.shared_pool_refresh_minutes > 0) {
-        setSharedCooldownSeconds(effectiveFeatures.shared_pool_refresh_minutes * 60)
-      }
       setQuotaRefreshToken((current) => current + 1)
       onNotify(options?.scheduled ? `自动获取账号完成：已同步 ${sharedFiles.length} 个共享认证文件到本地` : `已同步 ${sharedFiles.length} 个共享认证文件到本地`)
       return true
@@ -997,6 +1160,7 @@ export function UserWorkspace({
           onClick={() => void handleSharedPoolAction()}
           disabled={syncingSharedPool}
         >
+          {syncingSharedPool ? <span className="loading loading-spinner loading-xs" /> : null}
           获取账号
         </button>
 
@@ -1210,7 +1374,7 @@ export function UserWorkspace({
                 </div>
                 <div className="rounded-2xl bg-base-200/70 px-3 py-3 text-sm text-base-content/75">
                   {selectedProduct?.planCode === 'vip2'
-                    ? '支持完整共享号池、自动切换、云端备份。'
+                    ? '支持最多 10 个共享账号、自动切换、云端备份。'
                     : '支持自动切换、个人云同步、共享号池随机 3 个。'}
                 </div>
               </div>
@@ -1378,8 +1542,8 @@ export function UserWorkspace({
           <h3 className="text-xl font-bold">共享号池说明</h3>
           <div className="mt-3 space-y-3 text-sm text-base-content/70">
             <p>共享号池会把云端共享认证文件拉到本地 `CPA` 认证目录，文件名前缀会自动加上“共享-”，随后这些认证文件就能和本地文件一起参与使用。</p>
-            <p>`Pro` 会随机同步 3 个共享认证文件到本地，并支持每 30 分钟更新一次。</p>
-            <p>`Pro Max` 则享有共享号池全部功能，同时支持自动切换与云端备份。</p>
+            <p>`Pro` 会随机同步 3 个共享认证文件到本地；当前共享账号全部不可用或额度耗尽后，才能重新获取下一批。</p>
+            <p>`Pro Max` 可同步最多 10 个共享账号，同时支持自动切换与云端备份。</p>
           </div>
           <div className="modal-action">
             {!features.allow_shared_pool ? (

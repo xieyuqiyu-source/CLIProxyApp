@@ -54,6 +54,7 @@ export const CodexConfigDialog = memo(function CodexConfigDialog({ open, onClose
   }, [open, onError])
 
   const availableModels = useMemo(() => state?.availableModels ?? [], [state])
+  const hasEffectiveBaseUrl = Boolean(state?.currentBaseUrl?.trim())
 
   const handleSelectModel = async (model: string) => {
     try {
@@ -131,6 +132,12 @@ export const CodexConfigDialog = memo(function CodexConfigDialog({ open, onClose
                 </div>
               </div>
 
+              {!hasEffectiveBaseUrl ? (
+                <div className="rounded-2xl border border-warning/35 bg-warning/10 px-3 py-3 text-xs leading-5 text-warning-content">
+                  Codex 会读取本机已有配置并高亮同名模型；如果上方 Base URL 还是 “--”，说明代理地址还没有写入，必须点击一次模型才会真正生效。
+                </div>
+              ) : null}
+
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold">代理可用模型</div>
                 <div className="flex items-center gap-2">
@@ -151,7 +158,8 @@ export const CodexConfigDialog = memo(function CodexConfigDialog({ open, onClose
               <div className="max-h-[46vh] space-y-2 overflow-y-auto pr-1">
                 {availableModels.length > 0 ? (
                   availableModels.map((model) => {
-                    const active = state.currentModel === model
+                    const modelMatchesConfig = state.currentModel === model
+                    const active = modelMatchesConfig && hasEffectiveBaseUrl
                     const saving = savingModel === model
                     return (
                       <button
@@ -159,6 +167,8 @@ export const CodexConfigDialog = memo(function CodexConfigDialog({ open, onClose
                         className={`flex w-full items-center justify-between rounded-2xl border px-3 py-3 text-left transition ${
                           active
                             ? 'border-primary bg-primary/8 ring-1 ring-primary/20'
+                            : modelMatchesConfig
+                              ? 'border-warning/50 bg-warning/8 ring-1 ring-warning/20'
                             : 'border-base-300 bg-base-100 hover:border-primary/40'
                         }`}
                         onClick={() => void handleSelectModel(model)}
@@ -167,7 +177,11 @@ export const CodexConfigDialog = memo(function CodexConfigDialog({ open, onClose
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-semibold">{model}</div>
                           <div className="mt-1 text-xs text-base-content/55">
-                            {active ? '当前已生效' : '点击后写入 Codex 默认模型'}
+                            {active
+                              ? '当前已生效'
+                              : modelMatchesConfig
+                                ? '模型已匹配，但需点击一次写入 Base URL'
+                                : '点击后写入 Codex 默认模型和 Base URL'}
                           </div>
                         </div>
                         <div className="ml-3 shrink-0">
@@ -175,6 +189,8 @@ export const CodexConfigDialog = memo(function CodexConfigDialog({ open, onClose
                             <span className="loading loading-spinner loading-sm" />
                           ) : active ? (
                             <span className="badge badge-primary badge-sm">已选中</span>
+                          ) : modelMatchesConfig ? (
+                            <span className="badge badge-warning badge-sm">点击生效</span>
                           ) : (
                             <span className="badge badge-outline badge-sm">切换</span>
                           )}
