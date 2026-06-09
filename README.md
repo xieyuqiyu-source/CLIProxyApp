@@ -25,6 +25,8 @@ Phase 1 is focused on the desktop runtime wrapper:
 CLIProxy/
 ├── CLIProxyApi/
 ├── CLIProxyManagement/
+├── CLIProxyCloud/
+├── CLIProxyDeploy/
 └── CLIProxyApp/
 ```
 
@@ -50,6 +52,32 @@ npm run prepare:sidecar
 npm run tauri dev
 ```
 
+## macOS Release
+
+Use the interactive release helper from `CLIProxyApp`:
+
+```bash
+./scripts/mac-release.sh
+```
+
+The script will:
+
+- sync the CLIProxy repositories with `git pull --rebase --autostash`
+- ask whether to bump the patch version, keep the current version, or enter a custom version
+- update `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and the website fallback version
+- build the macOS `.dmg`
+- commit and push `CLIProxyApp` and `CLIProxyCloud`
+- upload the `.dmg` to the server
+- update `/downloads/cliproxyapp/latest.json` while preserving the existing Windows download link
+
+Useful overrides:
+
+```bash
+SERVER=aitools-server ./scripts/mac-release.sh
+RELEASE_NOTES="CPSwitch 1.1.7 已发布：..." ./scripts/mac-release.sh
+SYNC_PROJECTS="CLIProxyApp CLIProxyManagement CLIProxyDeploy CLIProxyApi CLIProxyCloud" ./scripts/mac-release.sh
+```
+
 ## Update Manifest
 
 Packaged builds check a manifest on the same server host as `CPCloud`.
@@ -64,10 +92,13 @@ Expected JSON shape:
 
 ```json
 {
-  "version": "0.1.6",
-  "downloadUrl": "https://your-server.example.com/downloads/CLIProxyApp_0.1.6_x64-setup.exe",
+  "version": "1.1.6",
   "notes": "Release notes here",
-  "publishedAt": "2026-04-03T12:00:00+08:00"
+  "publishedAt": "2026-06-09T08:00:00Z",
+  "downloads": {
+    "windows": "https://cliproxy.szxsai.com/downloads/cliproxyapp/CPSwitch_1.1.5_x64-setup.exe",
+    "macos": "https://cliproxy.szxsai.com/downloads/cliproxyapp/CPSwitch_1.1.6_aarch64.dmg"
+  }
 }
 ```
 
