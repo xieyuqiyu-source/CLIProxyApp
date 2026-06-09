@@ -13,11 +13,14 @@ import { quotaApi, getApiCallErrorMessage } from './features/quota/api'
 import { cloudClient } from './lib/cloud/client'
 import { sharedImportRegistry } from './lib/cloud/sharedRegistry'
 import type {
+  CloudAdminUserSummary,
   CloudFeatures,
   CloudAuthFile,
   CloudLoginChallengeResponse,
   CloudLoginConflictResponse,
   CloudLoginResponse,
+  CloudPaymentOrder,
+  CloudPaymentProduct,
   CloudPlan,
   CloudUser
 } from './lib/cloud/types'
@@ -42,6 +45,13 @@ interface InvalidSharedAuthCandidate {
   file: CloudAuthFile
   reason: string
   status?: number
+}
+
+interface SpAdminOverviewData {
+  users: CloudAdminUserSummary[]
+  sharedFiles: CloudAuthFile[]
+  paymentProducts: CloudPaymentProduct[]
+  paymentOrders: CloudPaymentOrder[]
 }
 
 interface LoginSession {
@@ -131,6 +141,77 @@ function isCodexLikeAuthFile(file: QuotaAuthFileItem | CloudAuthFile) {
   const raw = `${'provider' in file ? file.provider : ''} ${'type' in file ? file.type ?? '' : ''} ${'fileName' in file ? file.fileName : ''} ${'name' in file ? file.name : ''}`
     .toLowerCase()
   return raw.includes('codex') || raw.includes('chatgpt') || raw.includes('openai')
+}
+
+function formatCompactDate(value?: string | null) {
+  if (!value) {
+    return '--'
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return '--'
+  }
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
+}
+
+function formatCurrencyCny(cents: number) {
+  return `¥${(cents / 100).toFixed(2)}`
+}
+
+function getOrderStatusLabel(status: CloudPaymentOrder['status']) {
+  switch (status) {
+    case 'paid':
+      return '已支付'
+    case 'pending':
+      return '待支付'
+    case 'closed':
+      return '已关闭'
+    case 'failed':
+      return '失败'
+    case 'refunded':
+      return '已退款'
+    default:
+      return status
+  }
+}
+
+function getOrderStatusBadgeClass(status: CloudPaymentOrder['status']) {
+  switch (status) {
+    case 'paid':
+      return 'badge-success'
+    case 'pending':
+      return 'badge-warning'
+    case 'failed':
+    case 'refunded':
+      return 'badge-error'
+    default:
+      return 'badge-ghost'
+  }
+}
+
+function getPlanBadgeClass(planCode: string) {
+  switch (planCode) {
+    case 'admin':
+      return 'badge-info'
+    case 'vip2':
+      return 'badge-secondary'
+    case 'vip1':
+      return 'badge-success'
+    case 'free':
+      return 'badge-ghost'
+    default:
+      return 'badge-outline'
+  }
+}
+
+function getRoleBadgeClass(role: string) {
+  return role === 'admin' ? 'badge-info' : 'badge-neutral'
 }
 
 function parseIdTokenPayload(value: unknown): Record<string, unknown> | null {
@@ -259,6 +340,23 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
   const [activeTab, setActiveTab] = useState<SpAdminTab>('overview')
   const [cloudTab, setCloudTab] = useState<SpCloudAdminTab>('overview')
   const [sharedCloudFiles, setSharedCloudFiles] = useState<CloudAuthFile[]>([])
+  const [overviewData, setOverviewData] = useState<SpAdminOverviewData | null>(null)
+  const [loadingOverview, setLoadingOverview] = useState(false)
+  const [spUsers, setSpUsers] = useState<CloudAdminUserSummary[]>([])
+  const [spPlans, setSpPlans] = useState<CloudPlan[]>([])
+  const [loadingUsers, setLoadingUsers] = useState(false)
+  const [savingSpUserId, setSavingSpUserId] = useState<number | null>(null)
+  const [spUserSearch, setSpUserSearch] = useState('')
+  const [spUserPage, setSpUserPage] = useState(1)
+  const [spDraftRoles, setSpDraftRoles] = useState<Record<number, 'user' | 'admin'>>({})
+  const [spDraftPlans, setSpDraftPlans] = useState<Record<number, string>>({})
+  const [spDraftExpiresAt, setSpDraftExpiresAt] = useState<Record<number, string>>({})
+  const [spPaymentProducts, setSpPaymentProducts] = useState<CloudPaymentProduct[]>([])
+  const [spPaymentOrders, setSpPaymentOrders] = useState<CloudPaymentOrder[]>([])
+  const [loadingPayments, setLoadingPayments] = useState(false)
+  const [spPaymentStatusFilter, setSpPaymentStatusFilter] = useState<'all' | CloudPaymentOrder['status']>('all')
+  const [spPaymentQuery, setSpPaymentQuery] = useState('')
+  const [regrantingSpOrderNo, setRegrantingSpOrderNo] = useState<string | null>(null)
   const [loadingPublish, setLoadingPublish] = useState(false)
   const [uploadingShared, setUploadingShared] = useState(false)
   const [clearingSharedPool, setClearingSharedPool] = useState(false)
@@ -272,6 +370,104 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
   const logLines = recentLogs && recentLogs !== '当前还没有日志。' && recentLogs !== '等待运行日志...'
     ? recentLogs.split('\n')
     : null
+
+  const loadOverviewData = async (notify = false) => {
+    try {
+      setLoadingOverview(true)
+      const [usersResponse, sharedResponse, productsResponse, ordersResponse] = await Promise.all([
+        cloudClient.adminListUsers(token),
+        cloudClient.listSharedAuthFiles(token),
+        cloudClient.adminListPaymentProducts(token),
+        cloudClient.adminListPaymentOrders(token, { limit: 50 })
+      ])
+      setOverviewData({
+        users: Array.isArray(usersResponse.users) ? usersResponse.users : [],
+        sharedFiles: Array.isArray(sharedResponse.files) ? sharedResponse.files : [],
+        paymentProducts: Array.isArray(productsResponse.products) ? productsResponse.products : [],
+        paymentOrders: Array.isArray(ordersResponse.orders) ? ordersResponse.orders : []
+      })
+      if (notify) {
+        onNotify('总览数据已刷新')
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setLoadingOverview(false)
+    }
+  }
+
+  const loadUsersData = async (notify = false) => {
+    try {
+      setLoadingUsers(true)
+      const [usersResponse, plansResponse] = await Promise.all([
+        cloudClient.adminListUsers(token),
+        cloudClient.adminListPlans(token)
+      ])
+      const nextUsers = Array.isArray(usersResponse.users) ? usersResponse.users : []
+      setSpUsers(nextUsers)
+      setSpPlans(Array.isArray(plansResponse.plans) ? plansResponse.plans : [])
+      setSpUserPage(1)
+      setSpDraftRoles((current) => {
+        const next = { ...current }
+        nextUsers.forEach((item) => {
+          if (!next[item.user.id]) {
+            next[item.user.id] = item.user.role === 'admin' ? 'admin' : 'user'
+          }
+        })
+        return next
+      })
+      setSpDraftPlans((current) => {
+        const next = { ...current }
+        nextUsers.forEach((item) => {
+          if (!next[item.user.id]) {
+            next[item.user.id] = item.plan.planCode
+          }
+        })
+        return next
+      })
+      setSpDraftExpiresAt((current) => {
+        const next = { ...current }
+        nextUsers.forEach((item) => {
+          if (!(item.user.id in next)) {
+            next[item.user.id] = item.expiresAt ? item.expiresAt.slice(0, 16) : ''
+          }
+        })
+        return next
+      })
+      if (notify) {
+        onNotify('用户数据已刷新')
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setLoadingUsers(false)
+    }
+  }
+
+  const loadPaymentsData = async (notify = false, options?: { status?: 'all' | CloudPaymentOrder['status']; query?: string }) => {
+    const status = options?.status ?? spPaymentStatusFilter
+    const query = options?.query ?? spPaymentQuery
+    try {
+      setLoadingPayments(true)
+      const [productsResponse, ordersResponse] = await Promise.all([
+        cloudClient.adminListPaymentProducts(token),
+        cloudClient.adminListPaymentOrders(token, {
+          limit: 50,
+          status,
+          query: query.trim()
+        })
+      ])
+      setSpPaymentProducts(Array.isArray(productsResponse.products) ? productsResponse.products : [])
+      setSpPaymentOrders(Array.isArray(ordersResponse.orders) ? ordersResponse.orders : [])
+      if (notify) {
+        onNotify('支付数据已刷新')
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setLoadingPayments(false)
+    }
+  }
 
   const loadPublishData = async (notify = false) => {
     try {
@@ -294,6 +490,95 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
       void loadPublishData()
     }
   }, [activeTab, cloudTab, token])
+
+  useEffect(() => {
+    if (activeTab === 'cloud-admin' && cloudTab === 'overview') {
+      void loadOverviewData()
+    }
+  }, [activeTab, cloudTab, token])
+
+  useEffect(() => {
+    if (activeTab === 'cloud-admin' && cloudTab === 'users') {
+      void loadUsersData()
+    }
+  }, [activeTab, cloudTab, token])
+
+  useEffect(() => {
+    if (activeTab === 'cloud-admin' && cloudTab === 'payments') {
+      void loadPaymentsData()
+    }
+  }, [activeTab, cloudTab, token])
+
+  const overviewUsers = overviewData?.users ?? []
+  const overviewSharedFiles = overviewData?.sharedFiles ?? []
+  const overviewProducts = overviewData?.paymentProducts ?? []
+  const overviewOrders = overviewData?.paymentOrders ?? []
+  const adminUserCount = overviewUsers.filter((item) => item.user.role === 'admin').length
+  const paidUserCount = overviewUsers.filter((item) => ['vip1', 'vip2'].includes(item.plan.planCode)).length
+  const proMaxUserCount = overviewUsers.filter((item) => item.plan.planCode === 'vip2').length
+  const activeProductCount = overviewProducts.filter((item) => item.status === 'active').length
+  const paidOrders = overviewOrders.filter((item) => item.status === 'paid')
+  const pendingOrderCount = overviewOrders.filter((item) => item.status === 'pending').length
+  const paidRevenueCents = paidOrders.reduce((sum, order) => sum + order.amount, 0)
+  const codexSharedCount = overviewSharedFiles.filter(isCodexLikeAuthFile).length
+  const recentOverviewOrders = overviewOrders.slice(0, 4)
+  const recentOverviewUsers = overviewUsers.slice(0, 4)
+  const latestPaidOrder = [...overviewOrders]
+    .filter((order) => order.status === 'paid')
+    .sort((a, b) => new Date(b.paidAt ?? b.createdAt).getTime() - new Date(a.paidAt ?? a.createdAt).getTime())[0]
+  const normalizedUserSearch = spUserSearch.trim().toLowerCase()
+  const filteredSpUsers = spUsers.filter((item) => {
+    if (!normalizedUserSearch) {
+      return true
+    }
+    return `${item.user.email} ${item.user.id} ${item.user.role} ${item.plan.planCode} ${item.plan.name}`
+      .toLowerCase()
+      .includes(normalizedUserSearch)
+  })
+  const spUserPageSize = 10
+  const spUserTotalPages = Math.max(1, Math.ceil(filteredSpUsers.length / spUserPageSize))
+  const currentSpUserPage = Math.min(spUserPage, spUserTotalPages)
+  const visibleSpUsers = filteredSpUsers.slice((currentSpUserPage - 1) * spUserPageSize, currentSpUserPage * spUserPageSize)
+  const spPaidUsers = spUsers.filter((item) => ['vip1', 'vip2'].includes(item.plan.planCode)).length
+  const spActiveProducts = spPaymentProducts.filter((item) => item.status === 'active').length
+  const spPaidOrders = spPaymentOrders.filter((item) => item.status === 'paid')
+  const spPendingOrders = spPaymentOrders.filter((item) => item.status === 'pending').length
+  const spPaymentRevenueCents = spPaidOrders.reduce((sum, order) => sum + order.amount, 0)
+
+  const saveSpUser = async (item: CloudAdminUserSummary) => {
+    const role = spDraftRoles[item.user.id] ?? item.user.role
+    const planCode = spDraftPlans[item.user.id] ?? item.plan.planCode
+    const expiresAt = spDraftExpiresAt[item.user.id]?.trim() || null
+    try {
+      setSavingSpUserId(item.user.id)
+      if (role !== item.user.role) {
+        await cloudClient.adminUpdateUserRole(token, item.user.id, { role })
+      }
+      await cloudClient.adminAssignPlan(token, item.user.id, {
+        plan_code: planCode,
+        expires_at: expiresAt ? new Date(expiresAt).toISOString() : null
+      })
+      await loadUsersData()
+      onNotify(`已更新 ${item.user.email}`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSavingSpUserId(null)
+    }
+  }
+
+  const regrantSpOrder = async (order: CloudPaymentOrder) => {
+    try {
+      setRegrantingSpOrderNo(order.orderNo)
+      await cloudClient.adminRegrantPaymentOrder(token, order.orderNo)
+      await loadPaymentsData()
+      onNotify(`已重新发放订单 ${order.orderNo}`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRegrantingSpOrderNo(null)
+    }
+  }
 
   const uploadSharedFiles = async (selectedFiles: Array<{ name: string; bytes: number[] }>) => {
     if (!selectedFiles || selectedFiles.length === 0) {
@@ -584,7 +869,284 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
             </button>
           </div>
 
-          {cloudTab === 'publish' ? (
+          {cloudTab === 'overview' ? (
+            <div className="flex flex-col gap-3">
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="flex items-center justify-between gap-2 border-b border-base-300 px-4 py-3">
+                  <div>
+                    <h2 className="text-base font-bold">总览</h2>
+                    <p className="mt-1 text-xs text-base-content/55">
+                      {overviewData ? `最近订单 ${overviewOrders.length} 条` : '云端后台数据'}
+                    </p>
+                  </div>
+                  <button
+                    className="btn btn-outline btn-xs"
+                    disabled={loadingOverview}
+                    onClick={() => void loadOverviewData(true)}
+                  >
+                    {loadingOverview ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    刷新
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 p-3">
+                  <div className="rounded-box bg-base-200/70 p-3">
+                    <div className="text-[11px] font-semibold text-base-content/55">用户</div>
+                    <div className="mt-1 text-2xl font-black">{overviewUsers.length}</div>
+                    <div className="mt-1 text-[11px] text-base-content/50">Admin {adminUserCount} · 付费 {paidUserCount}</div>
+                  </div>
+                  <div className="rounded-box bg-base-200/70 p-3">
+                    <div className="text-[11px] font-semibold text-base-content/55">Pro Max</div>
+                    <div className="mt-1 text-2xl font-black">{proMaxUserCount}</div>
+                    <div className="mt-1 text-[11px] text-base-content/50">高级订阅用户</div>
+                  </div>
+                  <div className="rounded-box bg-base-200/70 p-3">
+                    <div className="text-[11px] font-semibold text-base-content/55">共享号池</div>
+                    <div className="mt-1 text-2xl font-black">{overviewSharedFiles.length}</div>
+                    <div className="mt-1 text-[11px] text-base-content/50">Codex {codexSharedCount}</div>
+                  </div>
+                  <div className="rounded-box bg-base-200/70 p-3">
+                    <div className="text-[11px] font-semibold text-base-content/55">支付商品</div>
+                    <div className="mt-1 text-2xl font-black">{overviewProducts.length}</div>
+                    <div className="mt-1 text-[11px] text-base-content/50">上架 {activeProductCount}</div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="grid grid-cols-2 gap-2">
+                <div className="rounded-box border border-success/25 bg-success/10 p-3 shadow-sm">
+                  <div className="text-[11px] font-semibold text-success">近 50 单收入</div>
+                  <div className="mt-1 text-xl font-black">{formatCurrencyCny(paidRevenueCents)}</div>
+                  <div className="mt-1 text-[11px] text-base-content/50">已支付 {paidOrders.length} 单</div>
+                </div>
+                <div className="rounded-box border border-warning/30 bg-warning/10 p-3 shadow-sm">
+                  <div className="text-[11px] font-semibold text-warning">待处理订单</div>
+                  <div className="mt-1 text-xl font-black">{pendingOrderCount}</div>
+                  <div className="mt-1 text-[11px] text-base-content/50">
+                    最近支付 {latestPaidOrder ? formatCompactDate(latestPaidOrder.paidAt ?? latestPaidOrder.createdAt) : '--'}
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="border-b border-base-300 px-4 py-3">
+                  <h2 className="text-base font-bold">最近订单</h2>
+                  <p className="mt-1 text-xs text-base-content/55">支付状态和金额</p>
+                </div>
+                <div className="divide-y divide-base-200">
+                  {recentOverviewOrders.length > 0 ? recentOverviewOrders.map((order) => (
+                    <div key={order.id} className="flex min-w-0 items-center gap-3 px-3 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-bold">{order.productDisplayName || order.productName || order.planCode}</div>
+                        <div className="mt-0.5 truncate font-mono text-[11px] text-base-content/45">{order.orderNo}</div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="text-sm font-black">{formatCurrencyCny(order.amount)}</div>
+                        <div className={`badge badge-xs mt-1 ${getOrderStatusBadgeClass(order.status)}`}>
+                          {getOrderStatusLabel(order.status)}
+                        </div>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="px-4 py-6 text-center text-xs text-base-content/45">暂无订单</div>
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="border-b border-base-300 px-4 py-3">
+                  <h2 className="text-base font-bold">最近用户</h2>
+                  <p className="mt-1 text-xs text-base-content/55">账号角色和套餐</p>
+                </div>
+                <div className="divide-y divide-base-200">
+                  {recentOverviewUsers.length > 0 ? recentOverviewUsers.map((item) => (
+                    <div key={item.user.id} className="flex min-w-0 items-center gap-3 px-3 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-bold">{item.user.email}</div>
+                        <div className="mt-0.5 text-[11px] text-base-content/45">
+                          注册 {formatCompactDate(item.user.createdAt)}
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className={`badge badge-sm ${getPlanBadgeClass(item.plan.planCode)}`}>{item.plan.planCode}</div>
+                        <div className="mt-1 text-[11px] text-base-content/50">{item.user.role}</div>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="px-4 py-6 text-center text-xs text-base-content/45">暂无用户</div>
+                  )}
+                </div>
+              </section>
+            </div>
+          ) : cloudTab === 'users' ? (
+            <div className="flex flex-col gap-3">
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="flex items-center justify-between gap-2 border-b border-base-300 px-4 py-3">
+                  <div>
+                    <h2 className="text-base font-bold">用户</h2>
+                    <p className="mt-1 text-xs text-base-content/55">
+                      共 {spUsers.length} 个 · 付费 {spPaidUsers} 个
+                    </p>
+                  </div>
+                  <button
+                    className="btn btn-outline btn-xs"
+                    disabled={loadingUsers}
+                    onClick={() => void loadUsersData(true)}
+                  >
+                    {loadingUsers ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    刷新
+                  </button>
+                </div>
+                <div className="grid gap-2 p-3">
+                  <input
+                    className="input input-bordered input-sm w-full"
+                    placeholder="搜索邮箱 / ID / 角色 / 套餐"
+                    value={spUserSearch}
+                    onChange={(event) => {
+                      setSpUserSearch(event.target.value)
+                      setSpUserPage(1)
+                    }}
+                  />
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-box bg-base-200/70 p-2 text-center">
+                      <div className="text-lg font-black">{spUsers.length}</div>
+                      <div className="text-[10px] text-base-content/50">用户</div>
+                    </div>
+                    <div className="rounded-box bg-base-200/70 p-2 text-center">
+                      <div className="text-lg font-black">{spPaidUsers}</div>
+                      <div className="text-[10px] text-base-content/50">付费</div>
+                    </div>
+                    <div className="rounded-box bg-base-200/70 p-2 text-center">
+                      <div className="text-lg font-black">{spUsers.filter((item) => item.user.role === 'admin').length}</div>
+                      <div className="text-[10px] text-base-content/50">Admin</div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="grid gap-3">
+                {visibleSpUsers.length > 0 ? visibleSpUsers.map((item) => {
+                  const role = spDraftRoles[item.user.id] ?? item.user.role
+                  const planCode = spDraftPlans[item.user.id] ?? item.plan.planCode
+                  const expiresAt = spDraftExpiresAt[item.user.id] ?? ''
+                  const changed = role !== item.user.role || planCode !== item.plan.planCode || expiresAt !== (item.expiresAt ? item.expiresAt.slice(0, 16) : '')
+                  return (
+                    <article key={item.user.id} className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                      <div className="border-b border-base-200 px-2.5 py-2">
+                        <div className="flex min-w-0 items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-[13px] font-black leading-tight">{item.user.email}</div>
+                            <div className="mt-0.5 text-[10px] leading-tight text-base-content/45">
+                              ID {item.user.id} · 注册 {formatCompactDate(item.user.createdAt)}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-1">
+                            <div className={`badge badge-xs ${getRoleBadgeClass(item.user.role)}`}>{item.user.role}</div>
+                            <div className={`badge badge-xs ${getPlanBadgeClass(item.plan.planCode)}`}>{item.plan.planCode}</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="grid gap-2 p-2.5">
+                        <div className="grid grid-cols-[0.85fr_0.9fr_1.25fr] gap-1.5">
+                          <label className="grid gap-1">
+                            <span className="text-[10px] font-semibold text-base-content/50">角色</span>
+                            <select
+                              className="select select-bordered select-xs h-8 min-h-8 w-full"
+                              value={role}
+                              onChange={(event) =>
+                                setSpDraftRoles((current) => ({
+                                  ...current,
+                                  [item.user.id]: event.target.value === 'admin' ? 'admin' : 'user'
+                                }))
+                              }
+                            >
+                              <option value="user">user</option>
+                              <option value="admin">admin</option>
+                            </select>
+                          </label>
+                          <label className="grid gap-1">
+                            <span className="text-[10px] font-semibold text-base-content/50">套餐</span>
+                            <select
+                              className="select select-bordered select-xs h-8 min-h-8 w-full"
+                              value={planCode}
+                              onChange={(event) =>
+                                setSpDraftPlans((current) => ({
+                                  ...current,
+                                  [item.user.id]: event.target.value
+                                }))
+                              }
+                            >
+                              {spPlans.map((plan) => (
+                                <option key={plan.id} value={plan.planCode}>
+                                  {plan.planCode}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="grid gap-1">
+                            <span className="text-[10px] font-semibold text-base-content/50">到期</span>
+                            <input
+                              type="datetime-local"
+                              className="input input-bordered input-xs h-8 w-full min-w-0"
+                              value={expiresAt}
+                              onChange={(event) =>
+                                setSpDraftExpiresAt((current) => ({
+                                  ...current,
+                                  [item.user.id]: event.target.value
+                                }))
+                              }
+                            />
+                          </label>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0 truncate text-[10px] text-base-content/45">
+                            {item.user.status} · 当前 {item.plan.name} · {item.expiresAt ? formatCompactDate(item.expiresAt) : '无到期'}
+                          </div>
+                          <button
+                            className="btn btn-primary btn-xs h-7 min-h-7 shrink-0 px-3"
+                            disabled={savingSpUserId === item.user.id || !changed}
+                            onClick={() => void saveSpUser(item)}
+                          >
+                            {savingSpUserId === item.user.id ? <span className="loading loading-spinner loading-xs"></span> : null}
+                            保存
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  )
+                }) : (
+                  <div className="rounded-box border border-dashed border-base-300 bg-base-100 px-4 py-8 text-center text-xs text-base-content/45">
+                    {loadingUsers ? '正在加载用户...' : '没有匹配用户'}
+                  </div>
+                )}
+                {filteredSpUsers.length > 0 ? (
+                  <div className="rounded-box border border-base-300 bg-base-100 px-3 py-2 shadow-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs text-base-content/55">
+                        第 {currentSpUserPage} / {spUserTotalPages} 页 · 共 {filteredSpUsers.length} 个
+                      </div>
+                      <div className="join">
+                        <button
+                          className="btn btn-xs join-item"
+                          disabled={currentSpUserPage <= 1}
+                          onClick={() => setSpUserPage((page) => Math.max(1, page - 1))}
+                        >
+                          上一页
+                        </button>
+                        <button
+                          className="btn btn-xs join-item"
+                          disabled={currentSpUserPage >= spUserTotalPages}
+                          onClick={() => setSpUserPage((page) => Math.min(spUserTotalPages, page + 1))}
+                        >
+                          下一页
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </section>
+            </div>
+          ) : cloudTab === 'publish' ? (
             <div className="flex flex-col gap-3">
               <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
                 <div className="flex items-center justify-between gap-2 border-b border-base-300 px-4 py-3">
@@ -730,15 +1292,144 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
               </section>
             </div>
           ) : (
-            <div className="rounded-box border border-dashed border-base-300 bg-base-100 p-8 text-center shadow-sm">
-              <div className="text-sm font-bold">
-                {cloudTab === 'overview'
-                  ? '总览'
-                  : cloudTab === 'users'
-                    ? '用户'
-                    : '支付'}
-              </div>
-              <p className="mt-2 text-xs text-base-content/45">待接入</p>
+            <div className="flex flex-col gap-3">
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="flex items-center justify-between gap-2 border-b border-base-300 px-4 py-3">
+                  <div>
+                    <h2 className="text-base font-bold">支付</h2>
+                    <p className="mt-1 text-xs text-base-content/55">
+                      近 50 单 · 商品 {spPaymentProducts.length} 个
+                    </p>
+                  </div>
+                  <button
+                    className="btn btn-outline btn-xs"
+                    disabled={loadingPayments}
+                    onClick={() => void loadPaymentsData(true)}
+                  >
+                    {loadingPayments ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    刷新
+                  </button>
+                </div>
+                <div className="grid grid-cols-3 gap-2 p-3">
+                  <div className="rounded-box bg-success/10 p-2 text-center">
+                    <div className="truncate text-base font-black">{formatCurrencyCny(spPaymentRevenueCents)}</div>
+                    <div className="text-[10px] text-base-content/50">收入</div>
+                  </div>
+                  <div className="rounded-box bg-warning/10 p-2 text-center">
+                    <div className="text-base font-black">{spPendingOrders}</div>
+                    <div className="text-[10px] text-base-content/50">待支付</div>
+                  </div>
+                  <div className="rounded-box bg-base-200/70 p-2 text-center">
+                    <div className="text-base font-black">{spActiveProducts}</div>
+                    <div className="text-[10px] text-base-content/50">上架</div>
+                  </div>
+                </div>
+                <div className="grid gap-2 border-t border-base-200 p-3">
+                  <div className="grid grid-cols-[0.85fr_minmax(0,1fr)] gap-2">
+                    <select
+                      className="select select-bordered select-sm w-full"
+                      value={spPaymentStatusFilter}
+                      onChange={(event) => {
+                        const nextStatus = event.target.value as 'all' | CloudPaymentOrder['status']
+                        setSpPaymentStatusFilter(nextStatus)
+                        void loadPaymentsData(false, { status: nextStatus, query: spPaymentQuery })
+                      }}
+                    >
+                      <option value="all">全部</option>
+                      <option value="pending">待支付</option>
+                      <option value="paid">已支付</option>
+                      <option value="closed">已关闭</option>
+                      <option value="failed">失败</option>
+                      <option value="refunded">退款</option>
+                    </select>
+                    <input
+                      className="input input-bordered input-sm w-full"
+                      placeholder="搜索订单 / 用户"
+                      value={spPaymentQuery}
+                      onChange={(event) => setSpPaymentQuery(event.target.value)}
+                    />
+                  </div>
+                  <button
+                    className="btn btn-primary btn-sm w-full"
+                    disabled={loadingPayments}
+                    onClick={() => void loadPaymentsData(false, { status: spPaymentStatusFilter, query: spPaymentQuery })}
+                  >
+                    查询订单
+                  </button>
+                </div>
+              </section>
+
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="border-b border-base-300 px-4 py-3">
+                  <h2 className="text-base font-bold">支付商品</h2>
+                  <p className="mt-1 text-xs text-base-content/55">价格和上架状态</p>
+                </div>
+                <div className="divide-y divide-base-200">
+                  {spPaymentProducts.length > 0 ? spPaymentProducts.map((product) => (
+                    <div key={product.id} className="flex min-w-0 items-center gap-3 px-3 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-bold">{product.displayName}</div>
+                        <div className="mt-0.5 flex items-center gap-1 text-[11px] text-base-content/45">
+                          <span className={`badge badge-xs ${getPlanBadgeClass(product.planCode)}`}>{product.planCode}</span>
+                          <span>{product.durationDays} 天</span>
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="text-sm font-black">{formatCurrencyCny(product.priceAmount)}</div>
+                        <div className={`badge badge-xs mt-1 ${product.status === 'active' ? 'badge-success' : 'badge-ghost'}`}>
+                          {product.status === 'active' ? '上架' : '下架'}
+                        </div>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="px-4 py-6 text-center text-xs text-base-content/45">
+                      {loadingPayments ? '正在加载商品...' : '暂无支付商品'}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="border-b border-base-300 px-4 py-3">
+                  <h2 className="text-base font-bold">订单</h2>
+                  <p className="mt-1 text-xs text-base-content/55">最近订单和补发</p>
+                </div>
+                <div className="divide-y divide-base-200">
+                  {spPaymentOrders.length > 0 ? spPaymentOrders.map((order) => (
+                    <div key={order.id} className="grid gap-2 px-3 py-2.5">
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-bold">{order.productDisplayName || order.productName || order.planCode}</div>
+                          <div className="mt-0.5 truncate font-mono text-[10px] text-base-content/45">{order.orderNo}</div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <div className="text-sm font-black">{formatCurrencyCny(order.amount)}</div>
+                          <div className={`badge badge-xs mt-1 ${getOrderStatusBadgeClass(order.status)}`}>
+                            {getOrderStatusLabel(order.status)}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 truncate text-[10px] text-base-content/45">
+                          用户 {order.userId} · {formatCompactDate(order.createdAt)}
+                        </div>
+                        <button
+                          className="btn btn-outline btn-xs h-7 min-h-7 shrink-0 px-2"
+                          disabled={regrantingSpOrderNo === order.orderNo || order.status !== 'paid'}
+                          onClick={() => void regrantSpOrder(order)}
+                        >
+                          {regrantingSpOrderNo === order.orderNo ? <span className="loading loading-spinner loading-xs"></span> : null}
+                          补发
+                        </button>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="px-4 py-6 text-center text-xs text-base-content/45">
+                      {loadingPayments ? '正在加载订单...' : '暂无订单'}
+                    </div>
+                  )}
+                </div>
+              </section>
             </div>
           )}
         </section>
