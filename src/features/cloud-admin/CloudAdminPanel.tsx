@@ -32,6 +32,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const [savingPaymentProductId, setSavingPaymentProductId] = useState<number | null>(null)
   const [creatingPaymentProduct, setCreatingPaymentProduct] = useState(false)
   const [regrantingOrderNo, setRegrantingOrderNo] = useState<string | null>(null)
+  const [draftRoles, setDraftRoles] = useState<Record<number, 'user' | 'admin'>>({})
   const [draftPlans, setDraftPlans] = useState<Record<number, string>>({})
   const [draftExpiresAt, setDraftExpiresAt] = useState<Record<number, string>>({})
   const [draftPaymentProducts, setDraftPaymentProducts] = useState<Record<number, CloudPaymentProduct>>({})
@@ -69,6 +70,15 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
       setSharedCloudFiles(Array.isArray(sharedResponse.files) ? sharedResponse.files : [])
       setPaymentProducts(paymentProductsResponse.products)
       setPaymentOrders(paymentOrdersResponse.orders)
+      setDraftRoles((current) => {
+        const next = { ...current }
+        usersResponse.users.forEach((item) => {
+          if (!next[item.user.id]) {
+            next[item.user.id] = item.user.role === 'admin' ? 'admin' : 'user'
+          }
+        })
+        return next
+      })
       setDraftPlans((current) => {
         const next = { ...current }
         usersResponse.users.forEach((item) => {
@@ -125,16 +135,20 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   }
 
   const savePlan = async (user: CloudAdminUserSummary) => {
+    const role = draftRoles[user.user.id] || user.user.role
     const planCode = draftPlans[user.user.id] || user.plan.planCode
     const expiresAt = draftExpiresAt[user.user.id]?.trim() || null
     try {
       setSavingUserId(user.user.id)
+      if (role !== user.user.role) {
+        await cloudClient.adminUpdateUserRole(token, user.user.id, { role })
+      }
       await cloudClient.adminAssignPlan(token, user.user.id, {
         plan_code: planCode,
         expires_at: expiresAt ? new Date(expiresAt).toISOString() : null
       })
       await load()
-      onNotify(`已更新 ${user.user.email} 的套餐为 ${planCode}`)
+      onNotify(`已更新 ${user.user.email} 的角色和套餐`)
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -446,9 +460,19 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                     <td>{item.user.id}</td>
                     <td>{item.user.email}</td>
                     <td>
-                      <span className={`badge ${item.user.role === 'admin' ? 'badge-secondary' : 'badge-ghost'}`}>
-                        {item.user.role}
-                      </span>
+                      <select
+                        className="select select-bordered select-sm w-28"
+                        value={draftRoles[item.user.id] ?? (item.user.role === 'admin' ? 'admin' : 'user')}
+                        onChange={(event) =>
+                          setDraftRoles((current) => ({
+                            ...current,
+                            [item.user.id]: event.target.value === 'admin' ? 'admin' : 'user'
+                          }))
+                        }
+                      >
+                        <option value="user">user</option>
+                        <option value="admin">admin</option>
+                      </select>
                     </td>
                     <td>
                       <div className="font-semibold">{item.plan.planCode}</div>

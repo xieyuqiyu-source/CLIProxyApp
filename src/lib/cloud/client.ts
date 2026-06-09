@@ -249,6 +249,16 @@ export const cloudClient = {
       token
     ),
 
+  adminUpdateUserRole: (token: string, userId: number, payload: { role: 'user' | 'admin' }) =>
+    request<{ status: string }>(
+      `/admin/users/${userId}/role`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      },
+      token
+    ),
+
   listPaymentProducts: (token: string) =>
     request<{ products: CloudPaymentProduct[] }>('/pay/products', { method: 'GET' }, token),
 

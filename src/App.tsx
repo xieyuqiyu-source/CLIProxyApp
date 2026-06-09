@@ -9,10 +9,12 @@ import { CloudAdminPanel } from './features/cloud-admin/CloudAdminPanel'
 import { OpenAIProvidersPanel } from './features/openai-providers/OpenAIProvidersPanel'
 import { UserWorkspace } from './features/user-workspace/UserWorkspace'
 import { authFilesApi } from './features/auth-files/api'
+import { quotaApi, getApiCallErrorMessage } from './features/quota/api'
 import { cloudClient } from './lib/cloud/client'
 import { sharedImportRegistry } from './lib/cloud/sharedRegistry'
 import type {
   CloudFeatures,
+  CloudAuthFile,
   CloudLoginChallengeResponse,
   CloudLoginConflictResponse,
   CloudLoginResponse,
@@ -28,10 +30,19 @@ import type {
   CpaState,
   ImportAuthFilesResult
 } from './lib/cpa/types'
+import type { AuthFileItem as QuotaAuthFileItem } from './features/quota/types'
 
 type AdminTab = 'overview' | 'oauth' | 'auth-files' | 'quota' | 'openai-providers' | 'cloud-admin' | 'cpm'
 type UserTab = 'overview' | 'oauth' | 'auth-files' | 'providers' | 'quota' | 'stats'
-type DeveloperSurfaceMode = 'admin' | 'user'
+type DeveloperSurfaceMode = 'admin' | 'spadmin' | 'user'
+type SpAdminTab = 'overview' | 'cloud-admin'
+type SpCloudAdminTab = 'overview' | 'users' | 'payments' | 'publish'
+
+interface InvalidSharedAuthCandidate {
+  file: CloudAuthFile
+  reason: string
+  status?: number
+}
 
 interface LoginSession {
   token: string
@@ -81,6 +92,661 @@ const statusLabelMap: Record<string, string> = {
 const MOBILE_WINDOW_SIZE = { width: 430, height: 920, minWidth: 390, minHeight: 760 }
 const ADMIN_WINDOW_SIZE = { width: 1440, height: 920, minWidth: 1180, minHeight: 760 }
 
+function normalizeTextValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed ? trimmed : null
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  return null
+}
+
+function normalizeMatchName(value: unknown) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\\/g, '/')
+    .split('/')
+    .pop()
+    ?.replace(/\.json$/i, '') ?? ''
+}
+
+function buildSpAdminCheckFileName(file: CloudAuthFile, fallbackName: string) {
+  const baseName = fallbackName.trim() || file.fileName || `shared-${file.id}.json`
+  const jsonName = /\.json$/i.test(baseName) ? baseName : `${baseName}.json`
+  return `__spadmin_check_${file.id}_${jsonName}`
+}
+
+function isAdminRole(role: unknown) {
+  return String(role ?? '').trim().toLowerCase() === 'admin'
+}
+
+function getQuotaAuthIndex(file: QuotaAuthFileItem) {
+  return normalizeTextValue(file.authIndex ?? file.auth_index) ?? ''
+}
+
+function isCodexLikeAuthFile(file: QuotaAuthFileItem | CloudAuthFile) {
+  const raw = `${'provider' in file ? file.provider : ''} ${'type' in file ? file.type ?? '' : ''} ${'fileName' in file ? file.fileName : ''} ${'name' in file ? file.name : ''}`
+    .toLowerCase()
+  return raw.includes('codex') || raw.includes('chatgpt') || raw.includes('openai')
+}
+
+function parseIdTokenPayload(value: unknown): Record<string, unknown> | null {
+  if (!value) {
+    return null
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value !== 'string') {
+    return null
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // continue
+  }
+  const parts = trimmed.split('.')
+  if (parts.length < 2) {
+    return null
+  }
+  try {
+    const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    const parsed = JSON.parse(window.atob(padded))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function resolveCodexChatgptAccountId(file: QuotaAuthFileItem) {
+  const metadata =
+    file.metadata && typeof file.metadata === 'object' && !Array.isArray(file.metadata)
+      ? (file.metadata as Record<string, unknown>)
+      : null
+  const attributes =
+    file.attributes && typeof file.attributes === 'object' && !Array.isArray(file.attributes)
+      ? (file.attributes as Record<string, unknown>)
+      : null
+  const candidates = [file.id_token, metadata?.id_token, attributes?.id_token]
+  for (const candidate of candidates) {
+    const payload = parseIdTokenPayload(candidate)
+    const accountId = normalizeTextValue(payload?.chatgpt_account_id ?? payload?.chatgptAccountId)
+    if (accountId) {
+      return accountId
+    }
+  }
+  return null
+}
+
+function classifyInvalidAuthError(status: number, message: string) {
+  const normalized = message.toLowerCase()
+  if (status === 401 || status === 402) {
+    return true
+  }
+  return [
+    'invalid_token',
+    'invalid token',
+    'unauthorized',
+    'authentication failed',
+    'account_deactivated',
+    'account disabled',
+    'account_disabled',
+    'subscription_required',
+    'subscription required',
+    'payment required'
+  ].some((needle) => normalized.includes(needle))
+}
+
+async function checkCodexAuthUsable(file: QuotaAuthFileItem): Promise<{ usable: boolean; reason?: string; status?: number }> {
+  const authIndex = getQuotaAuthIndex(file)
+  if (!authIndex) {
+    return { usable: true, reason: '缺少 authIndex，跳过' }
+  }
+
+  const headers: Record<string, string> = {
+    Authorization: 'Bearer $TOKEN$',
+    'Content-Type': 'application/json',
+    'User-Agent': 'codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal'
+  }
+  const accountId = resolveCodexChatgptAccountId(file)
+  if (accountId) {
+    headers['Chatgpt-Account-Id'] = accountId
+  }
+
+  const result = await quotaApi.apiCall({
+    authIndex,
+    method: 'GET',
+    url: 'https://chatgpt.com/backend-api/wham/usage',
+    header: headers
+  })
+
+  if (result.statusCode >= 200 && result.statusCode < 300) {
+    return { usable: true }
+  }
+
+  const reason = getApiCallErrorMessage(result)
+  if (classifyInvalidAuthError(result.statusCode, reason)) {
+    return { usable: false, reason, status: result.statusCode }
+  }
+  return { usable: true, reason, status: result.statusCode }
+}
+
+interface SpAdminPanelProps {
+  token: string
+  recentLogs: string
+  pendingAction: string | null
+  onRefreshLogs: () => void
+  onNotify: (message: string) => void
+  onError: (message: string | null) => void
+}
+
+function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotify, onError }: SpAdminPanelProps) {
+  const releaseInputRef = useRef<HTMLInputElement | null>(null)
+  const [activeTab, setActiveTab] = useState<SpAdminTab>('overview')
+  const [cloudTab, setCloudTab] = useState<SpCloudAdminTab>('overview')
+  const [sharedCloudFiles, setSharedCloudFiles] = useState<CloudAuthFile[]>([])
+  const [loadingPublish, setLoadingPublish] = useState(false)
+  const [uploadingShared, setUploadingShared] = useState(false)
+  const [clearingSharedPool, setClearingSharedPool] = useState(false)
+  const [checkingInvalidShared, setCheckingInvalidShared] = useState(false)
+  const [deletingInvalidShared, setDeletingInvalidShared] = useState(false)
+  const [deletingSharedFileId, setDeletingSharedFileId] = useState<number | null>(null)
+  const [invalidSharedCandidates, setInvalidSharedCandidates] = useState<InvalidSharedAuthCandidate[]>([])
+  const [uploadingRelease, setUploadingRelease] = useState(false)
+  const [releaseVersion, setReleaseVersion] = useState('')
+  const [releaseNotes, setReleaseNotes] = useState('')
+  const logLines = recentLogs && recentLogs !== '当前还没有日志。' && recentLogs !== '等待运行日志...'
+    ? recentLogs.split('\n')
+    : null
+
+  const loadPublishData = async (notify = false) => {
+    try {
+      setLoadingPublish(true)
+      const response = await cloudClient.listSharedAuthFiles(token)
+      setSharedCloudFiles(Array.isArray(response.files) ? response.files : [])
+      setInvalidSharedCandidates([])
+      if (notify) {
+        onNotify('发布数据已刷新')
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setLoadingPublish(false)
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab === 'cloud-admin' && cloudTab === 'publish') {
+      void loadPublishData()
+    }
+  }, [activeTab, cloudTab, token])
+
+  const uploadSharedFiles = async (selectedFiles: Array<{ name: string; bytes: number[] }>) => {
+    if (!selectedFiles || selectedFiles.length === 0) {
+      return
+    }
+    try {
+      setUploadingShared(true)
+      for (const file of selectedFiles) {
+        const blob = new Blob([new Uint8Array(file.bytes)], { type: 'application/json' })
+        const uploadFile = new File([blob], file.name, { type: 'application/json' })
+        await cloudClient.adminUploadSharedAuthFile(token, uploadFile)
+      }
+      await loadPublishData()
+      onNotify(`已上传 ${selectedFiles.length} 个共享认证`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUploadingShared(false)
+    }
+  }
+
+  const handleSharedUploadClick = async () => {
+    try {
+      const files = await cpaRuntime.pickLocalAuthFiles()
+      await uploadSharedFiles(files)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const clearSharedPool = async () => {
+    try {
+      setClearingSharedPool(true)
+      const result = await cloudClient.adminDeleteAllSharedAuthFiles(token)
+      await loadPublishData()
+      onNotify(`已清空共享号池，共删除 ${result.deleted} 个文件`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setClearingSharedPool(false)
+    }
+  }
+
+  const checkInvalidSharedFiles = async () => {
+    if (sharedCloudFiles.length === 0) {
+      onError('当前共享号池为空')
+      return
+    }
+    let beforeLocalNames = new Set<string>()
+    const downloadedFiles: Array<{ cloudFile: CloudAuthFile; localName: string; bytes: number[] }> = []
+    try {
+      setCheckingInvalidShared(true)
+      setInvalidSharedCandidates([])
+      beforeLocalNames = new Set(
+        ((await quotaApi.listAuthFiles()).files ?? []).map((file) => normalizeMatchName(file.name))
+      )
+
+      for (const file of sharedCloudFiles) {
+        try {
+          const payload = await cloudClient.downloadSharedAuthFile(token, file.id)
+          downloadedFiles.push({
+            cloudFile: file,
+            localName: buildSpAdminCheckFileName(file, payload.fileName || file.fileName),
+            bytes: payload.bytes
+          })
+        } catch (error) {
+          onError(error instanceof Error ? error.message : String(error))
+          return
+        }
+      }
+
+      await cpaRuntime.importAuthFiles(
+        downloadedFiles.map((item) => ({
+          name: item.localName,
+          bytes: item.bytes
+        }))
+      )
+
+      const localFiles = ((await quotaApi.listAuthFiles()).files ?? []) as QuotaAuthFileItem[]
+      const nextInvalid: InvalidSharedAuthCandidate[] = []
+      let checkedCodexCount = 0
+
+      for (const item of downloadedFiles) {
+        const candidates = [
+          normalizeMatchName(item.localName),
+          normalizeMatchName(item.cloudFile.fileName),
+          normalizeMatchName(item.cloudFile.displayName)
+        ].filter(Boolean)
+        const localFile = localFiles.find((file) => candidates.includes(normalizeMatchName(file.name)))
+        if (!localFile) {
+          continue
+        }
+        if (!isCodexLikeAuthFile(localFile)) {
+          continue
+        }
+        checkedCodexCount += 1
+        const result = await checkCodexAuthUsable(localFile)
+        if (!result.usable) {
+          nextInvalid.push({
+            file: item.cloudFile,
+            reason: result.reason ?? '认证不可用',
+            status: result.status
+          })
+        }
+      }
+
+      setInvalidSharedCandidates(nextInvalid)
+      if (checkedCodexCount === 0) {
+        onNotify('当前没有可检测的 Codex 共享认证')
+        return
+      }
+      if (nextInvalid.length === 0) {
+        onNotify(`已检测 ${checkedCodexCount} 个 Codex 共享认证，未发现明确不可用账号`)
+      } else {
+        onNotify(`发现 ${nextInvalid.length} 个明确不可用共享认证`)
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      try {
+        const afterLocalFiles = ((await quotaApi.listAuthFiles()).files ?? []) as QuotaAuthFileItem[]
+        const cleanupFiles = afterLocalFiles.filter((file) => {
+          const normalized = normalizeMatchName(file.name)
+          return normalized && !beforeLocalNames.has(normalized) && downloadedFiles.some((item) => normalizeMatchName(item.localName) === normalized)
+        })
+        await Promise.allSettled(cleanupFiles.map((file) => authFilesApi.deleteFile(file.name)))
+      } catch {
+        // 检测失败时不阻塞界面恢复；下次检测仍会使用独立临时文件名。
+      }
+      setCheckingInvalidShared(false)
+    }
+  }
+
+  const deleteInvalidSharedFiles = async () => {
+    if (invalidSharedCandidates.length === 0) {
+      onError('当前没有可删除的不可用认证')
+      return
+    }
+    try {
+      setDeletingInvalidShared(true)
+      for (const candidate of invalidSharedCandidates) {
+        await cloudClient.adminDeleteSharedAuthFile(token, candidate.file.id)
+      }
+      onNotify(`已删除 ${invalidSharedCandidates.length} 个不可用共享认证`)
+      setInvalidSharedCandidates([])
+      await loadPublishData()
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDeletingInvalidShared(false)
+    }
+  }
+
+  const deleteSharedFile = async (file: CloudAuthFile) => {
+    try {
+      setDeletingSharedFileId(file.id)
+      await cloudClient.adminDeleteSharedAuthFile(token, file.id)
+      await loadPublishData()
+      onNotify(`已删除共享认证：${file.displayName || file.fileName}`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDeletingSharedFileId(null)
+    }
+  }
+
+  const handleReleaseUploadSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) {
+      return
+    }
+    if (!releaseVersion.trim()) {
+      onError('请先填写版本号，再上传安装包')
+      return
+    }
+    try {
+      setUploadingRelease(true)
+      const response = await cloudClient.adminUploadAppRelease(token, file, {
+        version: releaseVersion.trim(),
+        notes: releaseNotes.trim()
+      })
+      onNotify(`已上传更新包：${response.manifest.version}`)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setUploadingRelease(false)
+    }
+  }
+
+  return (
+    <main className="mx-auto flex w-full max-w-md flex-col gap-3 px-3 py-3">
+      <input
+        ref={releaseInputRef}
+        type="file"
+        className="hidden"
+        accept=".dmg,.exe,.zip"
+        onChange={(event) => void handleReleaseUploadSelection(event)}
+      />
+      <div role="tablist" className="tabs tabs-boxed bg-base-100 p-1 shadow-sm">
+        <button
+          role="tab"
+          className={`tab flex-1 text-sm font-semibold ${activeTab === 'overview' ? 'tab-active' : ''}`}
+          onClick={() => setActiveTab('overview')}
+        >
+          概览
+        </button>
+        <button
+          role="tab"
+          className={`tab flex-1 text-sm font-semibold ${activeTab === 'cloud-admin' ? 'tab-active' : ''}`}
+          onClick={() => setActiveTab('cloud-admin')}
+        >
+          后台管理
+        </button>
+      </div>
+
+      {activeTab === 'overview' ? (
+        <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+          <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3">
+            <div>
+              <h2 className="text-base font-bold">日志</h2>
+              <p className="mt-1 text-xs text-base-content/55">CPA 运行输出</p>
+            </div>
+            <button
+              className="btn btn-outline btn-xs"
+              disabled={pendingAction !== null}
+              onClick={onRefreshLogs}
+            >
+              {pendingAction === 'refresh-logs' ? <span className="loading loading-spinner loading-xs"></span> : null}
+              刷新
+            </button>
+          </div>
+          <div className="mockup-code h-[calc(100vh-12rem)] min-h-96 overflow-auto rounded-none bg-base-300/50 text-xs leading-relaxed text-base-content/80">
+            {logLines ? (
+              logLines.map((line, idx) => {
+                const lowerLine = line.toLowerCase()
+                let lineClass = 'whitespace-pre-wrap break-all '
+                if (lowerLine.includes('error') || lowerLine.includes('fail') || lowerLine.includes('crit')) {
+                  lineClass += 'text-error font-bold'
+                } else if (lowerLine.includes('warn')) {
+                  lineClass += 'text-warning font-semibold'
+                } else if (lowerLine.includes('info') || lowerLine.includes('success')) {
+                  lineClass += 'text-info'
+                } else {
+                  lineClass += 'opacity-80'
+                }
+                return (
+                  <pre key={idx} data-prefix={idx + 1} className={lineClass}>
+                    <code>{line || ' '}</code>
+                  </pre>
+                )
+              })
+            ) : (
+              <pre data-prefix=">"><code>{recentLogs || '等待运行日志...'}</code></pre>
+            )}
+          </div>
+        </section>
+      ) : (
+        <section className="flex flex-col gap-3">
+          <div role="tablist" className="tabs tabs-boxed bg-base-100 p-1 shadow-sm">
+            <button
+              role="tab"
+              className={`tab flex-1 text-xs font-semibold ${cloudTab === 'overview' ? 'tab-active' : ''}`}
+              onClick={() => setCloudTab('overview')}
+            >
+              总览
+            </button>
+            <button
+              role="tab"
+              className={`tab flex-1 text-xs font-semibold ${cloudTab === 'users' ? 'tab-active' : ''}`}
+              onClick={() => setCloudTab('users')}
+            >
+              用户
+            </button>
+            <button
+              role="tab"
+              className={`tab flex-1 text-xs font-semibold ${cloudTab === 'payments' ? 'tab-active' : ''}`}
+              onClick={() => setCloudTab('payments')}
+            >
+              支付
+            </button>
+            <button
+              role="tab"
+              className={`tab flex-1 text-xs font-semibold ${cloudTab === 'publish' ? 'tab-active' : ''}`}
+              onClick={() => setCloudTab('publish')}
+            >
+              发布
+            </button>
+          </div>
+
+          {cloudTab === 'publish' ? (
+            <div className="flex flex-col gap-3">
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="flex items-center justify-between gap-2 border-b border-base-300 px-4 py-3">
+                  <div>
+                    <h2 className="text-base font-bold">共享号池</h2>
+                    <p className="mt-1 text-xs text-base-content/55">{sharedCloudFiles.length} 个共享认证</p>
+                  </div>
+                  <button
+                    className="btn btn-outline btn-xs"
+                    disabled={loadingPublish}
+                    onClick={() => void loadPublishData(true)}
+                  >
+                    {loadingPublish ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    刷新
+                  </button>
+                </div>
+
+                <div className="grid gap-2 p-3">
+                  <button
+                    className="btn btn-primary btn-sm w-full"
+                    disabled={uploadingShared}
+                    onClick={() => void handleSharedUploadClick()}
+                  >
+                    {uploadingShared ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    上传共享认证
+                  </button>
+                  <button
+                    className="btn btn-outline btn-warning btn-sm w-full"
+                    disabled={checkingInvalidShared || sharedCloudFiles.length === 0}
+                    onClick={() => void checkInvalidSharedFiles()}
+                  >
+                    {checkingInvalidShared ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    检测不可用
+                  </button>
+                  {invalidSharedCandidates.length > 0 ? (
+                    <button
+                      className="btn btn-warning btn-sm w-full"
+                      disabled={deletingInvalidShared}
+                      onClick={() => void deleteInvalidSharedFiles()}
+                    >
+                      {deletingInvalidShared ? <span className="loading loading-spinner loading-xs"></span> : null}
+                      删除不可用（{invalidSharedCandidates.length}）
+                    </button>
+                  ) : null}
+                  <button
+                    className="btn btn-outline btn-error btn-sm w-full"
+                    disabled={clearingSharedPool || sharedCloudFiles.length === 0}
+                    onClick={() => void clearSharedPool()}
+                  >
+                    {clearingSharedPool ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    清空共享号池
+                  </button>
+                </div>
+
+                {invalidSharedCandidates.length > 0 ? (
+                  <div className="border-t border-base-300 bg-warning/10 p-2">
+                    <div className="mb-2 text-xs font-bold text-warning-content">
+                      待删除不可用认证
+                    </div>
+                    <div className="grid gap-2">
+                      {invalidSharedCandidates.map((candidate) => (
+                        <div key={candidate.file.id} className="rounded-box bg-base-100 p-2 text-xs">
+                          <div className="truncate font-semibold">{candidate.file.displayName || candidate.file.fileName}</div>
+                          <div className="mt-1 max-h-8 overflow-hidden text-[11px] leading-snug text-base-content/55">
+                            {candidate.status ? `${candidate.status} · ` : ''}{candidate.reason}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="max-h-72 overflow-auto border-t border-base-300 p-2">
+                  {sharedCloudFiles.length === 0 ? (
+                    <div className="rounded-box border border-dashed border-base-300 px-4 py-6 text-center text-xs text-base-content/50">
+                      当前共享号池为空
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-base-200 overflow-hidden rounded-box border border-base-200">
+                      {sharedCloudFiles.map((file) => (
+                        <div key={file.id} className="flex min-w-0 items-center gap-2 bg-base-100 px-3 py-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-semibold leading-tight">{file.displayName || file.fileName}</div>
+                            <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-tight text-base-content/50">
+                              <span className="shrink-0">{file.provider || 'unknown'}</span>
+                              <span className="shrink-0">·</span>
+                              <span className="min-w-0 truncate">{file.fileName}</span>
+                            </div>
+                            {file.planRequired ? (
+                              <div className="mt-1 inline-flex rounded-full bg-base-200 px-2 py-0.5 text-[10px] font-semibold text-base-content/60">
+                                {file.planRequired}
+                              </div>
+                            ) : null}
+                          </div>
+                          <button
+                            className="btn btn-outline btn-error btn-xs h-8 min-h-8 shrink-0 px-3"
+                            disabled={deletingSharedFileId === file.id || clearingSharedPool}
+                            onClick={() => void deleteSharedFile(file)}
+                          >
+                            {deletingSharedFileId === file.id ? <span className="loading loading-spinner loading-xs"></span> : null}
+                            删除
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-box border border-base-300 bg-base-100 shadow-sm">
+                <div className="border-b border-base-300 px-4 py-3">
+                  <h2 className="text-base font-bold">应用更新</h2>
+                  <p className="mt-1 text-xs text-base-content/55">上传后自动更新 latest.json</p>
+                </div>
+                <div className="grid gap-3 p-3">
+                  <label className="grid gap-1.5">
+                    <span className="text-xs font-semibold text-base-content/65">版本号</span>
+                    <input
+                      className="input input-bordered input-sm w-full"
+                      placeholder="例如 1.1.5"
+                      value={releaseVersion}
+                      onChange={(event) => setReleaseVersion(event.target.value)}
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="text-xs font-semibold text-base-content/65">更新说明</span>
+                    <textarea
+                      className="textarea textarea-bordered min-h-20 w-full resize-none text-sm"
+                      placeholder="可选，写到 latest.json"
+                      value={releaseNotes}
+                      onChange={(event) => setReleaseNotes(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    className="btn btn-secondary btn-sm w-full"
+                    disabled={uploadingRelease}
+                    onClick={() => releaseInputRef.current?.click()}
+                  >
+                    {uploadingRelease ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    上传安装包
+                  </button>
+                </div>
+              </section>
+            </div>
+          ) : (
+            <div className="rounded-box border border-dashed border-base-300 bg-base-100 p-8 text-center shadow-sm">
+              <div className="text-sm font-bold">
+                {cloudTab === 'overview'
+                  ? '总览'
+                  : cloudTab === 'users'
+                    ? '用户'
+                    : '支付'}
+              </div>
+              <p className="mt-2 text-xs text-base-content/45">待接入</p>
+            </div>
+          )}
+        </section>
+      )}
+    </main>
+  )
+}
+
 function normalizeLoginIdentifier(value: string) {
   const normalized = value.trim()
   return normalized.includes('@') ? normalized.toLowerCase() : normalized
@@ -90,6 +756,7 @@ function App() {
   const passwordDialogRef = useRef<HTMLDialogElement | null>(null)
   const updateDialogRef = useRef<HTMLDialogElement | null>(null)
   const autoStartAttemptedRef = useRef(false)
+  const lastCloudSessionRefreshRef = useRef(0)
   const [theme, setTheme] = useState<Theme>(() => {
     const raw = window.localStorage.getItem(THEME_KEY)
     if (THEMES.includes(raw as Theme)) {
@@ -195,10 +862,12 @@ function App() {
     const [name] = session.user.email.split('@')
     return name || session.user.email
   }, [session?.user.email])
-  const actualIsAdmin = session?.user.role === 'admin'
+  const actualIsAdmin = isAdminRole(session?.user.role)
   const canUseDeveloperSwitch =
     actualIsAdmin || userDisplayName.trim().toLowerCase() === 'xieyuqi'
-  const effectiveIsAdmin = canUseDeveloperSwitch ? developerSurfaceMode === 'admin' : actualIsAdmin
+  const isSpAdminSurface = canUseDeveloperSwitch && developerSurfaceMode === 'spadmin'
+  const effectiveIsAdmin = canUseDeveloperSwitch ? developerSurfaceMode !== 'user' : actualIsAdmin
+  const isFullAdminSurface = effectiveIsAdmin && !isSpAdminSurface
 
   useEffect(() => {
     if (!session) {
@@ -212,15 +881,16 @@ function App() {
       return null
     }
     const next = await cloudClient.me(session.token)
-      const nextSession: LoginSession = {
-        token: session.token,
-        user: next.user,
-        plan: next.plan,
-        features: next.features,
-        expiresAt: next.expiresAt ?? null
-      }
+    const nextSession: LoginSession = {
+      token: session.token,
+      user: next.user,
+      plan: next.plan,
+      features: next.features,
+      expiresAt: next.expiresAt ?? null
+    }
     window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
     setSession(nextSession)
+    lastCloudSessionRefreshRef.current = Date.now()
     return nextSession
   }
 
@@ -239,6 +909,10 @@ function App() {
       setRecentLogs(nextRecentLogs || '当前还没有日志。')
       setSettings(nextCpaState.bootstrap)
       handleLoadError(null)
+
+      if (session && Date.now() - lastCloudSessionRefreshRef.current > 60_000) {
+        await refreshSessionFromCloud()
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       handleLoadError(message)
@@ -309,6 +983,7 @@ function App() {
         }
         window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(nextSession))
         setSession(nextSession)
+        lastCloudSessionRefreshRef.current = Date.now()
       } catch (error) {
         console.error(error)
       }
@@ -387,7 +1062,7 @@ function App() {
   }, [session, cpaState?.status])
 
   useEffect(() => {
-    if (!session || cpaState?.status !== 'running' || session.user.role === 'admin' || session.features.allow_shared_pool) {
+    if (!session || cpaState?.status !== 'running' || isAdminRole(session.user.role) || session.features.allow_shared_pool) {
       return
     }
 
@@ -445,7 +1120,7 @@ function App() {
     const syncWindowShell = async () => {
       try {
         const appWindow = getCurrentWindow()
-        const target = effectiveIsAdmin ? ADMIN_WINDOW_SIZE : MOBILE_WINDOW_SIZE
+        const target = isFullAdminSurface ? ADMIN_WINDOW_SIZE : MOBILE_WINDOW_SIZE
         await appWindow.setMinSize(new LogicalSize(target.minWidth, target.minHeight))
         await appWindow.setSize(new LogicalSize(target.width, target.height))
         await appWindow.center()
@@ -455,10 +1130,10 @@ function App() {
     }
 
     void syncWindowShell()
-  }, [effectiveIsAdmin])
+  }, [isFullAdminSurface])
 
   useEffect(() => {
-    if (!session || session.user.role === 'admin' || !settings.autoStart) {
+    if (!session || isAdminRole(session.user.role) || !settings.autoStart) {
       autoStartAttemptedRef.current = false
       return
     }
@@ -1082,7 +1757,7 @@ function App() {
         className="hidden"
         onChange={(event) => void handleImportSelection(event)}
       />
-      {effectiveIsAdmin ? (
+      {isFullAdminSurface ? (
         <div className="navbar h-16 border-b border-base-300 bg-base-100 px-6 shadow-sm">
           <div className="flex-1">
             <div className="flex items-center gap-3">
@@ -1111,7 +1786,13 @@ function App() {
                     User
                   </button>
                   <button
-                    className={`join-item btn btn-xs ${developerSurfaceMode === 'admin' ? 'btn-primary' : 'btn-outline'}`}
+                    className={`join-item btn btn-xs ${developerSurfaceMode === 'spadmin' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setDeveloperSurfaceMode('spadmin')}
+                  >
+                    SpAdmin
+                  </button>
+                  <button
+                    className={`join-item btn btn-xs ${developerSurfaceMode === 'admin' ? 'btn-warning' : 'btn-outline btn-warning'}`}
                     onClick={() => setDeveloperSurfaceMode('admin')}
                   >
                     Admin
@@ -1190,7 +1871,13 @@ function App() {
                   User
                 </button>
                 <button
-                  className={`join-item btn btn-xs ${developerSurfaceMode === 'admin' ? 'btn-primary' : 'btn-outline'}`}
+                  className={`join-item btn btn-xs ${developerSurfaceMode === 'spadmin' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setDeveloperSurfaceMode('spadmin')}
+                >
+                  SpAdmin
+                </button>
+                <button
+                  className={`join-item btn btn-xs ${developerSurfaceMode === 'admin' ? 'btn-warning' : 'btn-outline btn-warning'}`}
                   onClick={() => setDeveloperSurfaceMode('admin')}
                 >
                   Admin
@@ -1275,7 +1962,21 @@ function App() {
         </div>
       </dialog>
 
-      {effectiveIsAdmin ? (
+      {isSpAdminSurface ? (
+        <SpAdminPanel
+          token={session.token}
+          recentLogs={recentLogs}
+          pendingAction={pendingAction}
+          onRefreshLogs={() =>
+            void runAction('refresh-logs', async () => {
+              const logs = await cpaRuntime.getRecentLogs()
+              setRecentLogs(logs || '当前还没有日志。')
+            }, '日志刷新成功')
+          }
+          onNotify={showToast}
+          onError={handleLoadError}
+        />
+      ) : effectiveIsAdmin ? (
         <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
           <div role="tablist" className="tabs tabs-lift">
             <button
@@ -1660,12 +2361,12 @@ function App() {
           )}
         </main>
       ) : useNewUserWorkspace ? (
-                <UserWorkspace
-                  plan={session.plan}
-                  features={session.features}
-                  planExpiresAt={session.expiresAt ?? null}
-                  userKey={session.user.email}
-                  isAdminAccount={actualIsAdmin}
+        <UserWorkspace
+          plan={session.plan}
+          features={session.features}
+          planExpiresAt={session.expiresAt ?? null}
+          userKey={session.user.email}
+          isAdminAccount={actualIsAdmin}
           cloudToken={session.token}
           cpaState={cpaState}
           loadError={loadError}
