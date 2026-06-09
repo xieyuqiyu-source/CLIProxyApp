@@ -13,10 +13,11 @@
 
 set -euo pipefail
 
-# Resolve the directory this script lives in (the aggregated workspace root),
-# so it works no matter where it is invoked from.
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="$ROOT_DIR/CLIProxyApp"
+# Resolve paths. This script lives inside the CLIProxyApp directory, while the
+# sibling projects (CLIProxyApi, CLIProxyManagement) sit one level up in the
+# aggregated workspace root. Resolve both regardless of where it is invoked from.
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$APP_DIR/.." && pwd)"
 CPA_DIR="$ROOT_DIR/CLIProxyApi"
 CPM_DIR="$ROOT_DIR/CLIProxyManagement"
 
