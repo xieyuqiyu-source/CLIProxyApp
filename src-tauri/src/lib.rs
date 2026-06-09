@@ -91,6 +91,8 @@ pub fn run() {
             setup_continue_config,
             restore_continue_config_default,
             check_app_update,
+            download_app_update,
+            install_downloaded_app_update,
             proxy_cloud_request,
             proxy_cloud_upload,
             proxy_cloud_download,
@@ -409,6 +411,32 @@ async fn check_app_update(app: tauri::AppHandle) -> Result<cpa::AppUpdateInfo, S
     tauri::async_runtime::spawn_blocking(move || cpa::check_app_update(&app))
         .await
         .map_err(|error| format!("failed to join app update task: {error}"))?
+}
+
+#[tauri::command]
+async fn download_app_update(
+    app: tauri::AppHandle,
+    download_url: String,
+    latest_version: String,
+) -> Result<cpa::AppUpdateDownloadResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        cpa::download_app_update(&app, download_url, latest_version)
+    })
+    .await
+    .map_err(|error| format!("failed to join app update download task: {error}"))?
+}
+
+#[tauri::command]
+async fn install_downloaded_app_update(
+    app: tauri::AppHandle,
+    file_path: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        cpa::open_downloaded_app_update(file_path)?;
+        quit_application(&app)
+    })
+    .await
+    .map_err(|error| format!("failed to join app update install task: {error}"))?
 }
 
 #[tauri::command]

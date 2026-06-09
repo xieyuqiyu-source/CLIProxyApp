@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   AppState,
+  AppUpdateDownloadProgress,
+  AppUpdateDownloadResult,
   AppUpdateInfo,
   BootstrapSettings,
   CpaManagementInfo,
@@ -58,6 +60,12 @@ export const cpaRuntime = {
     invoke<ContinueConfigRestoreResult>('restore_continue_config_default'),
   checkAppUpdate: () =>
     invoke<AppUpdateInfo>('check_app_update'),
+  downloadAppUpdate: (downloadUrl: string, latestVersion: string) =>
+    invoke<AppUpdateDownloadResult>('download_app_update', { downloadUrl, latestVersion }),
+  installDownloadedAppUpdate: (filePath: string) =>
+    invoke<void>('install_downloaded_app_update', { filePath }),
+  onAppUpdateDownloadProgress: (handler: (progress: AppUpdateDownloadProgress) => void) =>
+    listen<AppUpdateDownloadProgress>('app-update-download-progress', (event) => handler(event.payload)),
   onOpenClawSetupLog: (handler: (line: string) => void) =>
     listen<string>('openclaw-setup-log', (event) => handler(event.payload)),
   pickLocalAuthFiles: () =>

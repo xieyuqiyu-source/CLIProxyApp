@@ -146,3 +146,15 @@ export interface AppUpdateInfo {
   publishedAt: string | null
   checkedAt: string
 }
+
+export interface AppUpdateDownloadProgress {
+  downloadedBytes: number
+  totalBytes: number | null
+  percent: number | null
+}
+
+export interface AppUpdateDownloadResult {
+  filePath: string
+  fileName: string
+  downloadedBytes: number
+}

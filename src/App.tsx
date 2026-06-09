@@ -27,6 +27,7 @@ import type {
 import { formatPlanLabel } from './lib/cloud/planLabels'
 import type {
   AppState,
+  AppUpdateDownloadResult,
   AppUpdateInfo,
   BootstrapSettings,
   CpaManagementInfo,
@@ -1462,6 +1463,20 @@ function App() {
   }, [theme])
 
   useEffect(() => {
+    let unlisten: (() => void) | null = null
+    void cpaRuntime.onAppUpdateDownloadProgress((progress) => {
+      if (typeof progress.percent === 'number') {
+        setUpdateDownloadProgress(Math.max(0, Math.min(100, progress.percent)))
+      }
+    }).then((cleanup) => {
+      unlisten = cleanup
+    })
+    return () => {
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
     const raw = window.localStorage.getItem(REMEMBERED_EMAIL_KEY)
     if (!raw) {
       return
@@ -1506,6 +1521,10 @@ function App() {
   const [errorToastMessage, setErrorToastMessage] = useState<string | null>(null)
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [downloadingUpdate, setDownloadingUpdate] = useState(false)
+  const [installingUpdate, setInstallingUpdate] = useState(false)
+  const [updateDownloadProgress, setUpdateDownloadProgress] = useState(0)
+  const [downloadedUpdate, setDownloadedUpdate] = useState<AppUpdateDownloadResult | null>(null)
   const [adminTab, setAdminTab] = useState<AdminTab>('overview')
   const [userTab, setUserTab] = useState<UserTab>('overview')
   const [developerSurfaceMode, setDeveloperSurfaceMode] = useState<DeveloperSurfaceMode>('user')
@@ -1615,6 +1634,8 @@ function App() {
       setCheckingUpdate(true)
       const info = await cpaRuntime.checkAppUpdate()
       setUpdateInfo(info)
+      setDownloadedUpdate(null)
+      setUpdateDownloadProgress(0)
       if (info.hasUpdate) {
         if (!silent) {
           showToast(`发现新版本 ${info.latestVersion}`)
@@ -1632,6 +1653,40 @@ function App() {
       }
     } finally {
       setCheckingUpdate(false)
+    }
+  }
+
+  const downloadUpdate = async () => {
+    if (!updateInfo?.hasUpdate || !updateInfo.downloadUrl) {
+      return
+    }
+    try {
+      setDownloadingUpdate(true)
+      setDownloadedUpdate(null)
+      setUpdateDownloadProgress(0)
+      const result = await cpaRuntime.downloadAppUpdate(updateInfo.downloadUrl, updateInfo.latestVersion)
+      setDownloadedUpdate(result)
+      setUpdateDownloadProgress(100)
+      showToast('更新包下载完成')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      handleLoadError(message)
+    } finally {
+      setDownloadingUpdate(false)
+    }
+  }
+
+  const installDownloadedUpdate = async () => {
+    if (!downloadedUpdate?.filePath) {
+      return
+    }
+    try {
+      setInstallingUpdate(true)
+      await cpaRuntime.installDownloadedAppUpdate(downloadedUpdate.filePath)
+    } catch (error) {
+      setInstallingUpdate(false)
+      const message = error instanceof Error ? error.message : String(error)
+      handleLoadError(message)
     }
   }
 
@@ -2630,25 +2685,46 @@ function App() {
               </div>
             ) : (
               <div className="alert alert-info">
-                <span>检测到新版本，建议现在更新。更新包会从你的服务器地址下载。</span>
+                <span>
+                  {downloadedUpdate
+                    ? '更新包已下载完成，点击重启更新会打开安装包并退出当前应用。'
+                    : '检测到新版本，确认后会在应用内下载安装包。'}
+                </span>
               </div>
             )}
+            {updateInfo?.hasUpdate ? (
+              <div className="rounded-box border border-base-300 bg-base-100 px-4 py-3">
+                <div className="mb-2 flex items-center justify-between gap-3 text-xs text-base-content/60">
+                  <span>{downloadedUpdate ? downloadedUpdate.fileName : downloadingUpdate ? '正在下载更新包' : '等待确认更新'}</span>
+                  <span>{Math.round(updateDownloadProgress)}%</span>
+                </div>
+                <progress className="progress progress-primary w-full" value={updateDownloadProgress} max={100}></progress>
+              </div>
+            ) : null}
           </div>
           <div className="modal-action">
-            <button className="btn" onClick={() => updateDialogRef.current?.close()}>
+            <button className="btn" disabled={downloadingUpdate || installingUpdate} onClick={() => updateDialogRef.current?.close()}>
               关闭
             </button>
-            <button
-              className="btn btn-primary"
-              disabled={!updateInfo?.hasUpdate || !updateInfo.downloadUrl}
-              onClick={() => {
-                if (updateInfo?.downloadUrl) {
-                  void cpaRuntime.openExternalTarget(updateInfo.downloadUrl)
-                }
-              }}
-            >
-              打开下载地址
-            </button>
+            {downloadedUpdate ? (
+              <button
+                className="btn btn-primary"
+                disabled={installingUpdate}
+                onClick={() => void installDownloadedUpdate()}
+              >
+                {installingUpdate ? <span className="loading loading-spinner loading-xs"></span> : null}
+                重启更新
+              </button>
+            ) : (
+              <button
+                className="btn btn-primary"
+                disabled={!updateInfo?.hasUpdate || !updateInfo.downloadUrl || downloadingUpdate}
+                onClick={() => void downloadUpdate()}
+              >
+                {downloadingUpdate ? <span className="loading loading-spinner loading-xs"></span> : null}
+                确认更新
+              </button>
+            )}
           </div>
         </div>
       </dialog>

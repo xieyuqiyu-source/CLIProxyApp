@@ -16,6 +16,7 @@ use sysinfo::{Process, Signal, System};
 use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
+const APP_UPDATE_DOWNLOAD_EVENT: &str = "app-update-download-progress";
 const CLOUD_BASE_URL_DEV: &str = "https://cliproxy.szxsai.com/api/v1";
 const CLOUD_BASE_URL_RELEASE: &str = "https://cliproxy.szxsai.com/api/v1";
 const CONTINUE_CHAT_MODEL_NAME: &str = "CLIProxy Chat";
@@ -272,6 +273,22 @@ pub struct AppUpdateInfo {
     pub notes: Option<String>,
     pub published_at: Option<String>,
     pub checked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdateDownloadProgress {
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppUpdateDownloadResult {
+    pub file_path: String,
+    pub file_name: String,
+    pub downloaded_bytes: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -752,6 +769,115 @@ pub fn check_app_update(app: &AppHandle) -> Result<AppUpdateInfo, String> {
         published_at,
         checked_at,
     })
+}
+
+pub fn download_app_update(
+    app: &AppHandle,
+    download_url: String,
+    latest_version: String,
+) -> Result<AppUpdateDownloadResult, String> {
+    let trimmed_url = download_url.trim();
+    if trimmed_url.is_empty() {
+        return Err("download url is required".to_string());
+    }
+    let version = latest_version.trim();
+    if version.is_empty() {
+        return Err("latest version is required".to_string());
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|error| format!("failed to create update download client: {error}"))?;
+    let mut response = client
+        .get(trimmed_url)
+        .send()
+        .map_err(|error| format!("failed to download update package: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().unwrap_or_default();
+        return Err(if text.trim().is_empty() {
+            format!("update package download failed with {status}")
+        } else {
+            format!("update package download failed with {status}: {text}")
+        });
+    }
+
+    let total_bytes = response.content_length();
+    let file_name = update_package_file_name(trimmed_url, version);
+    let updates_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data dir: {error}"))?
+        .join("updates");
+    fs::create_dir_all(&updates_dir).map_err(|error| {
+        format!(
+            "failed to create update directory {}: {error}",
+            updates_dir.display()
+        )
+    })?;
+    let target_path = updates_dir.join(&file_name);
+    let partial_path = updates_dir.join(format!("{file_name}.download"));
+    let mut target = File::create(&partial_path).map_err(|error| {
+        format!(
+            "failed to create update package {}: {error}",
+            partial_path.display()
+        )
+    })?;
+
+    let mut downloaded_bytes = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read update package: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        target
+            .write_all(&buffer[..read])
+            .map_err(|error| format!("failed to write update package: {error}"))?;
+        downloaded_bytes += read as u64;
+        emit_update_download_progress(app, downloaded_bytes, total_bytes);
+    }
+    target
+        .flush()
+        .map_err(|error| format!("failed to flush update package: {error}"))?;
+    drop(target);
+
+    if target_path.exists() {
+        fs::remove_file(&target_path).map_err(|error| {
+            format!(
+                "failed to replace existing update package {}: {error}",
+                target_path.display()
+            )
+        })?;
+    }
+    fs::rename(&partial_path, &target_path).map_err(|error| {
+        format!(
+            "failed to move update package from {} to {}: {error}",
+            partial_path.display(),
+            target_path.display()
+        )
+    })?;
+    emit_update_download_progress(app, downloaded_bytes, total_bytes);
+
+    Ok(AppUpdateDownloadResult {
+        file_path: target_path.to_string_lossy().to_string(),
+        file_name,
+        downloaded_bytes,
+    })
+}
+
+pub fn open_downloaded_app_update(file_path: String) -> Result<(), String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() {
+        return Err("update package path is required".to_string());
+    }
+    if !Path::new(trimmed).exists() {
+        return Err(format!("update package not found: {trimmed}"));
+    }
+    open_external_target(trimmed)
 }
 
 pub fn import_auth_files(
@@ -2968,6 +3094,40 @@ fn resolve_download_url(value: &str, origin: &str) -> String {
         return value.to_string();
     }
     format!("{origin}/{}", value.trim_start_matches('/'))
+}
+
+fn update_package_file_name(download_url: &str, version: &str) -> String {
+    let fallback_ext = if cfg!(target_os = "windows") {
+        "exe"
+    } else if cfg!(target_os = "macos") {
+        "dmg"
+    } else {
+        "bin"
+    };
+    let fallback = format!("CPSwitch_{version}.{fallback_ext}");
+    reqwest::Url::parse(download_url)
+        .ok()
+        .and_then(|url| {
+            url.path_segments()
+                .and_then(|mut segments| segments.next_back().map(str::to_string))
+        })
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback)
+}
+
+fn emit_update_download_progress(app: &AppHandle, downloaded_bytes: u64, total_bytes: Option<u64>) {
+    let percent = total_bytes
+        .filter(|total| *total > 0)
+        .map(|total| ((downloaded_bytes as f64 / total as f64) * 100.0).clamp(0.0, 100.0));
+    let _ = app.emit(
+        APP_UPDATE_DOWNLOAD_EVENT,
+        AppUpdateDownloadProgress {
+            downloaded_bytes,
+            total_bytes,
+            percent,
+        },
+    );
 }
 
 fn app_update_manifest_urls() -> Result<Vec<String>, String> {
