@@ -308,7 +308,7 @@ verify_online() {
   local manifest_url="$PUBLIC_BASE_URL/downloads/cliproxyapp/latest.json"
   info "验证线上 manifest：$manifest_url"
   curl -fsSL "$manifest_url" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const j=JSON.parse(s); console.log(JSON.stringify({version:j.version, macos:j.downloads&&j.downloads.macos, windows:j.downloads&&j.downloads.windows}, null, 2))})"
-  curl -fsSI "$PUBLIC_BASE_URL/healthz" >/dev/null && ok "healthz 正常。"
+  curl -fsSL "$PUBLIC_BASE_URL/healthz" >/dev/null && ok "healthz 正常。"
 }
 
 main() {
