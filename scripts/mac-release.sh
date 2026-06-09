@@ -28,7 +28,8 @@ CLOUD_DIR="$ROOT_DIR/CLIProxyCloud"
 
 SERVER="${SERVER:-aitools-server}"
 SERVER_CLOUD_DIR="${SERVER_CLOUD_DIR:-/var/www/CLIProxyCloud}"
-SERVER_DOWNLOAD_DIR="${SERVER_DOWNLOAD_DIR:-$SERVER_CLOUD_DIR/storage/downloads/cliproxyapp}"
+SERVER_STORAGE_ROOT="${SERVER_STORAGE_ROOT:-/var/lib/cliproxycloud/storage}"
+SERVER_DOWNLOAD_DIR="${SERVER_DOWNLOAD_DIR:-$SERVER_STORAGE_ROOT/downloads/cliproxyapp}"
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://cliproxy.szxsai.com}"
 SYNC_PROJECTS="${SYNC_PROJECTS:-CLIProxyApp CLIProxyManagement CLIProxyDeploy CLIProxyApi CLIProxyCloud}"
 
