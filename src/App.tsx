@@ -37,6 +37,7 @@ import type {
   ImportAuthFilesResult
 } from './lib/cpa/types'
 import type { AuthFileItem as QuotaAuthFileItem } from './features/quota/types'
+import type { QuotaMetric } from './features/quota/types'
 
 type AdminTab = 'overview' | 'oauth' | 'auth-files' | 'quota' | 'openai-providers' | 'cloud-admin' | 'cpm'
 type UserTab = 'overview' | 'oauth' | 'auth-files' | 'providers' | 'quota' | 'stats'
@@ -57,6 +58,7 @@ interface SharedPoolAgentCheckResult {
   usableCount: number
   invalidCount: number
   skippedCount: number
+  cards: SharedPoolQuotaCard[]
   invalid: Array<{
     id: number
     fileName: string
@@ -65,6 +67,20 @@ interface SharedPoolAgentCheckResult {
     reason: string
     status?: number
   }>
+}
+
+interface SharedPoolQuotaCard {
+  id: number
+  fileName: string
+  displayName: string
+  provider: string
+  planLabel: string
+  accountLabel: string
+  status: 'usable' | 'invalid' | 'unknown'
+  reason?: string
+  statusCode?: number
+  metrics: QuotaMetric[]
+  updatedAt: string
 }
 
 interface SpAdminOverviewData {
@@ -173,6 +189,257 @@ function isCodexLikeAuthFile(file: QuotaAuthFileItem | CloudAuthFile) {
   const raw = `${'provider' in file ? file.provider : ''} ${'type' in file ? file.type ?? '' : ''} ${'fileName' in file ? file.fileName : ''} ${'name' in file ? file.name : ''}`
     .toLowerCase()
   return raw.includes('codex') || raw.includes('chatgpt') || raw.includes('openai')
+}
+
+function normalizeNumberValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value.trim())
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function normalizePlanType(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim().toLowerCase()
+    return trimmed ? trimmed.replace(/[_\s]+/g, '-') : null
+  }
+  return null
+}
+
+function formatPercent(value: number | null) {
+  if (value === null) {
+    return '--'
+  }
+  return `${Math.max(0, Math.min(100, Math.round(value)))}%`
+}
+
+function formatUnixSeconds(value: number | null) {
+  if (!value || value <= 0) {
+    return '-'
+  }
+  const date = new Date(value * 1000)
+  if (Number.isNaN(date.getTime())) {
+    return '-'
+  }
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
+}
+
+function formatCodexReset(window?: Record<string, unknown> | null) {
+  if (!window) {
+    return '-'
+  }
+  const resetAt = normalizeNumberValue(window.reset_at ?? window.resetAt)
+  if (resetAt && resetAt > 0) {
+    return formatUnixSeconds(resetAt)
+  }
+  const resetAfter = normalizeNumberValue(window.reset_after_seconds ?? window.resetAfterSeconds)
+  if (resetAfter && resetAfter > 0) {
+    return formatUnixSeconds(Math.floor(Date.now() / 1000 + resetAfter))
+  }
+  return '-'
+}
+
+function parseResponseJson<T = Record<string, unknown>>(result: { body: T | null; bodyText: string }) {
+  if (result.body && typeof result.body === 'object' && !Array.isArray(result.body)) {
+    return result.body as Record<string, unknown>
+  }
+  const source = typeof result.body === 'string' ? result.body : result.bodyText
+  if (!source.trim()) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(source)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function resolveCodexPlanType(file: QuotaAuthFileItem) {
+  const metadata =
+    file.metadata && typeof file.metadata === 'object' && !Array.isArray(file.metadata)
+      ? (file.metadata as Record<string, unknown>)
+      : null
+  const attributes =
+    file.attributes && typeof file.attributes === 'object' && !Array.isArray(file.attributes)
+      ? (file.attributes as Record<string, unknown>)
+      : null
+  const candidates = [
+    file.plan_type,
+    file.planType,
+    metadata?.plan_type,
+    metadata?.planType,
+    attributes?.plan_type,
+    attributes?.planType
+  ]
+  for (const candidate of candidates) {
+    const normalized = normalizePlanType(candidate)
+    if (normalized) {
+      return normalized
+    }
+  }
+  return null
+}
+
+function resolveCodexUsagePlanType(payload: Record<string, unknown>) {
+  return normalizePlanType(payload.plan_type ?? payload.planType)
+}
+
+function getCodexWindowSeconds(windowValue?: Record<string, unknown> | null) {
+  if (!windowValue) {
+    return null
+  }
+  return normalizeNumberValue(windowValue.limit_window_seconds ?? windowValue.limitWindowSeconds)
+}
+
+function pickCodexClassifiedWindows(limitInfo?: Record<string, unknown> | null) {
+  const primaryWindow =
+    limitInfo?.primary_window && typeof limitInfo.primary_window === 'object'
+      ? (limitInfo.primary_window as Record<string, unknown>)
+      : limitInfo?.primaryWindow && typeof limitInfo.primaryWindow === 'object'
+        ? (limitInfo.primaryWindow as Record<string, unknown>)
+        : null
+  const secondaryWindow =
+    limitInfo?.secondary_window && typeof limitInfo.secondary_window === 'object'
+      ? (limitInfo.secondary_window as Record<string, unknown>)
+      : limitInfo?.secondaryWindow && typeof limitInfo.secondaryWindow === 'object'
+        ? (limitInfo.secondaryWindow as Record<string, unknown>)
+        : null
+
+  let fiveHourWindow: Record<string, unknown> | null = null
+  let weeklyWindow: Record<string, unknown> | null = null
+  for (const windowValue of [primaryWindow, secondaryWindow]) {
+    const seconds = getCodexWindowSeconds(windowValue)
+    if (seconds === 18000 && !fiveHourWindow) {
+      fiveHourWindow = windowValue
+    } else if (seconds === 604800 && !weeklyWindow) {
+      weeklyWindow = windowValue
+    }
+  }
+
+  if (!fiveHourWindow) {
+    fiveHourWindow = primaryWindow && primaryWindow !== weeklyWindow ? primaryWindow : null
+  }
+  if (!weeklyWindow) {
+    weeklyWindow = secondaryWindow && secondaryWindow !== fiveHourWindow ? secondaryWindow : null
+  }
+
+  return { fiveHourWindow, weeklyWindow }
+}
+
+function readCodexRateLimitInfo(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+function readCodexWindow(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+function buildCodexQuotaMetrics(payload: Record<string, unknown>) {
+  const metrics: QuotaMetric[] = []
+  const rateLimit = readCodexRateLimitInfo(payload.rate_limit ?? payload.rateLimit)
+  const codeReviewLimit = readCodexRateLimitInfo(payload.code_review_rate_limit ?? payload.codeReviewRateLimit)
+  const additionalRateLimits = Array.isArray(payload.additional_rate_limits)
+    ? payload.additional_rate_limits
+    : Array.isArray(payload.additionalRateLimits)
+      ? payload.additionalRateLimits
+      : []
+
+  const addWindowMetric = (
+    id: string,
+    label: string,
+    windowValue: unknown,
+    limitReached?: unknown,
+    allowed?: unknown
+  ) => {
+    const windowRecord = readCodexWindow(windowValue)
+    if (!windowRecord) {
+      return
+    }
+
+    const resetLabel = formatCodexReset(windowRecord)
+    const usedPercentRaw = normalizeNumberValue(windowRecord.used_percent ?? windowRecord.usedPercent)
+    const isLimitReached = Boolean(limitReached) || allowed === false
+    const usedPercent = usedPercentRaw ?? (isLimitReached && resetLabel !== '-' ? 100 : null)
+    const remainingPercent = usedPercent === null ? null : Math.max(0, 100 - usedPercent)
+
+    metrics.push({
+      id,
+      label,
+      value: formatPercent(remainingPercent),
+      hint: `重置 ${resetLabel}`
+    })
+  }
+
+  const rateWindows = pickCodexClassifiedWindows(rateLimit)
+  const rateLimitReached = rateLimit?.limit_reached ?? rateLimit?.limitReached
+  const rateAllowed = rateLimit?.allowed
+  addWindowMetric('five-hour', '5 小时', rateWindows.fiveHourWindow, rateLimitReached, rateAllowed)
+  addWindowMetric('weekly', '1 周', rateWindows.weeklyWindow, rateLimitReached, rateAllowed)
+
+  const codeReviewWindows = pickCodexClassifiedWindows(codeReviewLimit)
+  const codeReviewLimitReached = codeReviewLimit?.limit_reached ?? codeReviewLimit?.limitReached
+  const codeReviewAllowed = codeReviewLimit?.allowed
+  addWindowMetric(
+    'code-review-five-hour',
+    'Code Review 5 小时',
+    codeReviewWindows.fiveHourWindow,
+    codeReviewLimitReached,
+    codeReviewAllowed
+  )
+  addWindowMetric(
+    'code-review-weekly',
+    'Code Review 1 周',
+    codeReviewWindows.weeklyWindow,
+    codeReviewLimitReached,
+    codeReviewAllowed
+  )
+
+  additionalRateLimits.forEach((item, index) => {
+    const record = readCodexRateLimitInfo(item)
+    const rateInfo = readCodexRateLimitInfo(record?.rate_limit ?? record?.rateLimit)
+    if (!record || !rateInfo) {
+      return
+    }
+
+    const limitName =
+      normalizeTextValue(record.limit_name ?? record.limitName) ??
+      normalizeTextValue(record.metered_feature ?? record.meteredFeature) ??
+      `additional-${index + 1}`
+    const idPrefix = limitName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || `additional-${index + 1}`
+    const additionalLimitReached = rateInfo.limit_reached ?? rateInfo.limitReached
+    const additionalAllowed = rateInfo.allowed
+
+    addWindowMetric(
+      `${idPrefix}-five-hour-${index}`,
+      `${limitName} 5 小时`,
+      rateInfo.primary_window ?? rateInfo.primaryWindow,
+      additionalLimitReached,
+      additionalAllowed
+    )
+    addWindowMetric(
+      `${idPrefix}-weekly-${index}`,
+      `${limitName} 1 周`,
+      rateInfo.secondary_window ?? rateInfo.secondaryWindow,
+      additionalLimitReached,
+      additionalAllowed
+    )
+  })
+
+  return metrics
 }
 
 function formatCompactDate(value?: string | null) {
@@ -324,10 +591,27 @@ function classifyInvalidAuthError(status: number, message: string) {
   ].some((needle) => normalized.includes(needle))
 }
 
-async function checkCodexAuthUsable(file: QuotaAuthFileItem): Promise<{ usable: boolean; reason?: string; status?: number }> {
+async function fetchCodexQuotaCard(
+  file: QuotaAuthFileItem,
+  cloudFile: CloudAuthFile
+): Promise<SharedPoolQuotaCard> {
   const authIndex = getQuotaAuthIndex(file)
+  const accountLabel = cloudFile.displayName || cloudFile.fileName || file.name
+  const planLabel = resolveCodexPlanType(file) ?? 'plus'
+
   if (!authIndex) {
-    return { usable: true, reason: '缺少 authIndex，跳过' }
+    return {
+      id: cloudFile.id,
+      fileName: cloudFile.fileName,
+      displayName: accountLabel,
+      provider: cloudFile.provider || 'codex',
+      planLabel,
+      accountLabel,
+      status: 'unknown',
+      reason: '缺少 authIndex',
+      metrics: [],
+      updatedAt: new Date().toISOString()
+    }
   }
 
   const headers: Record<string, string> = {
@@ -348,14 +632,37 @@ async function checkCodexAuthUsable(file: QuotaAuthFileItem): Promise<{ usable: 
   })
 
   if (result.statusCode >= 200 && result.statusCode < 300) {
-    return { usable: true }
+    const payload = parseResponseJson(result)
+    const metrics = payload ? buildCodexQuotaMetrics(payload) : []
+    const nextPlanLabel = payload ? resolveCodexUsagePlanType(payload) ?? planLabel : planLabel
+    return {
+      id: cloudFile.id,
+      fileName: cloudFile.fileName,
+      displayName: accountLabel,
+      provider: cloudFile.provider || 'codex',
+      planLabel: nextPlanLabel,
+      accountLabel,
+      status: 'usable',
+      metrics,
+      updatedAt: new Date().toISOString()
+    }
   }
 
   const reason = getApiCallErrorMessage(result)
-  if (classifyInvalidAuthError(result.statusCode, reason)) {
-    return { usable: false, reason, status: result.statusCode }
+  const invalid = classifyInvalidAuthError(result.statusCode, reason)
+  return {
+    id: cloudFile.id,
+    fileName: cloudFile.fileName,
+    displayName: accountLabel,
+    provider: cloudFile.provider || 'codex',
+    planLabel,
+    accountLabel,
+    status: invalid ? 'invalid' : 'unknown',
+    reason,
+    statusCode: result.statusCode,
+    metrics: [],
+    updatedAt: new Date().toISOString()
   }
-  return { usable: true, reason, status: result.statusCode }
 }
 
 interface SpAdminPanelProps {
@@ -707,6 +1014,7 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
     let checkedCodexCount = 0
     let skippedCount = 0
     let usableCount = 0
+    const cards: SharedPoolQuotaCard[] = []
     const nextInvalid: InvalidSharedAuthCandidate[] = []
 
     try {
@@ -743,15 +1051,17 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
           continue
         }
         checkedCodexCount += 1
-        const checkResult = await checkCodexAuthUsable(localFile)
-        if (!checkResult.usable) {
+        const card = await fetchCodexQuotaCard(localFile, item.cloudFile)
+        cards.push(card)
+        if (card.status === 'usable') {
+          usableCount += 1
+        }
+        if (card.status === 'invalid') {
           nextInvalid.push({
             file: item.cloudFile,
-            reason: checkResult.reason ?? '认证不可用',
-            status: checkResult.status
+            reason: card.reason ?? '认证不可用',
+            status: card.statusCode
           })
-        } else {
-          usableCount += 1
         }
       }
 
@@ -764,6 +1074,7 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
           usableCount,
           invalidCount: nextInvalid.length,
           skippedCount,
+          cards,
           invalid: nextInvalid.map((candidate) => ({
             id: candidate.file.id,
             fileName: candidate.file.fileName,
