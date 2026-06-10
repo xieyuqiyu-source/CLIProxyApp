@@ -9,6 +9,8 @@ import type {
   CloudPaymentOrder,
   CloudPaymentProduct,
   CloudAdminUserSummary,
+  CloudAgentStatus,
+  CloudAgentTask,
   CloudAuthFile,
   CloudLoginResponse,
   CloudMeResponse,
@@ -395,6 +397,57 @@ export const cloudClient = {
     request<{ status: string; deleted: number }>(
       '/admin/shared-auth-files',
       { method: 'DELETE' },
+      token
+    ),
+
+  adminGetAgentStatus: (token: string) =>
+    request<{ agent: CloudAgentStatus }>('/admin/agent-status', { method: 'GET' }, token),
+
+  adminListAgentTasks: (token: string, options?: { limit?: number }) => {
+    const params = new URLSearchParams()
+    params.set('limit', String(options?.limit ?? 20))
+    return request<{ tasks: CloudAgentTask[]; agent: CloudAgentStatus }>(
+      `/admin/agent-tasks?${params.toString()}`,
+      { method: 'GET' },
+      token
+    )
+  },
+
+  adminCreateAgentTask: (token: string, payload?: Record<string, unknown>) =>
+    request<{ task: CloudAgentTask; agent: CloudAgentStatus }>(
+      '/admin/agent-tasks',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          type: 'check_shared_pool',
+          payload: payload ?? {}
+        })
+      },
+      token
+    ),
+
+  agentPollTask: (token: string, deviceId: string, deviceName = 'CPSwitch') => {
+    const params = new URLSearchParams()
+    params.set('device_id', deviceId)
+    params.set('device_name', deviceName)
+    return request<{ task: CloudAgentTask | null; agent: CloudAgentStatus }>(
+      `/agent/tasks/poll?${params.toString()}`,
+      { method: 'GET' },
+      token
+    )
+  },
+
+  agentSubmitTaskResult: (
+    token: string,
+    taskId: number,
+    payload: { status: 'completed' | 'failed'; result?: Record<string, unknown>; error?: string }
+  ) =>
+    request<{ task: CloudAgentTask }>(
+      `/agent/tasks/${taskId}/result`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      },
       token
     )
 }

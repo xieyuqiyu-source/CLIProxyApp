@@ -14,6 +14,8 @@ import { cloudClient } from './lib/cloud/client'
 import { sharedImportRegistry } from './lib/cloud/sharedRegistry'
 import type {
   CloudAdminUserSummary,
+  CloudAgentStatus,
+  CloudAgentTask,
   CloudFeatures,
   CloudAuthFile,
   CloudLoginChallengeResponse,
@@ -48,6 +50,23 @@ interface InvalidSharedAuthCandidate {
   status?: number
 }
 
+interface SharedPoolAgentCheckResult {
+  checkedAt: string
+  totalShared: number
+  checkedCodexCount: number
+  usableCount: number
+  invalidCount: number
+  skippedCount: number
+  invalid: Array<{
+    id: number
+    fileName: string
+    displayName: string
+    provider: string
+    reason: string
+    status?: number
+  }>
+}
+
 interface SpAdminOverviewData {
   users: CloudAdminUserSummary[]
   sharedFiles: CloudAuthFile[]
@@ -66,6 +85,8 @@ interface LoginSession {
 const SESSION_KEY = 'cpapp-login-session'
 const THEME_KEY = 'cpapp-theme'
 const REMEMBERED_EMAIL_KEY = 'cpapp-remembered-email'
+const SPADMIN_AGENT_ENABLED_KEY = 'cpapp-spadmin-agent-enabled'
+const SPADMIN_AGENT_DEVICE_ID_KEY = 'cpapp-spadmin-agent-device-id'
 const THEMES = ['light', 'dark', 'synthwave', 'cyberpunk'] as const
 type Theme = typeof THEMES[number]
 
@@ -128,6 +149,16 @@ function buildSpAdminCheckFileName(file: CloudAuthFile, fallbackName: string) {
   const baseName = fallbackName.trim() || file.fileName || `shared-${file.id}.json`
   const jsonName = /\.json$/i.test(baseName) ? baseName : `${baseName}.json`
   return `__spadmin_check_${file.id}_${jsonName}`
+}
+
+function resolveSpAdminAgentDeviceId() {
+  const existing = window.localStorage.getItem(SPADMIN_AGENT_DEVICE_ID_KEY)
+  if (existing) {
+    return existing
+  }
+  const next = crypto.randomUUID()
+  window.localStorage.setItem(SPADMIN_AGENT_DEVICE_ID_KEY, next)
+  return next
 }
 
 function isAdminRole(role: unknown) {
@@ -368,6 +399,13 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
   const [uploadingRelease, setUploadingRelease] = useState(false)
   const [releaseVersion, setReleaseVersion] = useState('')
   const [releaseNotes, setReleaseNotes] = useState('')
+  const [agentEnabled, setAgentEnabled] = useState(() => window.localStorage.getItem(SPADMIN_AGENT_ENABLED_KEY) === 'true')
+  const [agentStatus, setAgentStatus] = useState<CloudAgentStatus | null>(null)
+  const [agentTasks, setAgentTasks] = useState<CloudAgentTask[]>([])
+  const [agentLoading, setAgentLoading] = useState(false)
+  const [creatingAgentTask, setCreatingAgentTask] = useState(false)
+  const [agentRunningTaskId, setAgentRunningTaskId] = useState<number | null>(null)
+  const agentRunningTaskIdRef = useRef<number | null>(null)
   const logLines = recentLogs && recentLogs !== '当前还没有日志。' && recentLogs !== '等待运行日志...'
     ? recentLogs.split('\n')
     : null
@@ -486,6 +524,22 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
     }
   }
 
+  const loadAgentTasks = async (notify = false) => {
+    try {
+      setAgentLoading(true)
+      const response = await cloudClient.adminListAgentTasks(token, { limit: 10 })
+      setAgentStatus(response.agent)
+      setAgentTasks(Array.isArray(response.tasks) ? response.tasks : [])
+      if (notify) {
+        onNotify('Agent 状态已刷新')
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setAgentLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (activeTab === 'cloud-admin' && cloudTab === 'publish') {
       void loadPublishData()
@@ -495,6 +549,7 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
   useEffect(() => {
     if (activeTab === 'cloud-admin' && cloudTab === 'overview') {
       void loadOverviewData()
+      void loadAgentTasks()
     }
   }, [activeTab, cloudTab, token])
 
@@ -545,6 +600,23 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
   const spPaidOrders = spPaymentOrders.filter((item) => item.status === 'paid')
   const spPendingOrders = spPaymentOrders.filter((item) => item.status === 'pending').length
   const spPaymentRevenueCents = spPaidOrders.reduce((sum, order) => sum + order.amount, 0)
+  const agentLastPollAt = agentStatus?.heartbeat?.lastPollAt ?? null
+  const agentIsOnline = agentEnabled && Boolean(agentStatus?.online)
+  const latestAgentTask = agentTasks[0] ?? null
+  const agentOfflineAfterSeconds = agentStatus?.offlineAfterSeconds ?? 60
+  const formatAgentTaskSummary = (task: CloudAgentTask) => {
+    if (task.status === 'completed' && task.result) {
+      const result = task.result as Partial<SharedPoolAgentCheckResult>
+      return `检测 ${result.checkedCodexCount ?? 0} 个 · 不可用 ${result.invalidCount ?? 0} 个`
+    }
+    if (task.status === 'failed') {
+      return task.errorMessage || '任务失败'
+    }
+    if (task.status === 'expired') {
+      return '任务已过期'
+    }
+    return task.status === 'running' ? '正在本机检测' : '等待本机轮询'
+  }
 
   const saveSpUser = async (item: CloudAdminUserSummary) => {
     const role = spDraftRoles[item.user.id] ?? item.user.role
@@ -623,32 +695,32 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
     }
   }
 
-  const checkInvalidSharedFiles = async () => {
-    if (sharedCloudFiles.length === 0) {
-      onError('当前共享号池为空')
-      return
+  const runSharedPoolCheck = async (files: CloudAuthFile[]): Promise<{
+    result: SharedPoolAgentCheckResult
+    candidates: InvalidSharedAuthCandidate[]
+  }> => {
+    if (files.length === 0) {
+      throw new Error('当前共享号池为空')
     }
     let beforeLocalNames = new Set<string>()
     const downloadedFiles: Array<{ cloudFile: CloudAuthFile; localName: string; bytes: number[] }> = []
+    let checkedCodexCount = 0
+    let skippedCount = 0
+    let usableCount = 0
+    const nextInvalid: InvalidSharedAuthCandidate[] = []
+
     try {
-      setCheckingInvalidShared(true)
-      setInvalidSharedCandidates([])
       beforeLocalNames = new Set(
         ((await quotaApi.listAuthFiles()).files ?? []).map((file) => normalizeMatchName(file.name))
       )
 
-      for (const file of sharedCloudFiles) {
-        try {
-          const payload = await cloudClient.downloadSharedAuthFile(token, file.id)
-          downloadedFiles.push({
-            cloudFile: file,
-            localName: buildSpAdminCheckFileName(file, payload.fileName || file.fileName),
-            bytes: payload.bytes
-          })
-        } catch (error) {
-          onError(error instanceof Error ? error.message : String(error))
-          return
-        }
+      for (const file of files) {
+        const payload = await cloudClient.downloadSharedAuthFile(token, file.id)
+        downloadedFiles.push({
+          cloudFile: file,
+          localName: buildSpAdminCheckFileName(file, payload.fileName || file.fileName),
+          bytes: payload.bytes
+        })
       }
 
       await cpaRuntime.importAuthFiles(
@@ -659,9 +731,6 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
       )
 
       const localFiles = ((await quotaApi.listAuthFiles()).files ?? []) as QuotaAuthFileItem[]
-      const nextInvalid: InvalidSharedAuthCandidate[] = []
-      let checkedCodexCount = 0
-
       for (const item of downloadedFiles) {
         const candidates = [
           normalizeMatchName(item.localName),
@@ -669,35 +738,42 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
           normalizeMatchName(item.cloudFile.displayName)
         ].filter(Boolean)
         const localFile = localFiles.find((file) => candidates.includes(normalizeMatchName(file.name)))
-        if (!localFile) {
-          continue
-        }
-        if (!isCodexLikeAuthFile(localFile)) {
+        if (!localFile || !isCodexLikeAuthFile(localFile)) {
+          skippedCount += 1
           continue
         }
         checkedCodexCount += 1
-        const result = await checkCodexAuthUsable(localFile)
-        if (!result.usable) {
+        const checkResult = await checkCodexAuthUsable(localFile)
+        if (!checkResult.usable) {
           nextInvalid.push({
             file: item.cloudFile,
-            reason: result.reason ?? '认证不可用',
-            status: result.status
+            reason: checkResult.reason ?? '认证不可用',
+            status: checkResult.status
           })
+        } else {
+          usableCount += 1
         }
       }
 
-      setInvalidSharedCandidates(nextInvalid)
-      if (checkedCodexCount === 0) {
-        onNotify('当前没有可检测的 Codex 共享认证')
-        return
+      return {
+        candidates: nextInvalid,
+        result: {
+          checkedAt: new Date().toISOString(),
+          totalShared: files.length,
+          checkedCodexCount,
+          usableCount,
+          invalidCount: nextInvalid.length,
+          skippedCount,
+          invalid: nextInvalid.map((candidate) => ({
+            id: candidate.file.id,
+            fileName: candidate.file.fileName,
+            displayName: candidate.file.displayName || candidate.file.fileName,
+            provider: candidate.file.provider || 'unknown',
+            reason: candidate.reason,
+            status: candidate.status
+          }))
+        }
       }
-      if (nextInvalid.length === 0) {
-        onNotify(`已检测 ${checkedCodexCount} 个 Codex 共享认证，未发现明确不可用账号`)
-      } else {
-        onNotify(`发现 ${nextInvalid.length} 个明确不可用共享认证`)
-      }
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error))
     } finally {
       try {
         const afterLocalFiles = ((await quotaApi.listAuthFiles()).files ?? []) as QuotaAuthFileItem[]
@@ -709,9 +785,124 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
       } catch {
         // 检测失败时不阻塞界面恢复；下次检测仍会使用独立临时文件名。
       }
+    }
+  }
+
+  const checkInvalidSharedFiles = async () => {
+    if (sharedCloudFiles.length === 0) {
+      onError('当前共享号池为空')
+      return
+    }
+    try {
+      setCheckingInvalidShared(true)
+      setInvalidSharedCandidates([])
+      const { result, candidates } = await runSharedPoolCheck(sharedCloudFiles)
+
+      setInvalidSharedCandidates(candidates)
+      if (result.checkedCodexCount === 0) {
+        onNotify('当前没有可检测的 Codex 共享认证')
+        return
+      }
+      if (candidates.length === 0) {
+        onNotify(`已检测 ${result.checkedCodexCount} 个 Codex 共享认证，未发现明确不可用账号`)
+      } else {
+        onNotify(`发现 ${candidates.length} 个明确不可用共享认证`)
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
       setCheckingInvalidShared(false)
     }
   }
+
+  const setCurrentAgentTaskId = (taskId: number | null) => {
+    agentRunningTaskIdRef.current = taskId
+    setAgentRunningTaskId(taskId)
+  }
+
+  const executeAgentTask = async (task: CloudAgentTask) => {
+    if (agentRunningTaskIdRef.current !== null) {
+      return
+    }
+    setCurrentAgentTaskId(task.id)
+    try {
+      if (task.type !== 'check_shared_pool') {
+        await cloudClient.agentSubmitTaskResult(token, task.id, {
+          status: 'failed',
+          result: {},
+          error: `不支持的任务类型：${task.type}`
+        })
+        return
+      }
+
+      const sharedResponse = await cloudClient.listSharedAuthFiles(token)
+      const files = Array.isArray(sharedResponse.files) ? sharedResponse.files : []
+      setSharedCloudFiles(files)
+      const { result, candidates } = await runSharedPoolCheck(files)
+      setInvalidSharedCandidates(candidates)
+      await cloudClient.agentSubmitTaskResult(token, task.id, {
+        status: 'completed',
+        result: result as unknown as Record<string, unknown>
+      })
+      onNotify(`远程检测完成：检测 ${result.checkedCodexCount} 个，发现 ${result.invalidCount} 个不可用`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await cloudClient.agentSubmitTaskResult(token, task.id, {
+        status: 'failed',
+        result: {},
+        error: message
+      }).catch(() => undefined)
+      onError(message)
+    } finally {
+      setCurrentAgentTaskId(null)
+      void loadAgentTasks()
+    }
+  }
+
+  const pollAgentOnce = async () => {
+    if (!agentEnabled || agentRunningTaskIdRef.current !== null) {
+      return
+    }
+    try {
+      const response = await cloudClient.agentPollTask(token, resolveSpAdminAgentDeviceId(), 'CPSwitch SpAdmin')
+      setAgentStatus(response.agent)
+      if (response.task) {
+        await executeAgentTask(response.task)
+      }
+    } catch (error) {
+      setAgentStatus((current) => current ? { ...current, online: false } : current)
+    }
+  }
+
+  const createAgentCheckTask = async () => {
+    try {
+      setCreatingAgentTask(true)
+      const response = await cloudClient.adminCreateAgentTask(token, {
+        source: 'spadmin',
+        requestedAt: new Date().toISOString()
+      })
+      setAgentStatus(response.agent)
+      await loadAgentTasks()
+      onNotify(`已发起远程检测任务 #${response.task.id}`)
+      void pollAgentOnce()
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCreatingAgentTask(false)
+    }
+  }
+
+  useEffect(() => {
+    window.localStorage.setItem(SPADMIN_AGENT_ENABLED_KEY, agentEnabled ? 'true' : 'false')
+    if (!agentEnabled) {
+      return
+    }
+    void pollAgentOnce()
+    const timer = window.setInterval(() => {
+      void pollAgentOnce()
+    }, 15000)
+    return () => window.clearInterval(timer)
+  }, [agentEnabled, token])
 
   const deleteInvalidSharedFiles = async () => {
     if (invalidSharedCandidates.length === 0) {
@@ -926,6 +1117,77 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
                   <div className="mt-1 text-[11px] text-base-content/50">
                     最近支付 {latestPaidOrder ? formatCompactDate(latestPaidOrder.paidAt ?? latestPaidOrder.createdAt) : '--'}
                   </div>
+                </div>
+              </section>
+
+              <section className={`rounded-box border bg-base-100 shadow-sm ${agentIsOnline ? 'border-success/30' : agentEnabled ? 'border-warning/40' : 'border-base-300'}`}>
+                <div className="flex items-center justify-between gap-2 border-b border-base-300 px-4 py-3">
+                  <div className="min-w-0">
+                    <h2 className="text-base font-bold">本机 Agent</h2>
+                    <p className="mt-1 truncate text-xs text-base-content/55">
+                      {agentEnabled
+                        ? agentIsOnline
+                          ? `在线 · 最近轮询 ${agentLastPollAt ? formatCompactDate(agentLastPollAt) : '--'}`
+                          : `离线 · 超过 ${agentOfflineAfterSeconds} 秒未轮询`
+                        : '已关闭 · 手机触发不会执行'}
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    className="toggle toggle-success"
+                    checked={agentEnabled}
+                    onChange={(event) => setAgentEnabled(event.target.checked)}
+                  />
+                </div>
+                <div className="grid gap-2 p-3">
+                  {agentEnabled && !agentIsOnline ? (
+                    <div className="rounded-box border border-warning/30 bg-warning/10 px-3 py-2 text-xs font-semibold text-warning-content">
+                      Agent 当前离线。请确认电脑没有休眠、CPSwitch 正在运行，并保持此开关打开。
+                    </div>
+                  ) : null}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      className="btn btn-outline btn-xs"
+                      disabled={agentLoading}
+                      onClick={() => void loadAgentTasks(true)}
+                    >
+                      {agentLoading ? <span className="loading loading-spinner loading-xs"></span> : null}
+                      刷新状态
+                    </button>
+                    <button
+                      className="btn btn-primary btn-xs"
+                      disabled={creatingAgentTask || agentRunningTaskId !== null}
+                      onClick={() => void createAgentCheckTask()}
+                    >
+                      {creatingAgentTask || agentRunningTaskId !== null ? <span className="loading loading-spinner loading-xs"></span> : null}
+                      发起检测
+                    </button>
+                  </div>
+                  {latestAgentTask ? (
+                    <div className="rounded-box bg-base-200/70 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-bold">最近任务 #{latestAgentTask.id}</div>
+                        <div className={`badge badge-xs ${
+                          latestAgentTask.status === 'completed'
+                            ? 'badge-success'
+                            : latestAgentTask.status === 'failed' || latestAgentTask.status === 'expired'
+                              ? 'badge-error'
+                              : 'badge-warning'
+                        }`}>
+                          {latestAgentTask.status}
+                        </div>
+                      </div>
+                      <div className="mt-1 text-xs text-base-content/60">{formatAgentTaskSummary(latestAgentTask)}</div>
+                      <div className="mt-1 text-[10px] text-base-content/45">
+                        创建 {formatCompactDate(latestAgentTask.createdAt)}
+                        {latestAgentTask.completedAt ? ` · 完成 ${formatCompactDate(latestAgentTask.completedAt)}` : ''}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="rounded-box border border-dashed border-base-300 px-3 py-4 text-center text-xs text-base-content/45">
+                      暂无远程检测任务
+                    </div>
+                  )}
                 </div>
               </section>
 

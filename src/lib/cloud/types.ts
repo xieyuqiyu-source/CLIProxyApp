@@ -100,6 +100,38 @@ export interface CloudAuthFile {
   updatedAt: string
 }
 
+export interface CloudAgentHeartbeat {
+  id: number
+  userId: number
+  deviceId: string
+  deviceName: string
+  status: string
+  lastPollAt: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CloudAgentStatus {
+  heartbeat: CloudAgentHeartbeat | null
+  online: boolean
+  offlineAfterSeconds: number
+}
+
+export interface CloudAgentTask {
+  id: number
+  userId: number
+  type: 'check_shared_pool'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'expired'
+  payload: Record<string, unknown> | null
+  result: Record<string, unknown> | null
+  errorMessage: string
+  claimedAt: string | null
+  completedAt: string | null
+  expiresAt: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface SharedSyncPackage {
   mode: 'none' | 'sample' | 'full'
   max_files: number
