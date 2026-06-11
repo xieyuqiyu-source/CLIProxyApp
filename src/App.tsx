@@ -3302,22 +3302,25 @@ function App() {
         </div>
       </dialog>
 
-      {isSpAdminSurface ? (
-        <SpAdminPanel
-          token={session.token}
-          recentLogs={recentLogs}
-          pendingAction={pendingAction}
-          onRefreshLogs={() =>
-            void runAction('refresh-logs', async () => {
-              const logs = await cpaRuntime.getRecentLogs()
-              setRecentLogs(logs || '当前还没有日志。')
-            }, '日志刷新成功')
-          }
-          onNotify={showToast}
-          onError={handleLoadError}
-        />
-      ) : effectiveIsAdmin ? (
-        <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
+      {effectiveIsAdmin ? (
+        <>
+          <div className={isSpAdminSurface ? '' : 'hidden'} aria-hidden={isSpAdminSurface ? undefined : true}>
+            <SpAdminPanel
+              token={session.token}
+              recentLogs={recentLogs}
+              pendingAction={pendingAction}
+              onRefreshLogs={() =>
+                void runAction('refresh-logs', async () => {
+                  const logs = await cpaRuntime.getRecentLogs()
+                  setRecentLogs(logs || '当前还没有日志。')
+                }, '日志刷新成功')
+              }
+              onNotify={showToast}
+              onError={handleLoadError}
+            />
+          </div>
+          {!isSpAdminSurface ? (
+            <main className="mx-auto flex w-full max-w-[1600px] flex-col gap-4 px-4 py-4">
           <div role="tablist" className="tabs tabs-lift">
             <button
               role="tab"
@@ -3698,8 +3701,10 @@ function App() {
                 </div>
               )}
             </div>
-          )}
-        </main>
+            )}
+            </main>
+          ) : null}
+        </>
       ) : useNewUserWorkspace ? (
         <UserWorkspace
           plan={session.plan}
