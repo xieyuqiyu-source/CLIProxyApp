@@ -17,6 +17,8 @@ import type {
   ExportAuthArchiveResult,
   ImportAuthFilesResult,
   ImportAuthInputFile,
+  KiroProxyModelsResult,
+  KiroProxyStartResult,
   LocalAuthFile,
   OpenClawConfigState,
   OpenClawSetupInput,
@@ -46,6 +48,10 @@ export const cpaRuntime = {
     invoke<OpenClawConfigState>('get_openclaw_config_state'),
   setupOpenClawProvider: (input: OpenClawSetupInput) =>
     invoke<OpenClawSetupResult>('setup_openclaw_provider', { input }),
+  startKiroProxy: () =>
+    invoke<KiroProxyStartResult>('start_kiro_proxy'),
+  probeKiroModels: () =>
+    invoke<KiroProxyModelsResult>('probe_kiro_models'),
   getCodexConfigState: () =>
     invoke<CodexConfigState>('get_codex_config_state'),
   setCodexConfigModel: (model: string) =>
@@ -68,6 +74,8 @@ export const cpaRuntime = {
     listen<AppUpdateDownloadProgress>('app-update-download-progress', (event) => handler(event.payload)),
   onOpenClawSetupLog: (handler: (line: string) => void) =>
     listen<string>('openclaw-setup-log', (event) => handler(event.payload)),
+  onKiroProxyLog: (handler: (line: string) => void) =>
+    listen<string>('kiro-proxy-log', (event) => handler(event.payload)),
   pickLocalAuthFiles: () =>
     invoke<LocalAuthFile[]>('pick_local_auth_files'),
   openExternalTarget: (target: string) =>

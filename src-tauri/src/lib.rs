@@ -84,6 +84,8 @@ pub fn run() {
             import_vertex_credential,
             get_openclaw_config_state,
             setup_openclaw_provider,
+            start_kiro_proxy,
+            probe_kiro_models,
             get_codex_config_state,
             set_codex_config_model,
             restore_codex_config_default,
@@ -350,6 +352,26 @@ async fn setup_openclaw_provider(
     tauri::async_runtime::spawn_blocking(move || cpa::setup_openclaw_provider(&app, input))
         .await
         .map_err(|error| format!("failed to join OpenClaw setup task: {error}"))?
+}
+
+#[tauri::command]
+async fn start_kiro_proxy(app: tauri::AppHandle) -> Result<cpa::KiroProxyStartResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CpaRuntimeState>();
+        cpa::start_kiro_proxy(&app, &state)
+    })
+    .await
+    .map_err(|error| format!("failed to join Kiro proxy task: {error}"))?
+}
+
+#[tauri::command]
+async fn probe_kiro_models(app: tauri::AppHandle) -> Result<cpa::KiroProxyModelsResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CpaRuntimeState>();
+        cpa::probe_kiro_models(&app, &state)
+    })
+    .await
+    .map_err(|error| format!("failed to join Kiro model probe task: {error}"))?
 }
 
 #[tauri::command]

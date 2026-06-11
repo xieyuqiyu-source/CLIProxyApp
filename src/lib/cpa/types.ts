@@ -78,6 +78,19 @@ export interface OpenClawConfigState {
   recommendedPrimaryModel: string | null
 }
 
+export interface KiroProxyStartResult {
+  baseUrl: string
+  apiKey: string
+  pid: number | null
+  alreadyRunning: boolean
+}
+
+export interface KiroProxyModelsResult {
+  baseUrl: string
+  models: string[]
+  rawCount: number
+}
+
 export type OpenClawConfigMode = 'legacy' | 'modern'
 
 export interface OpenClawSetupInput {

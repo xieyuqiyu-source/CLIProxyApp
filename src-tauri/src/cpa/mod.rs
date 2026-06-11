@@ -10,12 +10,14 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{Process, Signal, System};
 use tauri::{AppHandle, Emitter, Manager};
 
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
+const KIRO_PROXY_LOG_EVENT: &str = "kiro-proxy-log";
 const APP_UPDATE_DOWNLOAD_EVENT: &str = "app-update-download-progress";
 const CLOUD_BASE_URL_DEV: &str = "https://cliproxy.szxsai.com/api/v1";
 const CLOUD_BASE_URL_RELEASE: &str = "https://cliproxy.szxsai.com/api/v1";
@@ -255,6 +257,7 @@ const OPENCLAW_CLI_CACHE_FILE: &str = "openclaw-cli-path.txt";
 const OPENCLAW_CONFIG_BACKUP_PREFIX: &str = "openclaw-config-backup";
 const CODEX_CONFIG_BACKUP_FILE: &str = "codex-config-backup.json";
 const CONTINUE_CONFIG_BACKUP_FILE: &str = "continue-config-backup.json";
+const KIRO_PROXY_PORT: u16 = 20128;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -289,6 +292,23 @@ pub struct AppUpdateDownloadResult {
     pub file_path: String,
     pub file_name: String,
     pub downloaded_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KiroProxyStartResult {
+    pub base_url: String,
+    pub api_key: String,
+    pub pid: Option<u32>,
+    pub already_running: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KiroProxyModelsResult {
+    pub base_url: String,
+    pub models: Vec<String>,
+    pub raw_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -349,6 +369,8 @@ struct RuntimeInner {
     child: Option<Child>,
     started_at: Option<SystemTime>,
     last_error: Option<String>,
+    kiro_child: Option<Child>,
+    kiro_api_key: Option<String>,
 }
 
 pub struct CpaRuntimeState {
@@ -479,7 +501,168 @@ pub fn shutdown_cpa(state: &tauri::State<'_, CpaRuntimeState>) -> Result<(), Str
         .lock()
         .map_err(|_| "failed to lock runtime state".to_string())?;
     stop_child(&mut inner)?;
+    stop_kiro_child(&mut inner)?;
     Ok(())
+}
+
+pub fn start_kiro_proxy(
+    app: &AppHandle,
+    state: &tauri::State<'_, CpaRuntimeState>,
+) -> Result<KiroProxyStartResult, String> {
+    let base_url = format!("http://127.0.0.1:{KIRO_PROXY_PORT}/v1");
+    let api_key = {
+        let mut inner = state
+            .inner
+            .lock()
+            .map_err(|_| "failed to lock runtime state".to_string())?;
+        refresh_kiro_child_state(&mut inner);
+
+        let api_key = inner
+            .kiro_api_key
+            .clone()
+            .unwrap_or_else(generate_kiro_api_key);
+
+        if let Some(child) = inner.kiro_child.as_ref() {
+            let result = KiroProxyStartResult {
+                base_url,
+                api_key: api_key.clone(),
+                pid: Some(child.id()),
+                already_running: true,
+            };
+            inner.kiro_api_key = Some(api_key);
+            log_kiro(app, "9router 已在运行，直接复用当前代理。");
+            return Ok(result);
+        }
+
+        inner.kiro_api_key = Some(api_key.clone());
+        api_key
+    };
+
+    if is_9router_installed(app) {
+        log_kiro(app, "检测到本地已安装 9router，跳过安装。");
+    } else {
+        log_kiro(app, "未检测到 9router，开始安装：npm install -g 9router");
+        run_kiro_install(app)?;
+        log_kiro(app, "9router 安装完成。");
+    }
+
+    if wait_for_port("127.0.0.1", KIRO_PROXY_PORT, Duration::from_millis(500)) {
+        log_kiro(
+            app,
+            &format!("检测到 9router 端口已在线，跳过启动: {base_url}"),
+        );
+        return Ok(KiroProxyStartResult {
+            base_url,
+            api_key,
+            pid: None,
+            already_running: true,
+        });
+    }
+
+    log_kiro(app, "准备启动本地 9router 反代。");
+
+    let mut command = Command::new(resolve_9router_program());
+    command.args([
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &KIRO_PROXY_PORT.to_string(),
+        "--no-browser",
+        "--log",
+        "--skip-update",
+    ]);
+    command.env("REQUIRE_API_KEY", "true");
+    command.env("ROUTER_API_KEY", &api_key);
+    command.env("API_KEY_SECRET", "cliproxy-kiro-proxy");
+    augment_process_path(&mut command);
+    apply_windows_background_flags(&mut command);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("启动 9router 失败: {error}"))?;
+    pipe_kiro_output(app.clone(), child.stdout.take(), false);
+    pipe_kiro_output(app.clone(), child.stderr.take(), true);
+
+    let pid = child.id();
+    {
+        let mut inner = state
+            .inner
+            .lock()
+            .map_err(|_| "failed to lock runtime state".to_string())?;
+        refresh_kiro_child_state(&mut inner);
+        if inner.kiro_child.is_none() {
+            inner.kiro_child = Some(child);
+            inner.kiro_api_key = Some(api_key.clone());
+        }
+    }
+
+    if wait_for_port("127.0.0.1", KIRO_PROXY_PORT, Duration::from_secs(12)) {
+        log_kiro(app, &format!("9router 已启动: {base_url}"));
+    } else {
+        log_kiro(
+            app,
+            "9router 已发起启动，但端口暂未就绪，请稍后重试或查看日志。",
+        );
+    }
+
+    Ok(KiroProxyStartResult {
+        base_url,
+        api_key,
+        pid: Some(pid),
+        already_running: false,
+    })
+}
+
+pub fn probe_kiro_models(
+    _app: &AppHandle,
+    state: &tauri::State<'_, CpaRuntimeState>,
+) -> Result<KiroProxyModelsResult, String> {
+    let base_url = format!("http://127.0.0.1:{KIRO_PROXY_PORT}/v1");
+    if !wait_for_port("127.0.0.1", KIRO_PROXY_PORT, Duration::from_millis(800)) {
+        return Err("Kiro 反代未启动，无法探查模型。".to_string());
+    }
+
+    let api_key = {
+        let inner = state
+            .inner
+            .lock()
+            .map_err(|_| "failed to lock runtime state".to_string())?;
+        inner.kiro_api_key.clone()
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|error| format!("创建 Kiro 模型探查客户端失败: {error}"))?;
+    let mut request = client.get(format!("{base_url}/models"));
+    if let Some(key) = api_key.filter(|value| !value.trim().is_empty()) {
+        request = request.bearer_auth(key);
+    }
+
+    let response = request
+        .send()
+        .map_err(|error| format!("请求 Kiro 模型列表失败: {error}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| format!("读取 Kiro 模型列表失败: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("Kiro 模型探查失败，状态码 {status}: {text}"));
+    }
+
+    let payload = serde_json::from_str::<JsonValue>(&text)
+        .map_err(|error| format!("解析 Kiro 模型列表失败: {error}"))?;
+    let models = extract_kiro_models(&payload);
+    if models.is_empty() {
+        return Err("Kiro 模型探查完成，但没有发现模型。".to_string());
+    }
+
+    Ok(KiroProxyModelsResult {
+        base_url,
+        raw_count: models.len(),
+        models,
+    })
 }
 
 pub fn get_cpa_recent_logs(app: &AppHandle, max_lines: Option<usize>) -> Result<String, String> {
@@ -3349,6 +3532,10 @@ fn log_openclaw(app: &AppHandle, logs: &mut Vec<String>, message: &str) {
     let _ = app.emit(OPENCLAW_SETUP_LOG_EVENT, line);
 }
 
+fn log_kiro(app: &AppHandle, message: &str) {
+    let _ = app.emit(KIRO_PROXY_LOG_EVENT, message.to_string());
+}
+
 fn resolve_auth_dir(paths: &ResolvedPaths) -> Result<PathBuf, String> {
     let default_auth_dir = paths.config_dir.join("auths");
     if !paths.config_path.exists() {
@@ -3745,6 +3932,179 @@ fn stop_child(inner: &mut RuntimeInner) -> Result<(), String> {
     }
     inner.started_at = None;
     Ok(())
+}
+
+fn refresh_kiro_child_state(inner: &mut RuntimeInner) {
+    let mut clear_child = false;
+    if let Some(child) = inner.kiro_child.as_mut() {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => clear_child = true,
+            Ok(None) => {}
+        }
+    }
+
+    if clear_child {
+        inner.kiro_child = None;
+    }
+}
+
+fn stop_kiro_child(inner: &mut RuntimeInner) -> Result<(), String> {
+    refresh_kiro_child_state(inner);
+    if let Some(mut child) = inner.kiro_child.take() {
+        child
+            .kill()
+            .map_err(|error| format!("failed to stop 9router process: {error}"))?;
+        let _ = child.wait();
+    }
+    Ok(())
+}
+
+fn run_kiro_install(app: &AppHandle) -> Result<(), String> {
+    let mut command = if cfg!(target_os = "windows") {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "npm install -g 9router"]);
+        command
+    } else {
+        let mut command = Command::new("sh");
+        command.args(["-lc", "npm install -g 9router"]);
+        command
+    };
+    augment_process_path(&mut command);
+    apply_windows_background_flags(&mut command);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("执行 npm install -g 9router 失败: {error}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_app = app.clone();
+    let stderr_app = app.clone();
+    let stdout_thread = thread::spawn(move || stream_kiro_reader(stdout_app, stdout, false));
+    let stderr_thread = thread::spawn(move || stream_kiro_reader(stderr_app, stderr, true));
+    let status = child
+        .wait()
+        .map_err(|error| format!("等待 9router 安装结果失败: {error}"))?;
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
+
+    if !status.success() {
+        return Err(format!("npm install -g 9router 失败，退出状态: {status}"));
+    }
+    Ok(())
+}
+
+fn extract_kiro_models(payload: &JsonValue) -> Vec<String> {
+    let candidates = payload
+        .get("data")
+        .or_else(|| payload.get("models"))
+        .and_then(JsonValue::as_array)
+        .or_else(|| payload.as_array());
+    let Some(items) = candidates else {
+        return Vec::new();
+    };
+
+    let mut models = Vec::new();
+    let mut seen = HashSet::new();
+    for item in items {
+        let value = item
+            .as_str()
+            .map(ToString::to_string)
+            .or_else(|| {
+                item.get("id")
+                    .and_then(JsonValue::as_str)
+                    .map(ToString::to_string)
+            })
+            .or_else(|| {
+                item.get("name")
+                    .and_then(JsonValue::as_str)
+                    .map(ToString::to_string)
+            });
+        let Some(model) = value.map(|value| value.trim().to_string()) else {
+            continue;
+        };
+        if model.is_empty() || !seen.insert(model.clone()) {
+            continue;
+        }
+        models.push(model);
+    }
+    models
+}
+
+fn is_9router_installed(app: &AppHandle) -> bool {
+    let mut command = Command::new(resolve_9router_program());
+    command.arg("--version");
+    augment_process_path(&mut command);
+    apply_windows_background_flags(&mut command);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    match command.output() {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if version.is_empty() {
+                log_kiro(app, "9router --version 检测通过。");
+            } else {
+                log_kiro(app, &format!("9router --version: {version}"));
+            }
+            true
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if !stderr.is_empty() {
+                log_kiro(app, &format!("9router 检测未通过: {stderr}"));
+            }
+            false
+        }
+        Err(error) => {
+            log_kiro(app, &format!("未找到 9router 命令: {error}"));
+            false
+        }
+    }
+}
+
+fn pipe_kiro_output<R>(app: AppHandle, reader: Option<R>, is_error: bool)
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || stream_kiro_reader(app, reader, is_error));
+}
+
+fn stream_kiro_reader<R>(app: AppHandle, reader: Option<R>, is_error: bool)
+where
+    R: Read,
+{
+    let Some(reader) = reader else {
+        return;
+    };
+    for line in BufReader::new(reader).lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        if is_error {
+            log_kiro(&app, &format!("stderr: {line}"));
+        } else {
+            log_kiro(&app, &line);
+        }
+    }
+}
+
+fn resolve_9router_program() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "9router.cmd"
+    } else {
+        "9router"
+    }
+}
+
+fn generate_kiro_api_key() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("sk-{:016x}", now)
 }
 
 fn cleanup_stale_cpa_processes(paths: &ResolvedPaths, keep_pid: Option<u32>) -> Result<(), String> {

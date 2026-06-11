@@ -12,7 +12,7 @@ import type {
   CloudPlan
 } from '../../lib/cloud/types'
 import type { CpaState } from '../../lib/cpa/types'
-import type { OpenClawConfigMode } from '../../lib/cpa/types'
+import type { KiroProxyStartResult, OpenClawConfigMode } from '../../lib/cpa/types'
 import { OAuthPanel } from '../oauth/OAuthPanel'
 import { OpenAIProvidersPanel } from '../openai-providers/OpenAIProvidersPanel'
 import { CodexConfigDialog } from '../codex-config/CodexConfigDialog'
@@ -25,6 +25,9 @@ import { cpaRuntime } from '../../lib/cpa/runtime'
 import vipQrImage from '../../assets/vip-qr.jpg'
 import { authFilesApi } from '../auth-files/api'
 import { getApiCallErrorMessage, quotaApi } from '../quota/api'
+
+const CCSWITCH_OFFICIAL_URL = 'https://ccswitch.io/zh/'
+const CCSWITCH_DOWNLOAD_URL = 'https://github.com/farion1231/cc-switch/releases'
 
 interface UserWorkspaceProps {
   plan: CloudPlan
@@ -363,6 +366,12 @@ export function UserWorkspace({
   const [openClawFallbackModels, setOpenClawFallbackModels] = useState<string[]>([])
   const [openClawClearOtherModels, setOpenClawClearOtherModels] = useState(false)
   const openClawSelectionDirtyRef = useRef(false)
+  const [kiroDialogOpen, setKiroDialogOpen] = useState(false)
+  const [runningKiroProxy, setRunningKiroProxy] = useState(false)
+  const [kiroLogs, setKiroLogs] = useState<string[]>([])
+  const [kiroProxyResult, setKiroProxyResult] = useState<KiroProxyStartResult | null>(null)
+  const [probingKiroModels, setProbingKiroModels] = useState(false)
+  const [kiroModels, setKiroModels] = useState<string[]>([])
   const [paymentProducts, setPaymentProducts] = useState<CloudPaymentProduct[]>([])
   const [loadingPaymentProducts, setLoadingPaymentProducts] = useState(false)
   const [preparingVipDialog, setPreparingVipDialog] = useState(false)
@@ -504,6 +513,27 @@ export function UserWorkspace({
     void cpaRuntime.onOpenClawSetupLog((line) => {
       if (disposed) return
       setOpenClawLogs((current) => [...current, line])
+    }).then((cleanup) => {
+      if (disposed) {
+        cleanup()
+        return
+      }
+      unlisten = cleanup
+    })
+
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+
+    void cpaRuntime.onKiroProxyLog((line) => {
+      if (disposed) return
+      setKiroLogs((current) => [...current, line])
     }).then((cleanup) => {
       if (disposed) {
         cleanup()
@@ -1131,6 +1161,53 @@ export function UserWorkspace({
     }
   }
 
+  const handleKiroProxySetup = async () => {
+    setKiroDialogOpen(true)
+    setKiroProxyResult(null)
+    setKiroModels([])
+    setKiroLogs(['准备安装并启动 9router...'])
+    setRunningKiroProxy(true)
+    onError(null)
+    try {
+      const result = await cpaRuntime.startKiroProxy()
+      setKiroProxyResult(result)
+      setKiroLogs((current) => [
+        ...current,
+        result.alreadyRunning ? '已复用正在运行的 9router。' : '9router 反代已启动。',
+        `代理地址：${result.baseUrl}`,
+        `API Key：${result.apiKey}`
+      ])
+      onNotify('Kiro 反代已开启')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      onError(message)
+      setKiroLogs((current) => [...current, `失败：${message}`])
+    } finally {
+      setRunningKiroProxy(false)
+    }
+  }
+
+  const handleProbeKiroModels = async () => {
+    setProbingKiroModels(true)
+    onError(null)
+    try {
+      const result = await cpaRuntime.probeKiroModels()
+      setKiroModels(result.models)
+      setKiroLogs((current) => [
+        ...current,
+        `模型探查完成：${result.models.length} 个`,
+        ...result.models.map((model) => `- ${model}`)
+      ])
+      onNotify(`已探查到 ${result.models.length} 个 Kiro 模型`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      onError(message)
+      setKiroLogs((current) => [...current, `模型探查失败：${message}`])
+    } finally {
+      setProbingKiroModels(false)
+    }
+  }
+
   return (
     <main className="mx-auto flex w-full max-w-[390px] flex-col gap-3 px-3 py-3">
       <div className="w-full bg-base-100 rounded-2xl p-4 mb-4 shadow-sm">
@@ -1173,6 +1250,17 @@ export function UserWorkspace({
           OpenClaw
         </button>
 
+        <button
+          className="btn btn-neutral btn-xs h-8 rounded-lg border-none shadow-sm"
+          disabled={runningKiroProxy}
+          onClick={() => setKiroDialogOpen(true)}
+        >
+          {runningKiroProxy ? <span className="loading loading-spinner loading-xs" /> : null}
+          Kiro反代
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-2 w-full mb-2 px-4">
         <button 
           className="btn btn-primary btn-xs h-8 rounded-lg border-none shadow-sm" 
           onClick={() => void handleOpenVipDialog()} 
@@ -1624,6 +1712,147 @@ export function UserWorkspace({
         onNotify={onNotify}
         onError={onError}
       />
+
+      <dialog className={`modal ${kiroDialogOpen ? 'modal-open' : ''}`}>
+        <div className="modal-box flex max-h-[88vh] max-w-3xl flex-col p-0 overflow-hidden">
+          <div className="shrink-0 border-b border-base-300 px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold">Kiro 反代</h3>
+                <p className="mt-1 text-sm text-base-content/60">安装并启动 9router，本地提供 OpenAI 兼容代理。</p>
+              </div>
+              <button
+                className="btn btn-ghost btn-sm btn-circle"
+                disabled={runningKiroProxy}
+                onClick={() => setKiroDialogOpen(false)}
+              >
+                x
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+            <div className="mb-4 rounded-box border border-info/20 bg-info/5 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-bold">CCSwitch</div>
+                  <p className="mt-1 text-xs leading-5 text-base-content/60">
+                    用 CCSwitch 配置 Kiro/Claude Desktop 等客户端时，将下方地址作为请求地址。
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    className="btn btn-outline btn-xs"
+                    onClick={() => void cpaRuntime.openExternalTarget(CCSWITCH_OFFICIAL_URL)}
+                  >
+                    官网
+                  </button>
+                  <button
+                    className="btn btn-primary btn-xs"
+                    onClick={() => void cpaRuntime.openExternalTarget(CCSWITCH_DOWNLOAD_URL)}
+                  >
+                    下载
+                  </button>
+                </div>
+              </div>
+              <div className="mt-3 rounded-lg bg-base-100/80 p-3 text-xs leading-6 text-base-content/70">
+                <div className="mb-1 font-bold text-base-content">使用教程</div>
+                <ol className="list-decimal space-y-1 pl-4">
+                  <li>选中你想使用反代的工具，例如 ClaudeDesktop。</li>
+                  <li>点击右侧黄色 + 号，选择自定义配置。</li>
+                  <li>下滑到底，其他内容随便填，将请求地址和 API Key 填入。</li>
+                  <li>开启模型映射，获取模型列表，选择自己需要的模型。</li>
+                  <li>设定好后添加并启用，重启应用再次打开即可使用。</li>
+                </ol>
+              </div>
+            </div>
+
+            <div className="rounded-box border border-base-300 bg-neutral p-4 text-sm text-neutral-content shadow-inner">
+              <div className="mb-3 flex items-center gap-2 text-xs opacity-70">
+                {runningKiroProxy ? <span className="loading loading-spinner loading-xs" /> : null}
+                <span>{runningKiroProxy ? '执行中' : kiroProxyResult ? '已就绪' : '等待执行'}</span>
+              </div>
+              <div className="max-h-[240px] min-h-[180px] space-y-2 overflow-auto font-mono text-xs leading-6">
+                {kiroLogs.length === 0 ? <div className="opacity-60">点击开启反代后显示安装和启动进度。</div> : null}
+                {kiroLogs.map((line, index) => (
+                  <div key={`${index}-${line}`} className="break-all">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {kiroProxyResult ? (
+              <div className="mt-4 grid gap-3">
+                <div className="join w-full shadow-sm">
+                  <div className="join-item flex min-w-20 items-center border border-base-300 bg-base-200 px-3 text-xs font-semibold text-base-content/60">
+                    地址
+                  </div>
+                  <input className="input input-bordered join-item w-full font-mono text-xs" readOnly value={kiroProxyResult.baseUrl} />
+                  <button
+                    className="btn btn-outline join-item"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(kiroProxyResult.baseUrl)
+                      onNotify('Kiro 代理地址已复制')
+                    }}
+                  >
+                    复制
+                  </button>
+                </div>
+                <div className="join w-full shadow-sm">
+                  <div className="join-item flex min-w-20 items-center border border-base-300 bg-base-200 px-3 text-xs font-semibold text-base-content/60">
+                    Key
+                  </div>
+                  <input className="input input-bordered join-item w-full font-mono text-xs" readOnly value={kiroProxyResult.apiKey} />
+                  <button
+                    className="btn btn-outline join-item"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(kiroProxyResult.apiKey)
+                      onNotify('Kiro API Key 已复制')
+                    }}
+                  >
+                    复制
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {kiroModels.length > 0 ? (
+              <div className="mt-4 rounded-box border border-base-300 bg-base-100 p-3">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="text-sm font-bold">探查模型</div>
+                  <div className="badge badge-outline badge-sm">{kiroModels.length}</div>
+                </div>
+                <div className="max-h-48 space-y-1 overflow-auto">
+                  {kiroModels.map((model) => (
+                    <div key={model} className="rounded-lg bg-base-200 px-3 py-2 font-mono text-xs break-all">
+                      {model}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="modal-action m-0 shrink-0 border-t border-base-300 px-5 py-4">
+            <button className="btn btn-outline" disabled={runningKiroProxy} onClick={() => setKiroDialogOpen(false)}>
+              取消
+            </button>
+            <button
+              className="btn btn-outline"
+              disabled={runningKiroProxy || probingKiroModels}
+              onClick={() => void handleProbeKiroModels()}
+            >
+              {probingKiroModels ? <span className="loading loading-spinner loading-xs" /> : null}
+              探查模型
+            </button>
+            <button className="btn btn-primary" disabled={runningKiroProxy} onClick={() => void handleKiroProxySetup()}>
+              {runningKiroProxy ? <span className="loading loading-spinner loading-xs" /> : null}
+              开启反代
+            </button>
+          </div>
+        </div>
+      </dialog>
 
       <dialog className={`modal ${openClawIntroOpen ? 'modal-open' : ''}`}>
         <div className="modal-box max-w-2xl">
