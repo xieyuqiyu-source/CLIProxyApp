@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import QRCode from 'qrcode'
 import { QuotaPanel } from '../quota/QuotaPanel'
 import { PROVIDER_META, PROVIDER_ORDER } from '../quota/providerMeta'
@@ -12,7 +12,7 @@ import type {
   CloudPlan
 } from '../../lib/cloud/types'
 import type { CpaState } from '../../lib/cpa/types'
-import type { KiroProxyStartResult, OpenClawConfigMode } from '../../lib/cpa/types'
+import type { ImportAuthInputFile, KiroProxyStartResult, OpenClawConfigMode } from '../../lib/cpa/types'
 import { OAuthPanel } from '../oauth/OAuthPanel'
 import { OpenAIProvidersPanel } from '../openai-providers/OpenAIProvidersPanel'
 import { CodexConfigDialog } from '../codex-config/CodexConfigDialog'
@@ -113,8 +113,67 @@ const autoSharedSyncOptions = [
   { label: '12小时', hours: 12 }
 ] as const
 
+const loginImportTabs = [
+  { id: 'oauth', label: 'OAuth' },
+  { id: 'token-json', label: 'Token/Json' },
+  { id: 'file', label: '导入' }
+] as const
+
+type LoginImportTab = (typeof loginImportTabs)[number]['id']
+type TokenImportProvider = 'codex' | 'anthropic' | 'gemini-cli' | 'antigravity' | 'kimi'
+type TokenImportKind = 'access_token' | 'refresh_token'
+
+const tokenImportProviders: Array<{ value: TokenImportProvider; label: string }> = [
+  { value: 'codex', label: 'Codex' },
+  { value: 'anthropic', label: 'Claude' },
+  { value: 'gemini-cli', label: 'Gemini CLI' },
+  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'kimi', label: 'Kimi' }
+]
+
 function buildSharedLocalFileName(fileName: string) {
   return fileName.startsWith('共享-') ? fileName : `共享-${fileName}`
+}
+
+function encodeImportFile(name: string, content: string): ImportAuthInputFile {
+  return {
+    name,
+    bytes: Array.from(new TextEncoder().encode(content))
+  }
+}
+
+function buildAuthImportFileName(prefix: string, suffix = 'json') {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `${prefix}-${timestamp}.${suffix}`
+}
+
+function inferAuthImportProvider(value: unknown): string {
+  if (!value || typeof value !== 'object') {
+    return 'auth'
+  }
+  const record = value as Record<string, unknown>
+  const provider = record.provider ?? record.type ?? record.kind ?? record.service
+  if (typeof provider === 'string' && provider.trim()) {
+    return provider.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-')
+  }
+  if ('claudeAiOauth' in record || 'anthropic' in record) return 'anthropic'
+  if ('refresh_token' in record || 'refreshToken' in record || 'accessToken' in record || 'access_token' in record) return 'token'
+  return 'auth'
+}
+
+function normalizePastedJsonAuth(raw: string) {
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return parsed
+  }
+  const record = { ...(parsed as Record<string, unknown>) }
+  if (typeof record.accessToken === 'string' && !record.access_token) {
+    record.access_token = record.accessToken
+  }
+  if (typeof record.refreshToken === 'string' && !record.refresh_token) {
+    record.refresh_token = record.refreshToken
+  }
+  return record
 }
 
 function getErrorMessage(error: unknown) {
@@ -343,9 +402,15 @@ export function UserWorkspace({
 }: UserWorkspaceProps) {
   const providerTabsContainerRef = useRef<HTMLDivElement | null>(null)
   const providerTabRefs = useRef(new Map<string, HTMLButtonElement>())
+  const authImportFileInputRef = useRef<HTMLInputElement | null>(null)
   const [activeProvider, setActiveProvider] = useState<QuotaProvider | 'all'>('all')
   const [vipDialogOpen, setVipDialogOpen] = useState(false)
   const [oauthDialogOpen, setOauthDialogOpen] = useState(false)
+  const [loginImportTab, setLoginImportTab] = useState<LoginImportTab>('oauth')
+  const [tokenImportProvider, setTokenImportProvider] = useState<TokenImportProvider>('codex')
+  const [tokenImportKind, setTokenImportKind] = useState<TokenImportKind>('refresh_token')
+  const [tokenJsonImportValue, setTokenJsonImportValue] = useState('')
+  const [importingLoginAuth, setImportingLoginAuth] = useState(false)
   const [openAICompatDialogOpen, setOpenAICompatDialogOpen] = useState(false)
   const [codexConfigDialogOpen, setCodexConfigDialogOpen] = useState(false)
   const [continueConfigDialogOpen, setContinueConfigDialogOpen] = useState(false)
@@ -1052,6 +1117,112 @@ export function UserWorkspace({
     }
   }, [cloudToken, cpaState?.status, features, onError, onNotify, onRefreshSession, sharedSyncKey])
 
+  const importLoginAuthFiles = useCallback(
+    async (files: ImportAuthInputFile[], successMessage: string) => {
+      if (cpaState?.status !== 'running') {
+        onError('请先启动本地代理，再导入认证。')
+        return false
+      }
+      try {
+        setImportingLoginAuth(true)
+        onError(null)
+        const result = await cpaRuntime.importAuthFiles(files)
+        setQuotaRefreshToken((current) => current + 1)
+        onNotify(`${successMessage}${result.extractedCount ? `，识别 ${result.extractedCount} 个文件` : ''}`)
+        return true
+      } catch (error) {
+        onError(error instanceof Error ? error.message : String(error))
+        return false
+      } finally {
+        setImportingLoginAuth(false)
+      }
+    },
+    [cpaState?.status, onError, onNotify]
+  )
+
+  const handleImportTokenJsonAuth = useCallback(async () => {
+    const raw = tokenJsonImportValue.trim()
+    if (!raw) {
+      onError('请先粘贴 Token 或认证 JSON。')
+      return
+    }
+    let parsed: unknown
+    let shouldImportAsJson = false
+    try {
+      parsed = normalizePastedJsonAuth(raw)
+      shouldImportAsJson = Boolean(parsed && typeof parsed === 'object')
+    } catch {
+      parsed = raw
+    }
+    if (shouldImportAsJson) {
+      const provider = inferAuthImportProvider(parsed)
+      const imported = await importLoginAuthFiles(
+        [encodeImportFile(buildAuthImportFileName(`pasted-${provider}`), JSON.stringify(parsed, null, 2))],
+        'JSON 认证已导入'
+      )
+      if (imported) {
+        setTokenJsonImportValue('')
+      }
+      return
+    }
+    const token = typeof parsed === 'string' ? parsed.trim() : raw
+    if (!token) {
+      onError('没有识别到可导入的 Token 或 JSON。')
+      return
+    }
+    const tokenPayload = {
+      provider: tokenImportProvider,
+      type: tokenImportProvider,
+      token_type: 'bearer',
+      [tokenImportKind]: token,
+      metadata: {
+        [tokenImportKind]: token
+      }
+    }
+    const imported = await importLoginAuthFiles(
+      [
+        encodeImportFile(
+          buildAuthImportFileName(`${tokenImportProvider}-${tokenImportKind.replace('_', '-')}`),
+          JSON.stringify(tokenPayload, null, 2)
+        )
+      ],
+      'Token 认证已导入'
+    )
+    if (imported) {
+      setTokenJsonImportValue('')
+    }
+  }, [importLoginAuthFiles, onError, tokenImportKind, tokenImportProvider, tokenJsonImportValue])
+
+  const handleImportJsonAuthFiles = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const selectedFiles = Array.from(event.target.files ?? [])
+      event.target.value = ''
+      if (selectedFiles.length === 0) {
+        return
+      }
+      const validFiles = selectedFiles.filter((file) => file.name.toLowerCase().endsWith('.json'))
+      if (validFiles.length === 0) {
+        onError('请选择 .json 认证文件。')
+        return
+      }
+      try {
+        setImportingLoginAuth(true)
+        const payload = await Promise.all(
+          validFiles.map(async (file) => ({
+            name: file.name,
+            bytes: Array.from(new Uint8Array(await file.arrayBuffer()))
+          }))
+        )
+        await importLoginAuthFiles(payload, validFiles.length > 1 ? `已导入 ${validFiles.length} 个认证文件` : '认证文件已导入')
+      } catch (error) {
+        onError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setImportingLoginAuth(false)
+      }
+    },
+    [importLoginAuthFiles, onError]
+  )
+
   const handleAutoSharedSyncChange = useCallback(
     (hours: number) => {
       setAutoSharedSyncHours(hours)
@@ -1653,26 +1824,109 @@ export function UserWorkspace({
       </dialog>
 
       <dialog className={`modal ${oauthDialogOpen ? 'modal-open' : ''}`}>
-        <div className="modal-box w-[min(92vw,420px)] max-w-[420px] p-0">
+        <div className="modal-box w-[min(94vw,460px)] max-w-[460px] p-0">
           <div className="flex items-center justify-between gap-3 border-b border-base-200 px-4 py-4">
             <div className="min-w-0">
               <h3 className="text-lg font-bold">登录账号</h3>
-              <p className="mt-1 text-xs text-base-content/60">在当前窗口完成自己的账号授权。</p>
+              <p className="mt-1 text-xs text-base-content/60">OAuth 授权、Token、JSON 或文件都可以导入。</p>
             </div>
             <button className="btn btn-ghost btn-sm btn-circle shrink-0" onClick={() => setOauthDialogOpen(false)}>
               ✕
             </button>
           </div>
-          <div className="max-h-[78vh] overflow-auto px-4 py-4">
-            <OAuthPanel
-              canManage={false}
-              cpaRunning={cpaState?.status === 'running'}
-              visibleProviders={resolveOauthProviders(activeProvider)}
-              embeddedMode
-              showExtendedTools={false}
-              onNotify={onNotify}
-              onError={onError}
-            />
+          <div className="border-b border-base-200 px-4 py-3">
+            <div className="grid grid-cols-3 gap-1 rounded-2xl bg-base-200 p-1 text-xs font-bold">
+              {loginImportTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className={`rounded-xl px-2 py-2 transition ${loginImportTab === tab.id ? 'bg-primary text-primary-content shadow-sm' : 'text-base-content/65'}`}
+                  onClick={() => setLoginImportTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="max-h-[70vh] overflow-auto px-4 py-4">
+            {loginImportTab === 'oauth' ? (
+              <OAuthPanel
+                canManage={false}
+                cpaRunning={cpaState?.status === 'running'}
+                visibleProviders={resolveOauthProviders(activeProvider)}
+                embeddedMode
+                showExtendedTools={false}
+                onNotify={onNotify}
+                onError={onError}
+              />
+            ) : loginImportTab === 'token-json' ? (
+              <div className="space-y-4">
+                <div className="rounded-2xl border border-base-200 bg-base-100 p-3 text-xs leading-5 text-base-content/60">
+                  粘贴完整 JSON 会按 JSON 导入；粘贴纯 token 会按下方类型自动封装后导入。
+                </div>
+                <textarea
+                  className="textarea textarea-bordered min-h-52 w-full text-sm"
+                  value={tokenJsonImportValue}
+                  onChange={(event) => setTokenJsonImportValue(event.target.value)}
+                  placeholder='粘贴 session JSON、auth.json、Sub2API JSON、accessToken 或 refresh_token'
+                />
+                <div className="text-xs font-bold text-base-content/60">纯 Token 识别设置</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="form-control">
+                    <span className="label-text text-xs font-bold text-base-content/70">类型</span>
+                    <select
+                      className="select select-bordered select-sm"
+                      value={tokenImportProvider}
+                      onChange={(event) => setTokenImportProvider(event.target.value as TokenImportProvider)}
+                    >
+                      {tokenImportProviders.map((provider) => (
+                        <option key={provider.value} value={provider.value}>
+                          {provider.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="form-control">
+                    <span className="label-text text-xs font-bold text-base-content/70">Token</span>
+                    <select
+                      className="select select-bordered select-sm"
+                      value={tokenImportKind}
+                      onChange={(event) => setTokenImportKind(event.target.value as TokenImportKind)}
+                    >
+                      <option value="refresh_token">refresh_token</option>
+                      <option value="access_token">access_token</option>
+                    </select>
+                  </label>
+                </div>
+                <button className="btn btn-primary w-full" disabled={importingLoginAuth} onClick={handleImportTokenJsonAuth}>
+                  {importingLoginAuth && <span className="loading loading-spinner loading-xs" />}
+                  识别并导入认证
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <input
+                  ref={authImportFileInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  multiple
+                  className="hidden"
+                  onChange={handleImportJsonAuthFiles}
+                />
+                <div className="rounded-2xl border border-dashed border-base-300 bg-base-100 p-5 text-center">
+                  <div className="text-base font-bold">导入 JSON 文件</div>
+                  <p className="mt-2 text-sm text-base-content/60">选择一个或多个认证 JSON 文件，会直接导入到本地 CPA 认证目录。</p>
+                </div>
+                <button
+                  className="btn btn-primary w-full"
+                  disabled={importingLoginAuth}
+                  onClick={() => authImportFileInputRef.current?.click()}
+                >
+                  {importingLoginAuth && <span className="loading loading-spinner loading-xs" />}
+                  选择 JSON 文件
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </dialog>
