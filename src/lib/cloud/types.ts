@@ -96,6 +96,10 @@ export interface CloudAuthFile {
   sourceType: 'personal' | 'shared'
   planRequired: string | null
   displayName: string
+  distributionMode?: 'plain' | 'quota_card' | ''
+  quotaLimit?: number
+  quotaUsed?: number
+  quotaResetAt?: string | null
   createdAt: string
   updatedAt: string
 }

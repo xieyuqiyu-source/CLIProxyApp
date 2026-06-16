@@ -10,6 +10,7 @@ interface CloudAdminPanelProps {
 }
 
 type AdminSection = 'overview' | 'users' | 'payments' | 'publish'
+type SharedCredentialMode = 'plain' | 'quota_card'
 
 export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelProps) {
   const USERS_PAGE_SIZE = 10
@@ -38,6 +39,8 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const [draftPaymentProducts, setDraftPaymentProducts] = useState<Record<number, CloudPaymentProduct>>({})
   const [releaseVersion, setReleaseVersion] = useState('')
   const [releaseNotes, setReleaseNotes] = useState('')
+  const [sharedCredentialMode, setSharedCredentialMode] = useState<SharedCredentialMode>('plain')
+  const [sharedQuotaLimit, setSharedQuotaLimit] = useState(200)
   const [newProduct, setNewProduct] = useState({
     product_code: '',
     name: '',
@@ -165,8 +168,15 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
       for (const file of selectedFiles) {
         const blob = new Blob([new Uint8Array(file.bytes)], { type: 'application/json' })
         const uploadFile = new File([blob], file.name, { type: 'application/json' })
-        await cloudClient.adminUploadSharedAuthFile(token, uploadFile)
+        const response = await cloudClient.adminUploadSharedAuthFile(token, uploadFile, {
+          distributionMode: sharedCredentialMode,
+          quotaLimit: sharedCredentialMode === 'quota_card' ? sharedQuotaLimit : 0
+        })
+        if (sharedCredentialMode === 'quota_card' && response.file?.distributionMode !== 'quota_card') {
+          throw new Error('后端没有保存为加密额度卡，请确认 Cloud 服务已更新到最新代码')
+        }
       }
+      await load()
       onNotify(`已上传 ${selectedFiles.length} 个共享认证文件`)
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
@@ -298,6 +308,9 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
     }
   }
 
+  const formatSharedModeLabel = (file: CloudAuthFile) =>
+    file.distributionMode === 'quota_card' ? '加密额度卡' : '普通凭证'
+
   const activePaidUsers = users.filter((item) => ['vip1', 'vip2'].includes(item.plan.planCode)).length
   const adminUsers = users.filter((item) => item.user.role === 'admin').length
   const activeProducts = paymentProducts.filter((item) => item.status === 'active').length
@@ -364,6 +377,23 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
             <div className="rounded-box border border-base-300 bg-base-100 p-5 shadow-sm">
               <div className="text-sm text-base-content/60">共享号池操作</div>
               <div className="mt-3 flex flex-col gap-2">
+                <select
+                  className="select select-bordered select-sm"
+                  value={sharedCredentialMode}
+                  onChange={(event) => setSharedCredentialMode(event.target.value === 'quota_card' ? 'quota_card' : 'plain')}
+                >
+                  <option value="plain">普通凭证</option>
+                  <option value="quota_card">加密额度卡</option>
+                </select>
+                {sharedCredentialMode === 'quota_card' ? (
+                  <input
+                    type="number"
+                    min={1}
+                    className="input input-bordered input-sm"
+                    value={sharedQuotaLimit}
+                    onChange={(event) => setSharedQuotaLimit(Math.max(1, Number(event.target.value) || 1))}
+                  />
+                ) : null}
                 <button className="btn btn-primary btn-sm" disabled={uploading} onClick={() => void handleSharedUploadClick()}>
                   {uploading ? <span className="loading loading-spinner loading-xs"></span> : null}
                   上传共享认证
@@ -731,6 +761,30 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
               <p className="mt-1 text-sm text-base-content/60">上传共享认证时，同名文件会自动覆盖旧文件。</p>
             </div>
             <div className="flex flex-col gap-5 p-6">
+              <div className="grid gap-3 rounded-box border border-base-300 bg-base-200/40 p-4 sm:grid-cols-[minmax(0,1fr)_12rem]">
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-base-content/70">上传方式</span>
+                  <select
+                    className="select select-bordered"
+                    value={sharedCredentialMode}
+                    onChange={(event) => setSharedCredentialMode(event.target.value === 'quota_card' ? 'quota_card' : 'plain')}
+                  >
+                    <option value="plain">普通凭证：下载到用户本地</option>
+                    <option value="quota_card">加密额度卡：不下发原凭证</option>
+                  </select>
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-base-content/70">卡片额度</span>
+                  <input
+                    type="number"
+                    min={1}
+                    className="input input-bordered"
+                    disabled={sharedCredentialMode !== 'quota_card'}
+                    value={sharedQuotaLimit}
+                    onChange={(event) => setSharedQuotaLimit(Math.max(1, Number(event.target.value) || 1))}
+                  />
+                </label>
+              </div>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <span className="badge badge-outline">{sharedCloudFiles.length} 个共享认证</span>
                 <div className="flex flex-wrap gap-2">
@@ -759,6 +813,16 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                           <div className="mt-1 text-sm text-base-content/60">
                             {file.provider} · {file.fileName}
                             {file.planRequired ? ` · ${file.planRequired}` : ''}
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <span className={`badge ${file.distributionMode === 'quota_card' ? 'badge-warning' : 'badge-ghost'}`}>
+                              {formatSharedModeLabel(file)}
+                            </span>
+                            {file.distributionMode === 'quota_card' ? (
+                              <span className="badge badge-outline">
+                                {file.quotaUsed ?? 0} / {file.quotaLimit ?? 0}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                         <button

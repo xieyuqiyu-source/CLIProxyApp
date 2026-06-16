@@ -231,6 +231,16 @@ export const cloudClient = {
   downloadSharedAuthFile: (token: string, id: number) =>
     download(`/shared/auth-files/${id}/download`, token),
 
+  consumeSharedQuotaCard: (token: string, id: number, units = 1) =>
+    request<{ file: CloudAuthFile }>(
+      `/shared/quota-cards/${id}/consume`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ units })
+      },
+      token
+    ),
+
   adminListUsers: (token: string) =>
     request<{ users: CloudAdminUserSummary[] }>('/admin/users', { method: 'GET' }, token),
 
@@ -376,8 +386,26 @@ export const cloudClient = {
   cancelPaymentOrder: (token: string, orderNo: string) =>
     request<{ order: CloudPaymentOrder }>(`/pay/orders/${encodeURIComponent(orderNo)}/cancel`, { method: 'POST' }, token),
 
-  adminUploadSharedAuthFile: (token: string, file: File) =>
-    uploadForm<{ file: CloudAuthFile }>('/admin/shared-auth-files/upload', file, token),
+  adminUploadSharedAuthFile: (
+    token: string,
+    file: File,
+    options?: { distributionMode?: 'plain' | 'quota_card'; quotaLimit?: number; quotaResetAt?: string | null }
+  ) => {
+    const fields: Record<string, string> = {}
+    if (options?.distributionMode) {
+      fields.distribution_mode = options.distributionMode
+    }
+    if (typeof options?.quotaLimit === 'number' && Number.isFinite(options.quotaLimit)) {
+      fields.quota_limit = String(Math.max(0, Math.floor(options.quotaLimit)))
+    }
+    if (options?.quotaResetAt) {
+      fields.quota_reset_at = options.quotaResetAt
+    }
+    if (Object.keys(fields).length === 0) {
+      return uploadForm<{ file: CloudAuthFile }>('/admin/shared-auth-files/upload', file, token)
+    }
+    return uploadFormWithFields<{ file: CloudAuthFile }>('/admin/shared-auth-files/upload', file, token, fields)
+  },
 
   adminUploadAppRelease: (token: string, file: File, payload: { version: string; notes?: string }) =>
     uploadFormWithFields<{ manifest: CloudAppReleaseManifest }>(

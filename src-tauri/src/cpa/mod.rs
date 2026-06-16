@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager};
 const OPENCLAW_SETUP_LOG_EVENT: &str = "openclaw-setup-log";
 const KIRO_PROXY_LOG_EVENT: &str = "kiro-proxy-log";
 const APP_UPDATE_DOWNLOAD_EVENT: &str = "app-update-download-progress";
+const CLOUD_BASE_URL_OVERRIDE_ENV: &str = "CP_APP_CLOUD_BASE_URL";
 const CLOUD_BASE_URL_DEV: &str = "https://cliproxy.szxsai.com/api/v1";
 const CLOUD_BASE_URL_RELEASE: &str = "https://cliproxy.szxsai.com/api/v1";
 const CONTINUE_CHAT_MODEL_NAME: &str = "CLIProxy Chat";
@@ -3205,17 +3206,19 @@ fn ensure_json_object(value: &mut JsonValue) -> &mut JsonMap<String, JsonValue> 
 }
 
 fn cloud_url(path: &str) -> String {
-    let normalized_path = path.trim().trim_start_matches('/');
-    format!(
-        "{}/{}",
-        cloud_base_url().trim_end_matches('/'),
-        normalized_path
-    )
+	let normalized_path = path.trim().trim_start_matches('/');
+	let base_url = cloud_base_url();
+	format!(
+		"{}/{}",
+		base_url.trim_end_matches('/'),
+		normalized_path
+	)
 }
 
 fn app_update_origin() -> Result<String, String> {
-    let base = reqwest::Url::parse(cloud_base_url())
-        .map_err(|error| format!("invalid cloud base url: {error}"))?;
+	let base_url = cloud_base_url();
+	let base = reqwest::Url::parse(&base_url)
+		.map_err(|error| format!("invalid cloud base url: {error}"))?;
     let host = base
         .host_str()
         .ok_or_else(|| "cloud base url missing host".to_string())?;
@@ -3227,12 +3230,18 @@ fn app_update_origin() -> Result<String, String> {
     Ok(origin)
 }
 
-fn cloud_base_url() -> &'static str {
-    if cfg!(debug_assertions) {
-        CLOUD_BASE_URL_DEV
-    } else {
-        CLOUD_BASE_URL_RELEASE
-    }
+fn cloud_base_url() -> String {
+	if let Ok(value) = env::var(CLOUD_BASE_URL_OVERRIDE_ENV) {
+		let trimmed = value.trim().trim_end_matches('/').to_string();
+		if !trimmed.is_empty() {
+			return trimmed;
+		}
+	}
+	if cfg!(debug_assertions) {
+		CLOUD_BASE_URL_DEV.to_string()
+	} else {
+		CLOUD_BASE_URL_RELEASE.to_string()
+	}
 }
 
 fn select_update_download_url(payload: &JsonValue) -> Result<Option<String>, String> {

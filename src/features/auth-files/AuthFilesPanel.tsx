@@ -266,6 +266,10 @@ export function AuthFilesPanel({
       onError('当前未登录云端账号')
       return
     }
+    if (kind === 'shared' && file.distributionMode === 'quota_card') {
+      onError('这是加密额度卡，不能下载原始凭证到本地。请通过云端中转入口使用。')
+      return
+    }
     try {
       setCloudDownloadingId(file.id)
       const download =

@@ -44,6 +44,7 @@ type UserTab = 'overview' | 'oauth' | 'auth-files' | 'providers' | 'quota' | 'st
 type DeveloperSurfaceMode = 'admin' | 'spadmin' | 'user'
 type SpAdminTab = 'overview' | 'cloud-admin'
 type SpCloudAdminTab = 'overview' | 'users' | 'payments' | 'publish'
+type SharedCredentialMode = 'plain' | 'quota_card'
 
 interface InvalidSharedAuthCandidate {
   file: CloudAuthFile
@@ -165,6 +166,14 @@ function buildSpAdminCheckFileName(file: CloudAuthFile, fallbackName: string) {
   const baseName = fallbackName.trim() || file.fileName || `shared-${file.id}.json`
   const jsonName = /\.json$/i.test(baseName) ? baseName : `${baseName}.json`
   return `__spadmin_check_${file.id}_${jsonName}`
+}
+
+function isCloudAuthFileDownloadable(file: CloudAuthFile) {
+  return file.distributionMode !== 'quota_card'
+}
+
+function formatSharedDistributionMode(file: CloudAuthFile) {
+  return file.distributionMode === 'quota_card' ? '加密额度卡' : '普通凭证'
 }
 
 function resolveSpAdminAgentDeviceId() {
@@ -703,6 +712,8 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
   const [deletingInvalidShared, setDeletingInvalidShared] = useState(false)
   const [deletingSharedFileId, setDeletingSharedFileId] = useState<number | null>(null)
   const [invalidSharedCandidates, setInvalidSharedCandidates] = useState<InvalidSharedAuthCandidate[]>([])
+  const [sharedCredentialMode, setSharedCredentialMode] = useState<SharedCredentialMode>('plain')
+  const [sharedQuotaLimit, setSharedQuotaLimit] = useState(200)
   const [uploadingRelease, setUploadingRelease] = useState(false)
   const [releaseVersion, setReleaseVersion] = useState('')
   const [releaseNotes, setReleaseNotes] = useState('')
@@ -969,7 +980,13 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
       for (const file of selectedFiles) {
         const blob = new Blob([new Uint8Array(file.bytes)], { type: 'application/json' })
         const uploadFile = new File([blob], file.name, { type: 'application/json' })
-        await cloudClient.adminUploadSharedAuthFile(token, uploadFile)
+        const response = await cloudClient.adminUploadSharedAuthFile(token, uploadFile, {
+          distributionMode: sharedCredentialMode,
+          quotaLimit: sharedCredentialMode === 'quota_card' ? sharedQuotaLimit : 0
+        })
+        if (sharedCredentialMode === 'quota_card' && response.file?.distributionMode !== 'quota_card') {
+          throw new Error('后端没有保存为加密额度卡，请确认 Cloud 服务已更新到最新代码')
+        }
       }
       await loadPublishData()
       onNotify(`已上传 ${selectedFiles.length} 个共享认证`)
@@ -1022,13 +1039,29 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
         ((await quotaApi.listAuthFiles()).files ?? []).map((file) => normalizeMatchName(file.name))
       )
 
-      for (const file of files) {
+      for (const file of files.filter(isCloudAuthFileDownloadable)) {
         const payload = await cloudClient.downloadSharedAuthFile(token, file.id)
         downloadedFiles.push({
           cloudFile: file,
           localName: buildSpAdminCheckFileName(file, payload.fileName || file.fileName),
           bytes: payload.bytes
         })
+      }
+
+      if (downloadedFiles.length === 0) {
+        return {
+          result: {
+            checkedAt: new Date().toISOString(),
+            totalShared: files.length,
+            checkedCodexCount: 0,
+            usableCount: 0,
+            invalidCount: 0,
+            skippedCount: files.length,
+            cards: [],
+            invalid: []
+          },
+          candidates: []
+        }
       }
 
       await cpaRuntime.importAuthFiles(
@@ -1739,6 +1772,24 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
                 </div>
 
                 <div className="grid gap-2 p-3">
+                  <div className="grid grid-cols-[1fr_6.5rem] gap-2">
+                    <select
+                      className="select select-bordered select-sm h-9 min-h-9"
+                      value={sharedCredentialMode}
+                      onChange={(event) => setSharedCredentialMode(event.target.value === 'quota_card' ? 'quota_card' : 'plain')}
+                    >
+                      <option value="plain">普通凭证</option>
+                      <option value="quota_card">加密额度卡</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      className="input input-bordered input-sm h-9 min-h-9"
+                      disabled={sharedCredentialMode !== 'quota_card'}
+                      value={sharedQuotaLimit}
+                      onChange={(event) => setSharedQuotaLimit(Math.max(1, Number(event.target.value) || 1))}
+                    />
+                  </div>
                   <button
                     className="btn btn-primary btn-sm w-full"
                     disabled={uploadingShared}
@@ -1814,6 +1865,16 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
                                 {file.planRequired}
                               </div>
                             ) : null}
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              <span className={`badge badge-xs ${file.distributionMode === 'quota_card' ? 'badge-warning' : 'badge-ghost'}`}>
+                                {formatSharedDistributionMode(file)}
+                              </span>
+                              {file.distributionMode === 'quota_card' ? (
+                                <span className="badge badge-xs badge-outline">
+                                  {file.quotaUsed ?? 0}/{file.quotaLimit ?? 0}
+                                </span>
+                              ) : null}
+                            </div>
                           </div>
                           <button
                             className="btn btn-outline btn-error btn-xs h-8 min-h-8 shrink-0 px-3"

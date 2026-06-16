@@ -105,6 +105,28 @@ function getAutoSharedSyncLastRunKey(userKey: string) {
   return `cpapp-auto-shared-sync-last-run:${userKey}`
 }
 
+function getSharedQuotaCardsStorageKey(userKey: string) {
+  return `cpapp-shared-quota-cards:${userKey}`
+}
+
+interface SharedQuotaCardRecord {
+  cloudFileId: number
+  displayName: string
+  provider: string
+  quotaLimit: number
+  quotaUsed: number
+  receivedAt: string
+}
+
+function readSharedQuotaCards(storageKey: string): SharedQuotaCardRecord[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '[]')
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
 const autoSharedSyncOptions = [
   { label: '关闭', hours: 0 },
   { label: '1小时', hours: 1 },
@@ -418,6 +440,7 @@ export function UserWorkspace({
   const [syncingSharedPool, setSyncingSharedPool] = useState(false)
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0)
   const [autoSharedSyncHours, setAutoSharedSyncHours] = useState(0)
+  const [sharedQuotaCards, setSharedQuotaCards] = useState<SharedQuotaCardRecord[]>([])
   const autoSharedSyncRunningRef = useRef(false)
   const [openClawIntroOpen, setOpenClawIntroOpen] = useState(false)
   const [openClawDialogOpen, setOpenClawDialogOpen] = useState(false)
@@ -473,6 +496,7 @@ export function UserWorkspace({
   const sharedSyncKey = useMemo(() => getSharedSyncStorageKey(normalizedUserKey), [normalizedUserKey])
   const autoSharedSyncKey = useMemo(() => getAutoSharedSyncStorageKey(normalizedUserKey), [normalizedUserKey])
   const autoSharedSyncLastRunKey = useMemo(() => getAutoSharedSyncLastRunKey(normalizedUserKey), [normalizedUserKey])
+  const sharedQuotaCardsKey = useMemo(() => getSharedQuotaCardsStorageKey(normalizedUserKey), [normalizedUserKey])
 
   const warmupStandardQuotes = useCallback(
     async (productCode: string) => {
@@ -570,6 +594,10 @@ export function UserWorkspace({
     const allowedHours = autoSharedSyncOptions.some((option) => option.hours === storedHours) ? storedHours : 0
     setAutoSharedSyncHours(allowedHours)
   }, [autoSharedSyncKey, isAdminAccount])
+
+  useEffect(() => {
+    setSharedQuotaCards(readSharedQuotaCards(sharedQuotaCardsKey))
+  }, [sharedQuotaCardsKey])
 
   useEffect(() => {
     let disposed = false
@@ -1086,7 +1114,28 @@ export function UserWorkspace({
       }
       sharedImportRegistry.clear()
 
+      let importedCount = 0
+      let cardCount = 0
+      const nextQuotaCards: SharedQuotaCardRecord[] = []
       for (const file of sharedFiles) {
+        if (file.distributionMode === 'quota_card') {
+          cardCount += 1
+          const card: SharedQuotaCardRecord = {
+            cloudFileId: file.id,
+            displayName: file.displayName || file.fileName,
+            provider: file.provider || 'unknown',
+            quotaLimit: file.quotaLimit ?? 0,
+            quotaUsed: file.quotaUsed ?? 0,
+            receivedAt: new Date().toISOString()
+          }
+          const index = nextQuotaCards.findIndex((item) => item.cloudFileId === file.id)
+          if (index >= 0) {
+            nextQuotaCards[index] = card
+          } else {
+            nextQuotaCards.push(card)
+          }
+          continue
+        }
         const download = await cloudClient.downloadSharedAuthFile(cloudToken, file.id)
         const localFileName = buildSharedLocalFileName(download.fileName)
         await cpaRuntime.importAuthFiles([
@@ -1101,11 +1150,15 @@ export function UserWorkspace({
           downloadedAt: new Date().toISOString(),
           planRequired: file.planRequired
         })
+        importedCount += 1
       }
 
       window.localStorage.setItem(sharedSyncKey, String(Date.now()))
+      window.localStorage.setItem(sharedQuotaCardsKey, JSON.stringify(nextQuotaCards))
+      setSharedQuotaCards(nextQuotaCards)
       setQuotaRefreshToken((current) => current + 1)
-      onNotify(options?.scheduled ? `自动获取账号完成：已同步 ${sharedFiles.length} 个共享认证文件到本地` : `已同步 ${sharedFiles.length} 个共享认证文件到本地`)
+      const cardMessage = cardCount > 0 ? `，领取 ${cardCount} 张加密额度卡` : ''
+      onNotify(options?.scheduled ? `自动获取账号完成：已同步 ${importedCount} 个共享认证文件到本地${cardMessage}` : `已同步 ${importedCount} 个共享认证文件到本地${cardMessage}`)
       return true
     } catch (error) {
       if (!options?.silent) {
@@ -1115,7 +1168,7 @@ export function UserWorkspace({
     } finally {
       setSyncingSharedPool(false)
     }
-  }, [cloudToken, cpaState?.status, features, onError, onNotify, onRefreshSession, sharedSyncKey])
+  }, [cloudToken, cpaState?.status, features, onError, onNotify, onRefreshSession, sharedQuotaCardsKey, sharedSyncKey])
 
   const importLoginAuthFiles = useCallback(
     async (files: ImportAuthInputFile[], successMessage: string) => {
@@ -1440,6 +1493,24 @@ export function UserWorkspace({
           开通会员
         </button>
       </div>
+
+      {sharedQuotaCards.length > 0 ? (
+        <div className="grid gap-2 w-full mb-2 px-4">
+          {sharedQuotaCards.map((card) => (
+            <div key={card.cloudFileId} className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-bold">{card.displayName}</div>
+                  <div className="mt-0.5 text-[11px] text-base-content/55">{card.provider} · 加密额度卡</div>
+                </div>
+                <div className="badge badge-warning badge-sm shrink-0">
+                  {card.quotaUsed}/{card.quotaLimit}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {isAdminAccount ? (
         <div className="w-full mb-2 px-4">
