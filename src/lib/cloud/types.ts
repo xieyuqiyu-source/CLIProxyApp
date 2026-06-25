@@ -104,6 +104,13 @@ export interface CloudAuthFile {
   updatedAt: string
 }
 
+export interface CloudQuotaCardApiCallResponse {
+  status_code: number
+  header: Record<string, string[]>
+  body: string
+  file: CloudAuthFile
+}
+
 export interface CloudAgentHeartbeat {
   id: number
   userId: number

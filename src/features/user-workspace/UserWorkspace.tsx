@@ -441,6 +441,7 @@ export function UserWorkspace({
   const [quotaRefreshToken, setQuotaRefreshToken] = useState(0)
   const [autoSharedSyncHours, setAutoSharedSyncHours] = useState(0)
   const [sharedQuotaCards, setSharedQuotaCards] = useState<SharedQuotaCardRecord[]>([])
+  const [testingQuotaCardId, setTestingQuotaCardId] = useState<number | null>(null)
   const autoSharedSyncRunningRef = useRef(false)
   const [openClawIntroOpen, setOpenClawIntroOpen] = useState(false)
   const [openClawDialogOpen, setOpenClawDialogOpen] = useState(false)
@@ -1170,6 +1171,43 @@ export function UserWorkspace({
     }
   }, [cloudToken, cpaState?.status, features, onError, onNotify, onRefreshSession, sharedQuotaCardsKey, sharedSyncKey])
 
+  const testSharedQuotaCard = useCallback(
+    async (card: SharedQuotaCardRecord) => {
+      if (testingQuotaCardId !== null) {
+        return
+      }
+      try {
+        setTestingQuotaCardId(card.cloudFileId)
+        onError(null)
+        const response = await cloudClient.callSharedQuotaCard(cloudToken, card.cloudFileId, {
+          method: 'GET',
+          url: 'https://chatgpt.com/backend-api/wham/usage',
+          header: {
+            Authorization: 'Bearer $TOKEN$',
+            'Chatgpt-Account-Id': '$CHATGPT_ACCOUNT_ID$',
+            'Content-Type': 'application/json',
+            'User-Agent': 'codex_cli_rs/0.76.0'
+          },
+          consume_units: 1
+        })
+        const nextCard: SharedQuotaCardRecord = {
+          ...card,
+          quotaLimit: response.file?.quotaLimit ?? card.quotaLimit,
+          quotaUsed: response.file?.quotaUsed ?? card.quotaUsed
+        }
+        const nextCards = sharedQuotaCards.map((item) => (item.cloudFileId === card.cloudFileId ? nextCard : item))
+        setSharedQuotaCards(nextCards)
+        window.localStorage.setItem(sharedQuotaCardsKey, JSON.stringify(nextCards))
+        onNotify(`额度卡云端验证完成，上游状态 ${response.status_code}`)
+      } catch (error) {
+        onError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setTestingQuotaCardId(null)
+      }
+    },
+    [cloudToken, onError, onNotify, sharedQuotaCards, sharedQuotaCardsKey, testingQuotaCardId]
+  )
+
   const importLoginAuthFiles = useCallback(
     async (files: ImportAuthInputFile[], successMessage: string) => {
       if (cpaState?.status !== 'running') {
@@ -1503,8 +1541,18 @@ export function UserWorkspace({
                   <div className="truncate text-xs font-bold">{card.displayName}</div>
                   <div className="mt-0.5 text-[11px] text-base-content/55">{card.provider} · 加密额度卡</div>
                 </div>
-                <div className="badge badge-warning badge-sm shrink-0">
-                  {card.quotaUsed}/{card.quotaLimit}
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="badge badge-warning badge-sm">
+                    {card.quotaUsed}/{card.quotaLimit}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-warning btn-xs h-7 min-h-7 rounded-lg border-none px-2 shadow-sm"
+                    disabled={testingQuotaCardId !== null}
+                    onClick={() => void testSharedQuotaCard(card)}
+                  >
+                    {testingQuotaCardId === card.cloudFileId ? '验证中' : '云端验证'}
+                  </button>
                 </div>
               </div>
             </div>

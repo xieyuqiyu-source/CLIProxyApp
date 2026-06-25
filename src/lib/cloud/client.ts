@@ -14,6 +14,7 @@ import type {
   CloudAuthFile,
   CloudLoginResponse,
   CloudMeResponse,
+  CloudQuotaCardApiCallResponse,
   CloudRegisterResponse,
   SharedSyncPackage
 } from './types'
@@ -237,6 +238,26 @@ export const cloudClient = {
       {
         method: 'POST',
         body: JSON.stringify({ units })
+      },
+      token
+    ),
+
+  callSharedQuotaCard: (
+    token: string,
+    id: number,
+    payload: {
+      method: string
+      url: string
+      header?: Record<string, string>
+      data?: string
+      consume_units?: number
+    }
+  ) =>
+    request<CloudQuotaCardApiCallResponse>(
+      `/shared/quota-cards/${id}/api-call`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
       },
       token
     ),
