@@ -118,6 +118,10 @@ interface SharedQuotaCardRecord {
   receivedAt: string
 }
 
+function formatQuotaUsd(value: number) {
+  return `$${((value || 0) / 1_000_000).toFixed(2)}`
+}
+
 function readSharedQuotaCards(storageKey: string): SharedQuotaCardRecord[] {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '[]')
@@ -1117,10 +1121,26 @@ export function UserWorkspace({
 
       let importedCount = 0
       let cardCount = 0
+      let encryptedImportedCount = 0
       const nextQuotaCards: SharedQuotaCardRecord[] = []
       for (const file of sharedFiles) {
         if (file.distributionMode === 'quota_card') {
           cardCount += 1
+          const download = await cloudClient.downloadSharedAuthFile(cloudToken, file.id)
+          const localFileName = buildSharedLocalFileName(download.fileName)
+          await cpaRuntime.importAuthFiles([
+            {
+              name: localFileName,
+              bytes: download.bytes
+            }
+          ])
+          sharedImportRegistry.upsert({
+            cloudFileId: file.id,
+            localFileName,
+            downloadedAt: new Date().toISOString(),
+            planRequired: file.planRequired
+          })
+          encryptedImportedCount += 1
           const card: SharedQuotaCardRecord = {
             cloudFileId: file.id,
             displayName: file.displayName || file.fileName,
@@ -1158,7 +1178,7 @@ export function UserWorkspace({
       window.localStorage.setItem(sharedQuotaCardsKey, JSON.stringify(nextQuotaCards))
       setSharedQuotaCards(nextQuotaCards)
       setQuotaRefreshToken((current) => current + 1)
-      const cardMessage = cardCount > 0 ? `，领取 ${cardCount} 张加密额度卡` : ''
+      const cardMessage = cardCount > 0 ? `，领取 ${cardCount} 张加密额度卡，导入 ${encryptedImportedCount} 个加密包` : ''
       onNotify(options?.scheduled ? `自动获取账号完成：已同步 ${importedCount} 个共享认证文件到本地${cardMessage}` : `已同步 ${importedCount} 个共享认证文件到本地${cardMessage}`)
       return true
     } catch (error) {
@@ -1535,23 +1555,27 @@ export function UserWorkspace({
       {sharedQuotaCards.length > 0 ? (
         <div className="grid gap-2 w-full mb-2 px-4">
           {sharedQuotaCards.map((card) => (
-            <div key={card.cloudFileId} className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 shadow-sm">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="truncate text-xs font-bold">{card.displayName}</div>
-                  <div className="mt-0.5 text-[11px] text-base-content/55">{card.provider} · 加密额度卡</div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <div className="badge badge-warning badge-sm">
-                    {card.quotaUsed}/{card.quotaLimit}
+            <div key={card.cloudFileId} className="rounded-box border border-base-300 bg-base-100 p-3 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="max-w-[13rem] truncate text-sm font-bold">{card.displayName}</div>
+                    <span className="badge badge-outline badge-sm">{card.provider}</span>
+                    <span className="badge badge-warning badge-sm">加密额度卡</span>
                   </div>
+                  <div className="text-xs text-base-content/65">
+                    {formatQuotaUsd(card.quotaUsed)} / {formatQuotaUsd(card.quotaLimit)}
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    className="btn btn-warning btn-xs h-7 min-h-7 rounded-lg border-none px-2 shadow-sm"
+                    className="btn btn-outline btn-sm h-8 min-h-8"
                     disabled={testingQuotaCardId !== null}
                     onClick={() => void testSharedQuotaCard(card)}
                   >
-                    {testingQuotaCardId === card.cloudFileId ? '验证中' : '云端验证'}
+                    {testingQuotaCardId === card.cloudFileId ? <span className="loading loading-spinner loading-xs"></span> : null}
+                    验证
                   </button>
                 </div>
               </div>

@@ -410,7 +410,13 @@ export const cloudClient = {
   adminUploadSharedAuthFile: (
     token: string,
     file: File,
-    options?: { distributionMode?: 'plain' | 'quota_card'; quotaLimit?: number; quotaResetAt?: string | null }
+    options?: {
+      distributionMode?: 'plain' | 'quota_card'
+      quotaLimit?: number
+      quotaLimitUsd?: number
+      billingMultiplier?: number
+      quotaResetAt?: string | null
+    }
   ) => {
     const fields: Record<string, string> = {}
     if (options?.distributionMode) {
@@ -418,6 +424,12 @@ export const cloudClient = {
     }
     if (typeof options?.quotaLimit === 'number' && Number.isFinite(options.quotaLimit)) {
       fields.quota_limit = String(Math.max(0, Math.floor(options.quotaLimit)))
+    }
+    if (typeof options?.quotaLimitUsd === 'number' && Number.isFinite(options.quotaLimitUsd)) {
+      fields.quota_limit_usd = String(Math.max(0, options.quotaLimitUsd))
+    }
+    if (typeof options?.billingMultiplier === 'number' && Number.isFinite(options.billingMultiplier)) {
+      fields.billing_multiplier = String(Math.max(0.001, options.billingMultiplier))
     }
     if (options?.quotaResetAt) {
       fields.quota_reset_at = options.quotaResetAt

@@ -99,6 +99,7 @@ export interface CloudAuthFile {
   distributionMode?: 'plain' | 'quota_card' | ''
   quotaLimit?: number
   quotaUsed?: number
+  billingMultiplier?: number
   quotaResetAt?: string | null
   createdAt: string
   updatedAt: string

@@ -40,7 +40,8 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
   const [releaseVersion, setReleaseVersion] = useState('')
   const [releaseNotes, setReleaseNotes] = useState('')
   const [sharedCredentialMode, setSharedCredentialMode] = useState<SharedCredentialMode>('plain')
-  const [sharedQuotaLimit, setSharedQuotaLimit] = useState(200)
+  const [sharedQuotaLimitUsd, setSharedQuotaLimitUsd] = useState(200)
+  const [sharedBillingMultiplier, setSharedBillingMultiplier] = useState(1)
   const [newProduct, setNewProduct] = useState({
     product_code: '',
     name: '',
@@ -170,7 +171,8 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
         const uploadFile = new File([blob], file.name, { type: 'application/json' })
         const response = await cloudClient.adminUploadSharedAuthFile(token, uploadFile, {
           distributionMode: sharedCredentialMode,
-          quotaLimit: sharedCredentialMode === 'quota_card' ? sharedQuotaLimit : 0
+          quotaLimitUsd: sharedCredentialMode === 'quota_card' ? sharedQuotaLimitUsd : 0,
+          billingMultiplier: sharedCredentialMode === 'quota_card' ? sharedBillingMultiplier : 1
         })
         if (sharedCredentialMode === 'quota_card' && response.file?.distributionMode !== 'quota_card') {
           throw new Error('后端没有保存为加密额度卡，请确认 Cloud 服务已更新到最新代码')
@@ -310,6 +312,8 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
 
   const formatSharedModeLabel = (file: CloudAuthFile) =>
     file.distributionMode === 'quota_card' ? '加密额度卡' : '普通凭证'
+  const formatQuotaUsd = (value?: number) => `$${((value ?? 0) / 1_000_000).toFixed(2)}`
+  const formatMultiplier = (value?: number) => `${((value ?? 1000) / 1000).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}x`
 
   const activePaidUsers = users.filter((item) => ['vip1', 'vip2'].includes(item.plan.planCode)).length
   const adminUsers = users.filter((item) => item.user.role === 'admin').length
@@ -386,13 +390,24 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                   <option value="quota_card">加密额度卡</option>
                 </select>
                 {sharedCredentialMode === 'quota_card' ? (
-                  <input
-                    type="number"
-                    min={1}
-                    className="input input-bordered input-sm"
-                    value={sharedQuotaLimit}
-                    onChange={(event) => setSharedQuotaLimit(Math.max(1, Number(event.target.value) || 1))}
-                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="number"
+                      min={0.01}
+                      step={0.01}
+                      className="input input-bordered input-sm"
+                      value={sharedQuotaLimitUsd}
+                      onChange={(event) => setSharedQuotaLimitUsd(Math.max(0.01, Number(event.target.value) || 0.01))}
+                    />
+                    <input
+                      type="number"
+                      min={0.001}
+                      step={0.001}
+                      className="input input-bordered input-sm"
+                      value={sharedBillingMultiplier}
+                      onChange={(event) => setSharedBillingMultiplier(Math.max(0.001, Number(event.target.value) || 1))}
+                    />
+                  </div>
                 ) : null}
                 <button className="btn btn-primary btn-sm" disabled={uploading} onClick={() => void handleSharedUploadClick()}>
                   {uploading ? <span className="loading loading-spinner loading-xs"></span> : null}
@@ -761,7 +776,7 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
               <p className="mt-1 text-sm text-base-content/60">上传共享认证时，同名文件会自动覆盖旧文件。</p>
             </div>
             <div className="flex flex-col gap-5 p-6">
-              <div className="grid gap-3 rounded-box border border-base-300 bg-base-200/40 p-4 sm:grid-cols-[minmax(0,1fr)_12rem]">
+              <div className="grid gap-3 rounded-box border border-base-300 bg-base-200/40 p-4 lg:grid-cols-[minmax(0,1fr)_12rem_10rem]">
                 <label className="grid gap-2">
                   <span className="text-sm font-semibold text-base-content/70">上传方式</span>
                   <select
@@ -770,18 +785,31 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                     onChange={(event) => setSharedCredentialMode(event.target.value === 'quota_card' ? 'quota_card' : 'plain')}
                   >
                     <option value="plain">普通凭证：下载到用户本地</option>
-                    <option value="quota_card">加密额度卡：不下发原凭证</option>
+                    <option value="quota_card">加密额度卡：下载加密包</option>
                   </select>
                 </label>
                 <label className="grid gap-2">
-                  <span className="text-sm font-semibold text-base-content/70">卡片额度</span>
+                  <span className="text-sm font-semibold text-base-content/70">美元额度</span>
                   <input
                     type="number"
-                    min={1}
+                    min={0.01}
+                    step={0.01}
                     className="input input-bordered"
                     disabled={sharedCredentialMode !== 'quota_card'}
-                    value={sharedQuotaLimit}
-                    onChange={(event) => setSharedQuotaLimit(Math.max(1, Number(event.target.value) || 1))}
+                    value={sharedQuotaLimitUsd}
+                    onChange={(event) => setSharedQuotaLimitUsd(Math.max(0.01, Number(event.target.value) || 0.01))}
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-base-content/70">计费倍率</span>
+                  <input
+                    type="number"
+                    min={0.001}
+                    step={0.001}
+                    className="input input-bordered"
+                    disabled={sharedCredentialMode !== 'quota_card'}
+                    value={sharedBillingMultiplier}
+                    onChange={(event) => setSharedBillingMultiplier(Math.max(0.001, Number(event.target.value) || 1))}
                   />
                 </label>
               </div>
@@ -820,7 +848,12 @@ export function CloudAdminPanel({ token, onNotify, onError }: CloudAdminPanelPro
                             </span>
                             {file.distributionMode === 'quota_card' ? (
                               <span className="badge badge-outline">
-                                {file.quotaUsed ?? 0} / {file.quotaLimit ?? 0}
+                                {formatQuotaUsd(file.quotaUsed)} / {formatQuotaUsd(file.quotaLimit)}
+                              </span>
+                            ) : null}
+                            {file.distributionMode === 'quota_card' ? (
+                              <span className="badge badge-outline">
+                                {formatMultiplier(file.billingMultiplier)}
                               </span>
                             ) : null}
                           </div>

@@ -176,6 +176,14 @@ function formatSharedDistributionMode(file: CloudAuthFile) {
   return file.distributionMode === 'quota_card' ? '加密额度卡' : '普通凭证'
 }
 
+function formatQuotaUsd(value?: number) {
+  return `$${((value ?? 0) / 1_000_000).toFixed(2)}`
+}
+
+function formatBillingMultiplier(value?: number) {
+  return `${((value ?? 1000) / 1000).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}x`
+}
+
 function resolveSpAdminAgentDeviceId() {
   const existing = window.localStorage.getItem(SPADMIN_AGENT_DEVICE_ID_KEY)
   if (existing) {
@@ -713,7 +721,8 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
   const [deletingSharedFileId, setDeletingSharedFileId] = useState<number | null>(null)
   const [invalidSharedCandidates, setInvalidSharedCandidates] = useState<InvalidSharedAuthCandidate[]>([])
   const [sharedCredentialMode, setSharedCredentialMode] = useState<SharedCredentialMode>('plain')
-  const [sharedQuotaLimit, setSharedQuotaLimit] = useState(200)
+  const [sharedQuotaLimitUsd, setSharedQuotaLimitUsd] = useState(200)
+  const [sharedBillingMultiplier, setSharedBillingMultiplier] = useState(1)
   const [uploadingRelease, setUploadingRelease] = useState(false)
   const [releaseVersion, setReleaseVersion] = useState('')
   const [releaseNotes, setReleaseNotes] = useState('')
@@ -982,7 +991,8 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
         const uploadFile = new File([blob], file.name, { type: 'application/json' })
         const response = await cloudClient.adminUploadSharedAuthFile(token, uploadFile, {
           distributionMode: sharedCredentialMode,
-          quotaLimit: sharedCredentialMode === 'quota_card' ? sharedQuotaLimit : 0
+          quotaLimitUsd: sharedCredentialMode === 'quota_card' ? sharedQuotaLimitUsd : 0,
+          billingMultiplier: sharedCredentialMode === 'quota_card' ? sharedBillingMultiplier : 1
         })
         if (sharedCredentialMode === 'quota_card' && response.file?.distributionMode !== 'quota_card') {
           throw new Error('后端没有保存为加密额度卡，请确认 Cloud 服务已更新到最新代码')
@@ -1772,7 +1782,7 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
                 </div>
 
                 <div className="grid gap-2 p-3">
-                  <div className="grid grid-cols-[1fr_6.5rem] gap-2">
+                  <div className="grid grid-cols-[1fr_6.5rem_5.5rem] gap-2">
                     <select
                       className="select select-bordered select-sm h-9 min-h-9"
                       value={sharedCredentialMode}
@@ -1783,11 +1793,21 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
                     </select>
                     <input
                       type="number"
-                      min={1}
+                      min={0.01}
+                      step={0.01}
                       className="input input-bordered input-sm h-9 min-h-9"
                       disabled={sharedCredentialMode !== 'quota_card'}
-                      value={sharedQuotaLimit}
-                      onChange={(event) => setSharedQuotaLimit(Math.max(1, Number(event.target.value) || 1))}
+                      value={sharedQuotaLimitUsd}
+                      onChange={(event) => setSharedQuotaLimitUsd(Math.max(0.01, Number(event.target.value) || 0.01))}
+                    />
+                    <input
+                      type="number"
+                      min={0.001}
+                      step={0.001}
+                      className="input input-bordered input-sm h-9 min-h-9"
+                      disabled={sharedCredentialMode !== 'quota_card'}
+                      value={sharedBillingMultiplier}
+                      onChange={(event) => setSharedBillingMultiplier(Math.max(0.001, Number(event.target.value) || 1))}
                     />
                   </div>
                   <button
@@ -1871,7 +1891,12 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
                               </span>
                               {file.distributionMode === 'quota_card' ? (
                                 <span className="badge badge-xs badge-outline">
-                                  {file.quotaUsed ?? 0}/{file.quotaLimit ?? 0}
+                                  {formatQuotaUsd(file.quotaUsed)}/{formatQuotaUsd(file.quotaLimit)}
+                                </span>
+                              ) : null}
+                              {file.distributionMode === 'quota_card' ? (
+                                <span className="badge badge-xs badge-outline">
+                                  {formatBillingMultiplier(file.billingMultiplier)}
                                 </span>
                               ) : null}
                             </div>

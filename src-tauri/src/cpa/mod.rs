@@ -358,6 +358,7 @@ struct ResolvedPaths {
     runtime_dir: PathBuf,
     static_dir: PathBuf,
     config_dir: PathBuf,
+    plugins_dir: PathBuf,
     logs_dir: PathBuf,
     bootstrap_path: PathBuf,
     config_path: PathBuf,
@@ -429,6 +430,7 @@ pub fn start_cpa(
 
     cleanup_stale_cpa_processes(&ctx.paths, None)?;
     cleanup_stale_cpa_port_processes(ctx.bootstrap.api_port, None)?;
+    install_bundled_plugins(&ctx.paths)?;
     write_runtime_config(&ctx)?;
     reset_log_files(&ctx.paths)?;
 
@@ -3206,19 +3208,15 @@ fn ensure_json_object(value: &mut JsonValue) -> &mut JsonMap<String, JsonValue> 
 }
 
 fn cloud_url(path: &str) -> String {
-	let normalized_path = path.trim().trim_start_matches('/');
-	let base_url = cloud_base_url();
-	format!(
-		"{}/{}",
-		base_url.trim_end_matches('/'),
-		normalized_path
-	)
+    let normalized_path = path.trim().trim_start_matches('/');
+    let base_url = cloud_base_url();
+    format!("{}/{}", base_url.trim_end_matches('/'), normalized_path)
 }
 
 fn app_update_origin() -> Result<String, String> {
-	let base_url = cloud_base_url();
-	let base = reqwest::Url::parse(&base_url)
-		.map_err(|error| format!("invalid cloud base url: {error}"))?;
+    let base_url = cloud_base_url();
+    let base = reqwest::Url::parse(&base_url)
+        .map_err(|error| format!("invalid cloud base url: {error}"))?;
     let host = base
         .host_str()
         .ok_or_else(|| "cloud base url missing host".to_string())?;
@@ -3231,17 +3229,17 @@ fn app_update_origin() -> Result<String, String> {
 }
 
 fn cloud_base_url() -> String {
-	if let Ok(value) = env::var(CLOUD_BASE_URL_OVERRIDE_ENV) {
-		let trimmed = value.trim().trim_end_matches('/').to_string();
-		if !trimmed.is_empty() {
-			return trimmed;
-		}
-	}
-	if cfg!(debug_assertions) {
-		CLOUD_BASE_URL_DEV.to_string()
-	} else {
-		CLOUD_BASE_URL_RELEASE.to_string()
-	}
+    if let Ok(value) = env::var(CLOUD_BASE_URL_OVERRIDE_ENV) {
+        let trimmed = value.trim().trim_end_matches('/').to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    if cfg!(debug_assertions) {
+        CLOUD_BASE_URL_DEV.to_string()
+    } else {
+        CLOUD_BASE_URL_RELEASE.to_string()
+    }
 }
 
 fn select_update_download_url(payload: &JsonValue) -> Result<Option<String>, String> {
@@ -3617,6 +3615,7 @@ fn resolve_paths(app: &AppHandle) -> Result<ResolvedPaths, String> {
     let runtime_dir = app_data_dir.join("runtime");
     let static_dir = runtime_dir.join("static");
     let config_dir = runtime_dir.join("config");
+    let plugins_dir = runtime_dir.join("plugins");
     let logs_dir = runtime_dir.join("logs");
 
     Ok(ResolvedPaths {
@@ -3624,6 +3623,7 @@ fn resolve_paths(app: &AppHandle) -> Result<ResolvedPaths, String> {
         runtime_dir: runtime_dir.clone(),
         static_dir: static_dir.clone(),
         config_dir: config_dir.clone(),
+        plugins_dir: plugins_dir.clone(),
         logs_dir: logs_dir.clone(),
         bootstrap_path: config_dir.join("bootstrap.json"),
         config_path: config_dir.join("config.yaml"),
@@ -3637,12 +3637,66 @@ fn ensure_directories(paths: &ResolvedPaths) -> Result<(), String> {
         &paths.runtime_dir,
         &paths.static_dir,
         &paths.config_dir,
+        &paths.plugins_dir,
         &paths.logs_dir,
     ] {
         fs::create_dir_all(path).map_err(|error| {
             format!(
                 "failed to create runtime directory {}: {error}",
                 path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn install_bundled_plugins(paths: &ResolvedPaths) -> Result<(), String> {
+    let Some(source_dir) = resolve_bundled_plugins_dir() else {
+        return Ok(());
+    };
+    if !source_dir.exists() {
+        return Ok(());
+    }
+    copy_dir_contents(&source_dir, &paths.plugins_dir)
+}
+
+fn copy_dir_contents(source: &Path, target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target).map_err(|error| {
+        format!(
+            "failed to create plugin directory {}: {error}",
+            target.display()
+        )
+    })?;
+    for entry in fs::read_dir(source).map_err(|error| {
+        format!(
+            "failed to read bundled plugin directory {}: {error}",
+            source.display()
+        )
+    })? {
+        let entry =
+            entry.map_err(|error| format!("failed to read bundled plugin entry: {error}"))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_contents(&source_path, &target_path)?;
+            continue;
+        }
+        if !source_path.is_file() {
+            continue;
+        }
+        if let Some(parent) = target_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create plugin target directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::copy(&source_path, &target_path).map_err(|error| {
+            format!(
+                "failed to install bundled plugin {} to {}: {error}",
+                source_path.display(),
+                target_path.display()
             )
         })?;
     }
@@ -3710,6 +3764,17 @@ fn write_runtime_config(ctx: &RuntimeContext) -> Result<(), String> {
         YamlValue::String(ctx.paths.config_dir.join("auths").display().to_string()),
     );
     map.insert(yaml_key("usage-statistics-enabled"), YamlValue::Bool(true));
+
+    let plugins = get_or_create_mapping(map, "plugins");
+    plugins.insert(yaml_key("enabled"), YamlValue::Bool(true));
+    plugins.insert(
+        yaml_key("dir"),
+        YamlValue::String(ctx.paths.plugins_dir.display().to_string()),
+    );
+    let plugin_configs = get_or_create_mapping(plugins, "configs");
+    let quota_card_plugin = get_or_create_mapping(plugin_configs, "cloud-quota-card");
+    quota_card_plugin.insert(yaml_key("enabled"), YamlValue::Bool(true));
+    quota_card_plugin.insert(yaml_key("priority"), YamlValue::Number(Number::from(10)));
 
     let remote_management = get_or_create_mapping(map, "remote-management");
     remote_management.insert(yaml_key("allow-remote"), YamlValue::Bool(false));
@@ -3850,6 +3915,40 @@ fn resolve_bundled_sidecar_path() -> Option<PathBuf> {
         Some(nested_resource_sidecar)
     } else {
         None
+    }
+}
+
+fn resolve_bundled_plugins_dir() -> Option<PathBuf> {
+    let dev_plugins = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("plugins");
+    if dev_plugins.exists() {
+        return Some(dev_plugins);
+    }
+
+    let resource_dir = resolve_app_resource_dir()?;
+    let bundled_plugins = resource_dir.join("plugins");
+    if bundled_plugins.exists() {
+        return Some(bundled_plugins);
+    }
+
+    let nested_plugins = resource_dir.join("resources").join("plugins");
+    if nested_plugins.exists() {
+        Some(nested_plugins)
+    } else {
+        None
+    }
+}
+
+fn resolve_app_resource_dir() -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok()?;
+    if cfg!(target_os = "macos") {
+        exe_path
+            .parent()
+            .and_then(Path::parent)
+            .map(|contents| contents.join("Resources"))
+    } else {
+        exe_path.parent().map(|dir| dir.to_path_buf())
     }
 }
 
