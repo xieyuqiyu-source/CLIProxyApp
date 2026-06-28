@@ -1,11 +1,11 @@
 Place bundled CLIProxyApi plugins in this directory.
 
 The app copies these files into the runtime plugins directory before starting
-CLIProxyApi. The `cloud-quota-card` plugin remains disabled by default because
-Go c-shared plugins can crash when loaded into the Go CLIProxyApi host process
-on macOS.
+CLIProxyApi and enables the `cloud-quota-card` plugin in the generated config.
+The bundled plugin is built with Rust cdylib so it can be loaded safely by the
+Go CLIProxyApi host process on macOS.
 
-Cloud quota card plugin source is in `../plugins-src/cloud-quota-card`.
+Cloud quota card plugin source is in `../plugins-src/cloud-quota-card-rust`.
 
 Build for the current machine:
 
