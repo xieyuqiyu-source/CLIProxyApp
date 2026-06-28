@@ -3766,14 +3766,14 @@ fn write_runtime_config(ctx: &RuntimeContext) -> Result<(), String> {
     map.insert(yaml_key("usage-statistics-enabled"), YamlValue::Bool(true));
 
     let plugins = get_or_create_mapping(map, "plugins");
-    plugins.insert(yaml_key("enabled"), YamlValue::Bool(true));
+    plugins.insert(yaml_key("enabled"), YamlValue::Bool(false));
     plugins.insert(
         yaml_key("dir"),
         YamlValue::String(ctx.paths.plugins_dir.display().to_string()),
     );
     let plugin_configs = get_or_create_mapping(plugins, "configs");
     let quota_card_plugin = get_or_create_mapping(plugin_configs, "cloud-quota-card");
-    quota_card_plugin.insert(yaml_key("enabled"), YamlValue::Bool(true));
+    quota_card_plugin.insert(yaml_key("enabled"), YamlValue::Bool(false));
     quota_card_plugin.insert(yaml_key("priority"), YamlValue::Number(Number::from(10)));
 
     let remote_management = get_or_create_mapping(map, "remote-management");
