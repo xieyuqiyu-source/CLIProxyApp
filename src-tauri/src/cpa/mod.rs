@@ -3261,11 +3261,21 @@ fn select_update_download_url(payload: &JsonValue) -> Result<Option<String>, Str
     };
 
     let keys = if cfg!(target_os = "windows") {
-        vec!["windows", "windows-x64"]
+        vec!["windows-x64", "windows"]
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        vec!["darwin-aarch64", "macos-aarch64", "macosApple", "macos"]
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
+        vec![
+            "darwin-x64",
+            "darwin-x86_64",
+            "macos-x64",
+            "macosIntel",
+            "macos",
+        ]
     } else if cfg!(target_os = "macos") {
-        vec!["macos", "darwin-aarch64", "darwin-x64"]
+        vec!["macos"]
     } else {
-        vec!["linux", "linux-x64"]
+        vec!["linux-x64", "linux"]
     };
 
     for key in keys {

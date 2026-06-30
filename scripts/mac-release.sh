@@ -6,9 +6,9 @@
 #   1. sync CLIProxy repositories
 #   2. choose release version interactively
 #   3. update app / website fallback versions
-#   4. build macOS DMG
+#   4. build Apple Silicon and Intel macOS DMGs
 #   5. commit and push App / Cloud changes
-#   6. upload DMG to the production server
+#   6. upload DMGs to the production server
 #   7. update latest.json while preserving the existing Windows download
 #
 # Usage:
@@ -142,14 +142,15 @@ choose_version() {
 update_versions() {
   local version="$1"
   local notes="$2"
-  local mac_file_name="CPSwitch_${version}_aarch64.dmg"
+  local mac_apple_file_name="CPSwitch_${version}_aarch64.dmg"
+  local mac_intel_file_name="CPSwitch_${version}_x64.dmg"
 
   info "更新 App / 官网 fallback 版本号到 $version..."
-  node - "$APP_DIR" "$CLOUD_DIR" "$version" "$notes" "$mac_file_name" <<'NODE'
+  node - "$APP_DIR" "$CLOUD_DIR" "$version" "$notes" "$mac_apple_file_name" "$mac_intel_file_name" <<'NODE'
 const fs = require('fs')
 const path = require('path')
 
-const [appDir, cloudDir, version, notes, macFileName] = process.argv.slice(2)
+const [appDir, cloudDir, version, notes, macAppleFileName, macIntelFileName] = process.argv.slice(2)
 
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`)
@@ -181,7 +182,9 @@ if (fs.existsSync(website)) {
   html = html.replace(/site\.css\?v=[0-9]+\.[0-9]+\.[0-9]+/g, `site.css?v=${version}`)
   html = html.replace(/id="download-version">v[^<]+</, `id="download-version">v${version}<`)
   html = html.replace(/id="download-notes">[^<]*</, `id="download-notes">${notes.replace(/[<>&]/g, (ch) => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[ch]))}<`)
-  html = html.replace(/id="download-mac" href="[^"]+"/, `id="download-mac" href="/downloads/cliproxyapp/${macFileName}"`)
+  html = html.replace(/id="download-mac" href="[^"]+"/, `id="download-mac" href="/downloads/cliproxyapp/${macAppleFileName}"`)
+  html = html.replace(/id="download-mac-apple" href="[^"]+"/, `id="download-mac-apple" href="/downloads/cliproxyapp/${macAppleFileName}"`)
+  html = html.replace(/id="download-mac-intel" href="[^"]+"/, `id="download-mac-intel" href="/downloads/cliproxyapp/${macIntelFileName}"`)
   fs.writeFileSync(website, html)
 }
 NODE
@@ -195,7 +198,7 @@ ensure_node_modules() {
 }
 
 build_mac_dmg() {
-  info "开始构建 macOS DMG..."
+  info "开始构建 Apple Silicon macOS DMG..."
   ensure_node_modules
   (cd "$APP_DIR" && npm run tauri build -- --bundles dmg)
 
@@ -203,7 +206,20 @@ build_mac_dmg() {
   local dmg
   dmg="$(ls -t "$dmg_dir"/*.dmg 2>/dev/null | head -1 || true)"
   [ -n "$dmg" ] || die "打包完成但没有找到 DMG：$dmg_dir"
-  DMG_PATH="$dmg"
+  DMG_APPLE_PATH="$dmg"
+
+  info "准备 Intel sidecar 和 Rust target..."
+  rustup target list --installed | grep -qx 'x86_64-apple-darwin' || rustup target add x86_64-apple-darwin
+  mkdir -p "$APP_DIR/src-tauri/resources/sidecar/darwin-x86_64"
+  (cd "$ROOT_DIR/CLIProxyApi" && GOOS=darwin GOARCH=amd64 go build -o "$APP_DIR/src-tauri/resources/sidecar/darwin-x86_64/cliproxyapi" ./cmd/server)
+
+  info "开始构建 Intel macOS DMG..."
+  (cd "$APP_DIR" && npm run tauri build -- --target x86_64-apple-darwin --bundles dmg)
+  local intel_dmg_dir="$APP_DIR/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg"
+  local intel_dmg
+  intel_dmg="$(ls -t "$intel_dmg_dir"/*.dmg 2>/dev/null | head -1 || true)"
+  [ -n "$intel_dmg" ] || die "打包完成但没有找到 Intel DMG：$intel_dmg_dir"
+  DMG_INTEL_PATH="$intel_dmg"
 }
 
 run_checks() {
@@ -256,18 +272,24 @@ commit_and_push() {
 }
 
 upload_dmg_and_manifest() {
-  local dmg="$1"
-  local version="$2"
-  local notes="$3"
-  local base_name="CPSwitch_${version}_aarch64.dmg"
-  local temp_file="/tmp/$base_name"
-  local sha256
-  sha256="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+  local apple_dmg="$1"
+  local intel_dmg="$2"
+  local version="$3"
+  local notes="$4"
+  local apple_name="CPSwitch_${version}_aarch64.dmg"
+  local intel_name="CPSwitch_${version}_x64.dmg"
+  local apple_temp="/tmp/$apple_name"
+  local intel_temp="/tmp/$intel_name"
+  local apple_sha256
+  local intel_sha256
+  apple_sha256="$(shasum -a 256 "$apple_dmg" | awk '{print $1}')"
+  intel_sha256="$(shasum -a 256 "$intel_dmg" | awk '{print $1}')"
 
-  info "上传 DMG 到 $SERVER:$SERVER_DOWNLOAD_DIR/$base_name ..."
+  info "上传 DMG 到 $SERVER:$SERVER_DOWNLOAD_DIR ..."
   ssh "$SERVER" "mkdir -p '$SERVER_DOWNLOAD_DIR'"
-  scp "$dmg" "$SERVER:$temp_file"
-  ssh "$SERVER" "mv '$temp_file' '$SERVER_DOWNLOAD_DIR/$base_name' && chmod 0644 '$SERVER_DOWNLOAD_DIR/$base_name'"
+  scp "$apple_dmg" "$SERVER:$apple_temp"
+  scp "$intel_dmg" "$SERVER:$intel_temp"
+  ssh "$SERVER" "mv '$apple_temp' '$SERVER_DOWNLOAD_DIR/$apple_name' && mv '$intel_temp' '$SERVER_DOWNLOAD_DIR/$intel_name' && chmod 0644 '$SERVER_DOWNLOAD_DIR/$apple_name' '$SERVER_DOWNLOAD_DIR/$intel_name'"
 
   info "更新服务器 latest.json..."
   local payload
@@ -275,10 +297,12 @@ upload_dmg_and_manifest() {
     version: process.argv[1],
     notes: process.argv[2],
     publicBaseUrl: process.argv[3],
-    macFile: process.argv[4],
-    sha256: process.argv[5],
-    manifest: process.argv[6],
-  })).toString('base64'))" "$version" "$notes" "$PUBLIC_BASE_URL" "$base_name" "$sha256" "$SERVER_DOWNLOAD_DIR/latest.json")"
+    macAppleFile: process.argv[4],
+    macIntelFile: process.argv[5],
+    macAppleSha256: process.argv[6],
+    macIntelSha256: process.argv[7],
+    manifest: process.argv[8],
+  })).toString('base64'))" "$version" "$notes" "$PUBLIC_BASE_URL" "$apple_name" "$intel_name" "$apple_sha256" "$intel_sha256" "$SERVER_DOWNLOAD_DIR/latest.json")"
   ssh "$SERVER" "RELEASE_PAYLOAD_B64='$payload' node" <<'NODE'
 const fs = require('fs')
 const path = require('path')
@@ -294,21 +318,37 @@ const base = (payload.publicBaseUrl || '').replace(/\/$/, '')
 manifest.version = payload.version
 manifest.notes = payload.notes
 manifest.publishedAt = new Date().toISOString()
-manifest.downloads.macos = `${base}/downloads/cliproxyapp/${encodeURIComponent(payload.macFile)}`
+manifest.downloads.macos = `${base}/downloads/cliproxyapp/${encodeURIComponent(payload.macAppleFile)}`
+manifest.downloads['darwin-aarch64'] = manifest.downloads.macos
+manifest.downloads['macos-aarch64'] = manifest.downloads.macos
+manifest.downloads.macosApple = manifest.downloads.macos
+manifest.downloads['darwin-x64'] = `${base}/downloads/cliproxyapp/${encodeURIComponent(payload.macIntelFile)}`
+manifest.downloads['darwin-x86_64'] = manifest.downloads['darwin-x64']
+manifest.downloads['macos-x64'] = manifest.downloads['darwin-x64']
+manifest.downloads.macosIntel = manifest.downloads['darwin-x64']
 manifest.sha256 = manifest.sha256 && typeof manifest.sha256 === 'object' ? manifest.sha256 : {}
-manifest.sha256.macos = payload.sha256
+manifest.sha256.macos = payload.macAppleSha256
+manifest.sha256['darwin-aarch64'] = payload.macAppleSha256
+manifest.sha256['macos-aarch64'] = payload.macAppleSha256
+manifest.sha256.macosApple = payload.macAppleSha256
+manifest.sha256['darwin-x64'] = payload.macIntelSha256
+manifest.sha256['darwin-x86_64'] = payload.macIntelSha256
+manifest.sha256['macos-x64'] = payload.macIntelSha256
+manifest.sha256.macosIntel = payload.macIntelSha256
 fs.mkdirSync(path.dirname(manifestPath), { recursive: true })
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 NODE
 
-  ok "DMG: $dmg"
-  ok "SHA256: $sha256"
+  ok "Apple DMG: $apple_dmg"
+  ok "Apple SHA256: $apple_sha256"
+  ok "Intel DMG: $intel_dmg"
+  ok "Intel SHA256: $intel_sha256"
 }
 
 verify_online() {
   local manifest_url="$PUBLIC_BASE_URL/downloads/cliproxyapp/latest.json"
   info "验证线上 manifest：$manifest_url"
-  curl -fsSL "$manifest_url" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const j=JSON.parse(s); console.log(JSON.stringify({version:j.version, macos:j.downloads&&j.downloads.macos, windows:j.downloads&&j.downloads.windows}, null, 2))})"
+  curl -fsSL "$manifest_url" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const j=JSON.parse(s); console.log(JSON.stringify({version:j.version, macos:j.downloads&&j.downloads.macos, darwinAarch64:j.downloads&&j.downloads['darwin-aarch64'], darwinX64:j.downloads&&j.downloads['darwin-x64'], windows:j.downloads&&j.downloads.windows}, null, 2))})"
   curl -fsSL "$PUBLIC_BASE_URL/healthz" >/dev/null && ok "healthz 正常。"
 }
 
@@ -328,9 +368,10 @@ main() {
   update_versions "$VERSION" "$RELEASE_NOTES"
   run_checks
   build_mac_dmg
-  local dmg="$DMG_PATH"
+  local apple_dmg="$DMG_APPLE_PATH"
+  local intel_dmg="$DMG_INTEL_PATH"
   commit_and_push
-  upload_dmg_and_manifest "$dmg" "$VERSION" "$RELEASE_NOTES"
+  upload_dmg_and_manifest "$apple_dmg" "$intel_dmg" "$VERSION" "$RELEASE_NOTES"
   verify_online
   ok "macOS 发布流程完成。"
 }
