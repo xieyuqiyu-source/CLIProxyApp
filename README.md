@@ -34,6 +34,7 @@ CLIProxy/
 
 - [docs/cpa-runtime-wrapper.md](docs/cpa-runtime-wrapper.md)
 - [docs/cpapp-architecture.md](docs/cpapp-architecture.md)
+- [docs/cpswitch-user-guide.zh-CN.md](docs/cpswitch-user-guide.zh-CN.md)
 - [docs/continue-auto-provider-setup.md](docs/continue-auto-provider-setup.md)
 
 ## Development
