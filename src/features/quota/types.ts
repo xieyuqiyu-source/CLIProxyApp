@@ -1,4 +1,4 @@
-export type QuotaProvider = 'claude' | 'antigravity' | 'codex' | 'gemini-cli' | 'kimi'
+export type QuotaProvider = 'claude' | 'antigravity' | 'codex' | 'gemini-cli' | 'xai' | 'kimi'
 
 export interface AuthFileItem {
   name: string

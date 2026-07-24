@@ -3,6 +3,7 @@ export type OAuthProvider =
   | 'anthropic'
   | 'antigravity'
   | 'gemini-cli'
+  | 'xai'
   | 'kimi'
   | 'qwen'
 

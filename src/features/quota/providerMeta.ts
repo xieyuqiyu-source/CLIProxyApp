@@ -1,6 +1,6 @@
 import type { QuotaProvider } from './types'
 
-export const PROVIDER_ORDER: QuotaProvider[] = ['claude', 'codex', 'gemini-cli', 'antigravity', 'kimi']
+export const PROVIDER_ORDER: QuotaProvider[] = ['claude', 'codex', 'gemini-cli', 'antigravity', 'xai', 'kimi']
 
 export const PROVIDER_META: Record<
   QuotaProvider,
@@ -25,6 +25,11 @@ export const PROVIDER_META: Record<
     label: 'Antigravity',
     accent: 'from-cyan-400 to-sky-500',
     description: 'Antigravity 模型可用剩余额度'
+  },
+  xai: {
+    label: 'Grok',
+    accent: 'from-slate-500 to-zinc-800',
+    description: 'xAI Grok OAuth 账号和本地代理'
   },
   kimi: {
     label: 'Kimi',

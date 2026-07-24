@@ -103,6 +103,13 @@ https://cliproxy.szxsai.com/
 
 适合网页授权登录。选择对应服务后，按提示完成授权。
 
+当前 OAuth 入口包括：
+
+- Codex
+- Claude
+- Gemini
+- Grok / xAI
+
 ### Token/Json
 
 适合你已经有 token 或认证 JSON 的情况。
@@ -327,4 +334,3 @@ https://cliproxy.szxsai.com/healthz
 5. 查看额度卡片。
 6. 配置 Codex、Continue、OpenClaw 或 Kiro。
 7. 在目标工具里开始使用。
-

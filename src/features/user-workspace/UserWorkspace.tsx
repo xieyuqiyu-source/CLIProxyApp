@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import QRCode from 'qrcode'
 import { QuotaPanel } from '../quota/QuotaPanel'
-import { PROVIDER_META, PROVIDER_ORDER } from '../quota/providerMeta'
+import { PROVIDER_META } from '../quota/providerMeta'
 import type { AuthFileItem, QuotaProvider } from '../quota/types'
 import type {
   CloudCreatePaymentOrderResponse,
@@ -17,7 +17,7 @@ import { OAuthPanel } from '../oauth/OAuthPanel'
 import { OpenAIProvidersPanel } from '../openai-providers/OpenAIProvidersPanel'
 import { CodexConfigDialog } from '../codex-config/CodexConfigDialog'
 import { ContinueConfigDialog } from '../continue-config/ContinueConfigDialog'
-import type { OAuthProvider } from '../oauth/types'
+import { resolveOauthProviders } from './providerMapping'
 import { cloudClient } from '../../lib/cloud/client'
 import { formatPlanLabel } from '../../lib/cloud/planLabels'
 import { sharedImportRegistry } from '../../lib/cloud/sharedRegistry'
@@ -69,28 +69,6 @@ function getStatusTone(status?: string) {
     default:
       return 'badge-ghost'
   }
-}
-
-function mapQuotaProviderToOauthProvider(provider: QuotaProvider): OAuthProvider {
-  switch (provider) {
-    case 'claude':
-      return 'anthropic'
-    case 'codex':
-      return 'codex'
-    case 'gemini-cli':
-      return 'gemini-cli'
-    case 'antigravity':
-      return 'antigravity'
-    case 'kimi':
-      return 'kimi'
-  }
-}
-
-function resolveOauthProviders(provider: QuotaProvider | 'all'): OAuthProvider[] | undefined {
-  if (provider === 'all') {
-    return PROVIDER_ORDER.map(mapQuotaProviderToOauthProvider)
-  }
-  return [mapQuotaProviderToOauthProvider(provider)]
 }
 
 function getSharedSyncStorageKey(userKey: string) {
@@ -916,7 +894,7 @@ export function UserWorkspace({
   }, [loadOpenClawConfigState])
 
   const hasPendingPayment = activePayment?.order.status === 'pending'
-  const mobileProviderOrder: (QuotaProvider | 'all')[] = ['all', 'codex', 'claude', 'gemini-cli', 'antigravity', 'kimi']
+  const mobileProviderOrder: (QuotaProvider | 'all')[] = ['all', 'codex', 'claude', 'gemini-cli', 'antigravity', 'xai', 'kimi']
 
   const paymentExpiresCountdown = useMemo(() => {
     if (!activePayment?.order.expiresAt || activePayment.order.status !== 'pending') {

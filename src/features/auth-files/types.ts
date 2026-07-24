@@ -3,6 +3,7 @@ export type AuthProviderKey =
   | 'codex'
   | 'gemini-cli'
   | 'antigravity'
+  | 'xai'
   | 'kimi'
   | 'unknown'
 

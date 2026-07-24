@@ -1223,7 +1223,7 @@ function SpAdminPanel({ token, recentLogs, pendingAction, onRefreshLogs, onNotif
       if (response.task) {
         await executeAgentTask(response.task)
       }
-    } catch (error) {
+    } catch {
       setAgentStatus((current) => current ? { ...current, online: false } : current)
     }
   }

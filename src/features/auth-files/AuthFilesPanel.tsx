@@ -11,6 +11,7 @@ const PROVIDER_ORDER: AuthProviderKey[] = [
   'codex',
   'gemini-cli',
   'antigravity',
+  'xai',
   'kimi',
   'unknown'
 ]
@@ -20,6 +21,7 @@ const PROVIDER_LABELS: Record<AuthProviderKey, string> = {
   codex: 'Codex',
   'gemini-cli': 'Gemini CLI',
   antigravity: 'Antigravity',
+  xai: 'Grok',
   kimi: 'Kimi',
   unknown: '未识别'
 }
@@ -78,7 +80,14 @@ function resolveProvider(file: AuthFileItem): AuthProviderKey {
     .trim()
     .toLowerCase()
 
-  if (raw === 'claude' || raw === 'codex' || raw === 'gemini-cli' || raw === 'antigravity' || raw === 'kimi') {
+  if (
+    raw === 'claude' ||
+    raw === 'codex' ||
+    raw === 'gemini-cli' ||
+    raw === 'antigravity' ||
+    raw === 'xai' ||
+    raw === 'kimi'
+  ) {
     return raw
   }
   return 'unknown'
@@ -364,6 +373,7 @@ export function AuthFilesPanel({
       codex: 0,
       'gemini-cli': 0,
       antigravity: 0,
+      xai: 0,
       kimi: 0,
       unknown: 0
     }

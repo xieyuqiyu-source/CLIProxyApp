@@ -1157,6 +1157,24 @@ async function fetchKimiQuota(file: AuthFileItem): Promise<QuotaResult> {
   }
 }
 
+async function fetchXaiQuota(file: AuthFileItem): Promise<QuotaResult> {
+  const authIndex = normalizeAuthIndex(file)
+  return {
+    provider: 'xai',
+    headline: file.email ? `Grok / xAI ${file.email}` : 'Grok / xAI',
+    summary: '已导入 xAI OAuth 认证，可通过本地代理使用 Grok 模型。',
+    metrics: [
+      {
+        id: 'proxy-status',
+        label: '代理',
+        value: '可用',
+        hint: authIndex ? `Auth Index ${authIndex}` : 'xAI 暂无本地额度查询',
+        tone: 'success'
+      }
+    ]
+  }
+}
+
 async function fetchQuotaForFile(file: AuthFileItem) {
   const provider = resolveAuthProvider(file)
   if (!provider) {
@@ -1172,6 +1190,8 @@ async function fetchQuotaForFile(file: AuthFileItem) {
       return fetchGeminiCliQuota(file)
     case 'antigravity':
       return fetchAntigravityQuota(file)
+    case 'xai':
+      return fetchXaiQuota(file)
     case 'kimi':
       return fetchKimiQuota(file)
   }
