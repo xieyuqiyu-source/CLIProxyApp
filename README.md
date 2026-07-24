@@ -2,6 +2,14 @@
 
 `CLIProxyApp` 是 CPSwitch 的桌面客户端，基于 `Tauri 2 + React + TypeScript` 构建。它负责在本机拉起 `CLIProxyApi`，提供账号登录、额度查看、共享账号获取、本地代理配置和桌面端打包发布能力。
 
+## 下载与套餐
+
+- 产品官网与下载：<https://cliproxy.szxsai.com/>
+- Pro：¥49/月，支持自动切换、个人云同步与随机获取 3 个共享账号。
+- Pro Max：¥168/月，包含 Pro 全部能力，可获取最多 10 个共享账号。
+
+下载客户端后，打开 **开通会员 → 人工协助** 联系管理员开通。
+
 ## 当前能力
 
 - Tauri 桌面宿主，支持 macOS 和 Windows 打包。
